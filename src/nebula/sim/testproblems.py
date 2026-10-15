@@ -254,11 +254,19 @@ def gresho_l1(st: HydroState) -> tuple[float, np.ndarray, np.ndarray]:
 #
 # Energy E = 1 deposited in the internal energy of the particles within reach of the box
 # centre (kernel-weighted, background smoothing length) in a uniform glass of density 1,
-# gamma = 5/3; background u = 1e-6 of the peak blast value (negligible pressure). Exact:
-# shock radius R = xi0 (E t^2 / rho)^(1/5), xi0 = 1.151666 (expected-values §4, script 22).
+# gamma = 5/3. Background u = 1e-6: its total thermal energy is 1e-6 of E, and the shock stays
+# at Mach > 1000 throughout (negligible pressure; docs/DECISIONS.md, Step 3.7). Exact:
+# shock radius R = xi0 (E t^2 / rho)^(1/5) (physics/sedov.py; xi0 = 1.151666, expected-values
+# §4, verified by script 22).
 
 SEDOV_GAMMA = 5.0 / 3.0
-SEDOV_XI0 = 1.151666
+
+
+# Courant number for the Sedov test: a quarter of the usual 0.3. With one global step the
+# first few steps of the explosion lose energy (time-step error: 0.16%, 0.064%, 0.020% at
+# C = 0.3, 0.15, 0.075 on 32,768 particles); 0.075 keeps it well inside the test's 1e-3
+# (DECISIONS, Step 3.7b).
+SEDOV_COURANT = 0.075
 
 
 def sedov_setup(tiles: int = 3) -> Problem:
@@ -268,12 +276,12 @@ def sedov_setup(tiles: int = 3) -> Problem:
     x = tile_glass(load_glass(4096), (tiles, tiles, tiles), (1.0, 1.0, 1.0))
     n = len(x)
     mass = 1.0 / n
-    cfg = HydroConfig(gamma=SEDOV_GAMMA, box=(1.0, 1.0, 1.0))
+    cfg = HydroConfig(gamma=SEDOV_GAMMA, box=(1.0, 1.0, 1.0), courant=SEDOV_COURANT)
     h_bg = cfg.eta * mass ** (1 / 3)
     r = np.linalg.norm(x - 0.5, axis=1)
     w = get_kernel(cfg.kernel).w(r, h_bg)
     u_blast = w / np.sum(w) / mass  # sum(m u) = E = 1
-    u = np.maximum(u_blast, 1e-6 * u_blast.max())
+    u = u_blast + 1e-6
     st = initialise(x, np.zeros_like(x), u, mass, np.full(n, h_bg), cfg)
     return Problem(st, cfg, 0.0, 0.0, {"h_bg": h_bg, "energy": 1.0})
 
@@ -289,4 +297,73 @@ def sedov_radius(st: HydroState, h_bg: float) -> tuple[float, np.ndarray, np.nda
 
 
 def sedov_exact_radius(t: float, energy: float = 1.0) -> float:
-    return SEDOV_XI0 * (energy * t * t) ** 0.2
+    from nebula.physics.sedov import sedov_solution
+
+    return sedov_solution(SEDOV_GAMMA).radius(t, energy)
+
+
+SEDOV_RADII = (0.34, 0.39, 0.44)  # measurement radii: >= 10 h_bg (0.333), < 0.5 (images)
+
+
+def sedov_run(prob: Problem, radii=SEDOV_RADII, callback=None) -> list[dict]:
+    """Run to the times at which the exact radius equals each of ``radii``; at each, measure the
+    SPH shock radius (density peak) and keep the radial density profile."""
+    from nebula.physics.sedov import sedov_solution
+
+    xi0 = sedov_solution(SEDOV_GAMMA).xi0
+    out, st = [], prob.state
+    for r_target in radii:
+        t = (r_target / xi0) ** 2.5  # energy 1, rho0 1
+        st = run(st, prob.cfg, t, callback=callback)
+        r_sph, centres, prof = sedov_radius(st, prob.extra["h_bg"])
+        energy = float(np.sum(st.mass * (0.5 * np.sum(st.v**2, axis=1) + st.u)))
+        out.append(
+            {"t": st.t, "r_exact": sedov_exact_radius(st.t), "r_sph": r_sph,
+             "centres": centres, "profile": prof, "energy": energy}
+        )  # fmt: skip
+    return out
+
+
+# --------------------------------------------------------------------------- run cache
+
+
+# Files that determine a Phase 3 hydro run's result (everything the test problems import).
+FINGERPRINT_FILES = (
+    "physics/kernels.py", "physics/eos.py", "physics/viscosity.py", "physics/riemann.py",
+    "physics/sedov.py", "sim/sph.py", "sim/hydro.py", "sim/neighbours.py", "sim/kernels_nb.py",
+    "sim/glass.py", "sim/ic.py", "sim/testproblems.py",
+)  # fmt: skip
+
+
+def code_fingerprint() -> str:
+    """Hash of the source files a hydro test run depends on and of the stored glasses: a cached
+    result is reused only if none of them changed (runs are deterministic)."""
+    import hashlib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    h = hashlib.sha256()
+    files = [root / f for f in FINGERPRINT_FILES]
+    files += sorted((root.parents[1] / "data").glob("glass_*.npy"))
+    for f in files:
+        h.update(f.name.encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def cached(name: str, compute):
+    """Return compute()'s result (a pickleable object), cached in outputs/cache under the
+    code fingerprint. Used for expensive test runs shared by a test and its plot script."""
+    import pickle
+    from pathlib import Path
+
+    cache_dir = Path(__file__).resolve().parents[3] / "outputs" / "cache"
+    path = cache_dir / f"{name}_{code_fingerprint()}.pkl"
+    if path.exists():
+        return pickle.loads(path.read_bytes())
+    result = compute()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(pickle.dumps(result))
+    tmp.rename(path)  # atomic: a crash never leaves a half-written cache entry
+    return result

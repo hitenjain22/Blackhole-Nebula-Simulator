@@ -43,3 +43,27 @@ def test_gresho_switch_high():
     low_sw = gresho_l1(run_problem(gresho_setup("low", switch=True)))[0]
     check("Gresho (switch): L1 falls with resolution", True, bool(sw < low_sw))
     print(f"   high: L1 alpha=1 {const:.4f}, switch {sw:.4f}; low switch {low_sw:.4f}")
+
+
+@pytest.mark.slow
+def test_sedov_blast_radius():
+    """Plan test 7: 110,592 particles, one global step. Shock radius (density peak) within 5% of
+    xi0 (E t^2/rho)^(1/5) at three times with R >= 10 h. Energy (blast + background) conserved.
+    The run is shared with scripts/plot_vortex_blast.py through the fingerprinted cache."""
+    from nebula.sim.testproblems import cached, sedov_run, sedov_setup
+
+    results = cached("sedov_3tiles", lambda: sedov_run(sedov_setup(3)))
+    h_bg = 1.6 / 48
+    for res in results:
+        check(
+            f"Sedov R at t={res['t']:.4f} (R/h = {res['r_exact'] / h_bg:.1f})",
+            res["r_exact"],
+            res["r_sph"],
+            rtol=0.05,
+        )
+    check(
+        "Sedov total energy at the end (E = 1 + 1e-6 background)",
+        1.0 + 1e-6,
+        results[-1]["energy"],
+        rtol=1e-3,
+    )
