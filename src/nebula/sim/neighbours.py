@@ -282,8 +282,9 @@ def find_neighbours_numba(pos: np.ndarray, h: np.ndarray, box=None) -> Neighbour
 
 
 @numba.njit(parallel=True, cache=True)
-def _tighten(pos, h, box, offset, index, out_off, out_idx, counts, fill_pass):
-    for i in numba.prange(pos.shape[0]):
+def _tighten(pos, h, box, offset, index, rows, out_off, out_idx, counts, fill_pass):
+    for q in numba.prange(rows.shape[0]):
+        i = rows[q]
         m = 0
         for k in range(offset[i], offset[i + 1]):
             j = index[k]
@@ -302,19 +303,21 @@ def _tighten(pos, h, box, offset, index, out_off, out_idx, counts, fill_pass):
             counts[i] = m
 
 
-def tighten(nb: Neighbours, pos: np.ndarray, h: np.ndarray) -> Neighbours:
+def tighten(nb: Neighbours, pos: np.ndarray, h: np.ndarray, rows=None) -> Neighbours:
     """Keep only the pairs that interact at the current smoothing lengths, r < 2 max(h_i, h_j)
     (still symmetric and sorted). Lists built with a search margin, or reused between steps,
-    carry extra entries; the force and gradient passes only need these."""
+    carry extra entries; the force and gradient passes only need these. ``rows`` (block time
+    steps): lists only for these particles, the others' left empty."""
     pos = np.ascontiguousarray(pos, np.float64)
     h = np.ascontiguousarray(h, np.float64)
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, np.float64)
     n = len(pos)
-    counts = np.empty(n, np.int64)
+    rows = np.arange(n, dtype=np.int64) if rows is None else np.asarray(rows, np.int64)
+    counts = np.zeros(n, np.int64)
     dummy = np.empty(0, np.int64)
-    _tighten(pos, h, box, nb.offset, nb.index, dummy, dummy, counts, False)
+    _tighten(pos, h, box, nb.offset, nb.index, rows, dummy, dummy, counts, False)
     off = np.zeros(n + 1, np.int64)
     np.cumsum(counts, out=off[1:])
     idx = np.empty(off[-1], np.int64)
-    _tighten(pos, h, box, nb.offset, nb.index, off, idx, counts, True)
+    _tighten(pos, h, box, nb.offset, nb.index, rows, off, idx, counts, True)
     return Neighbours(off, idx, nb.box)

@@ -36,6 +36,13 @@ FLAG_NO_CONVERGENCE = 3  # iteration limit reached
 MAX_ITER = 50
 
 
+def _rows(rows, n: int) -> np.ndarray:
+    """Particle indices to process (block time steps: the active set); default all."""
+    if rows is None:
+        return np.arange(n, dtype=np.int64)
+    return np.ascontiguousarray(rows, dtype=np.int64)
+
+
 @dataclass
 class DensityResult:
     h: np.ndarray
@@ -168,10 +175,11 @@ def _distances(i, r_max, pos, mass, offset, index, box, r, m):
 
 @numba.njit(parallel=True, cache=True)
 def _density_kernel(
-    pos, mass, h_start, h_search, offset, index, box, kid, cnorm, eta, tol, h_max,
+    pos, mass, h_start, h_search, offset, index, box, kid, cnorm, eta, tol, h_max, rows,
     h_out, rho, omega, iters, flags,
 ):  # fmt: skip
-    for i in numba.prange(pos.shape[0]):
+    for q in numba.prange(rows.shape[0]):  # particle i = rows[q]; writes only to row q
+        i = rows[q]
         m_i = mass[i]
         row = offset[i + 1] - offset[i]
         r = np.empty(row)
@@ -207,11 +215,11 @@ def _density_kernel(
                 h = h_lim
                 flag = 1 if h_lim >= h_max else 2
         rs, dws = _sums(r, m, cnt, h, kid, cnorm)
-        h_out[i] = h
-        rho[i] = rs
-        omega[i] = 1.0 + h / (3.0 * rs) * dws
-        iters[i] = it
-        flags[i] = flag
+        h_out[q] = h
+        rho[q] = rs
+        omega[q] = 1.0 + h / (3.0 * rs) * dws
+        iters[q] = it
+        flags[q] = flag
 
 
 def density_numba(
@@ -224,9 +232,12 @@ def density_numba(
     eta=DEFAULT_ETA,
     tol=1e-4,
     h_max=np.inf,
+    rows=None,
 ) -> DensityResult:
-    """The Numba density pass on given neighbour lists (no list rebuilding)."""
-    n = len(pos)
+    """The Numba density pass on given neighbour lists (no list rebuilding). ``rows``: solve
+    only these particles (results in that order); default all."""
+    rows = _rows(rows, len(pos))
+    n = len(rows)
     h_out, rho, omega = np.empty(n), np.empty(n), np.empty(n)
     iters, flags = np.empty(n, np.int64), np.empty(n, np.int64)
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
@@ -234,7 +245,7 @@ def density_numba(
     _density_kernel(
         np.ascontiguousarray(pos, float), np.ascontiguousarray(mass, float),
         np.ascontiguousarray(h_start, float), np.ascontiguousarray(h_search, float),
-        nb.offset, nb.index, box, kid, C_NORM[kid], float(eta), float(tol), float(h_max),
+        nb.offset, nb.index, box, kid, C_NORM[kid], float(eta), float(tol), float(h_max), rows,
         h_out, rho, omega, iters, flags,
     )  # fmt: skip
     return DensityResult(h_out, rho, omega, iters, flags, nb)
@@ -251,41 +262,52 @@ def compute_density(
     h_max=np.inf,
     skin=1.4,
     cache: NeighbourCache | None = None,
+    rows=None,
 ) -> DensityResult:
     """Density pass with neighbour lists. Lists are built with search radius 2 h_guess x skin,
     or reused from ``cache`` while still provably complete (see NeighbourCache); particles whose
     h outgrows the search are redone with rebuilt lists, doubling their search (up to 12
-    rounds). The result carries the cache to pass to the next call."""
+    rounds). The result carries the cache to pass to the next call.
+
+    ``rows`` (block time steps): solve only these particles (results in that order); the
+    others keep h = h_guess, and the lists stay complete for them too (h <= h_search - d_max
+    is checked for every particle, so pairs with an inactive neighbour are never lost)."""
     h_guess = np.asarray(h_guess, float)
+    n_all = len(pos)
+    rows = _rows(rows, n_all)
+    others = np.ones(n_all, bool)
+    others[rows] = False
     box_arr = None if box is None else np.broadcast_to(np.asarray(box, float), (3,))
     cap = h_max if box_arr is None else min(h_max, 0.2499 * float(np.min(box_arr)))
     if cache is not None and len(cache.x_ref) == len(pos):
         d = minimum_image(np.asarray(pos, float) - cache.x_ref, box_arr)
         d_max = float(np.sqrt(np.max(np.sum(d * d, axis=1)))) if len(pos) else 0.0
         h_eff = cache.h_search - d_max
-        if np.all(h_eff > 0.5 * h_guess):
+        if np.all(h_eff[rows] > 0.5 * h_guess[rows]) and np.all(h_guess[others] <= h_eff[others]):
             res = density_numba(
-                pos, mass, h_guess, cache.neighbours, h_eff, kernel_name, eta, tol, h_max
+                pos, mass, h_guess, cache.neighbours, h_eff, kernel_name, eta, tol, h_max, rows
             )
             if not np.any(res.flags == FLAG_SEARCH_TOO_SMALL):
                 cache.reuses += 1
                 res.cache = cache
                 return res
-            h_guess = np.maximum(h_guess, res.h)
+            h_guess = h_guess.copy()
+            h_guess[rows] = np.maximum(h_guess[rows], res.h)
     builds = 0 if cache is None else cache.builds
     h_search = np.minimum(h_guess * skin, cap)
     for _ in range(12):
         nb = find_neighbours_numba(pos, h_search, box=box_arr)
         builds += 1
-        res = density_numba(pos, mass, h_guess, nb, h_search, kernel_name, eta, tol, h_max)
+        res = density_numba(pos, mass, h_guess, nb, h_search, kernel_name, eta, tol, h_max, rows)
         grow = res.flags == FLAG_SEARCH_TOO_SMALL
         if not np.any(grow):
             reuses = 0 if cache is None else cache.reuses
             res.cache = NeighbourCache(nb, np.array(pos, float), h_search.copy(), builds, reuses)
             return res
         h_search = h_search.copy()
-        h_search[grow] = np.minimum(h_search[grow] * 2.0, cap)
-        h_guess = res.h
+        h_search[rows[grow]] = np.minimum(h_search[rows[grow]] * 2.0, cap)
+        h_guess = h_guess.copy()
+        h_guess[rows] = res.h
     raise RuntimeError("smoothing lengths kept outgrowing the neighbour search")
 
 
@@ -386,9 +408,10 @@ def _dwdr(r, h, kid, cnorm):
 @numba.njit(parallel=True, cache=True)
 def _forces_kernel(
     pos, vel, mass, h, rho, omega, pressure, u, c_s, alpha, offset, index, box, kid, cnorm,
-    use_visc, use_cond, beta, alpha_u, cond_signal, acc, dudt, vsig_max,
+    use_visc, use_cond, beta, alpha_u, cond_signal, rows, acc, dudt, vsig_max,
 ):  # fmt: skip
-    for a in numba.prange(pos.shape[0]):  # writes only to row a
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
+        a = rows[q]
         inv_or_a = 1.0 / (omega[a] * rho[a])
         ax = 0.0
         ay = 0.0
@@ -454,20 +477,22 @@ def _forces_kernel(
             ay -= f * ry
             az -= f * rz
             work += mass[b] * vdotr * fa
-        acc[a, 0] = ax
-        acc[a, 1] = ay
-        acc[a, 2] = az
-        dudt[a] = pressure[a] * inv_or_a / rho[a] * work + heat
-        vsig_max[a] = vmax
+        acc[q, 0] = ax
+        acc[q, 1] = ay
+        acc[q, 2] = az
+        dudt[q] = pressure[a] * inv_or_a / rho[a] * work + heat
+        vsig_max[q] = vmax
 
 
 def forces_numba(
     pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name=DEFAULT_KERNEL,
-    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
+    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK, rows=None,
 ) -> ForceResult:  # fmt: skip
-    """Fast (parallel Numba) twin of ``forces_reference``."""
+    """Fast (parallel Numba) twin of ``forces_reference``. ``rows``: only these particles
+    (results in that order; inputs are still for all particles); default all."""
     n = len(pos)
-    acc, dudt, vsig_max = np.empty((n, 3)), np.empty(n), np.empty(n)
+    rows = _rows(rows, n)
+    acc, dudt, vsig_max = np.empty((len(rows), 3)), np.empty(len(rows)), np.empty(len(rows))
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
     kid = KERNEL_IDS[kernel_name]
     use_visc = alpha is not None and c_s is not None
@@ -483,7 +508,7 @@ def forces_numba(
         np.ascontiguousarray(rho, float), np.ascontiguousarray(omega, float),
         np.ascontiguousarray(pressure, float), arr(u), arr(c_s), arr(alpha),
         nb.offset, nb.index, box, kid, C_NORM[kid], use_visc, use_cond,
-        float(shock.beta), float(shock.alpha_u), int(shock.conductivity_signal),
+        float(shock.beta), float(shock.alpha_u), int(shock.conductivity_signal), rows,
         acc, dudt, vsig_max,
     )  # fmt: skip
     return ForceResult(acc, dudt, vsig_max)
@@ -536,8 +561,11 @@ def gradients_reference(
 
 
 @numba.njit(parallel=True, cache=True)
-def _gradients_kernel(pos, vel, acc, mass, h, offset, index, box, kid, cnorm, div, curl, ddiv):
-    for a in numba.prange(pos.shape[0]):  # writes only to row a
+def _gradients_kernel(
+    pos, vel, acc, mass, h, offset, index, box, kid, cnorm, rows, div, curl, ddiv
+):  # fmt: skip
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
+        a = rows[q]
         rmat = np.zeros((3, 3))
         gv = np.zeros((3, 3))
         ga = np.zeros((3, 3))
@@ -562,29 +590,31 @@ def _gradients_kernel(pos, vel, acc, mass, h, offset, index, box, kid, cnorm, di
         rinv = np.linalg.inv(rmat)
         dv = gv @ rinv
         da = ga @ rinv
-        div[a] = dv[0, 0] + dv[1, 1] + dv[2, 2]
+        div[q] = dv[0, 0] + dv[1, 1] + dv[2, 2]
         c0 = dv[2, 1] - dv[1, 2]
         c1 = dv[0, 2] - dv[2, 0]
         c2 = dv[1, 0] - dv[0, 1]
-        curl[a] = np.sqrt(c0 * c0 + c1 * c1 + c2 * c2)
+        curl[q] = np.sqrt(c0 * c0 + c1 * c1 + c2 * c2)
         s = 0.0
         for i in range(3):
             for j in range(3):
                 s += dv[i, j] * dv[j, i]
-        ddiv[a] = da[0, 0] + da[1, 1] + da[2, 2] - s
+        ddiv[q] = da[0, 0] + da[1, 1] + da[2, 2] - s
 
 
 def gradients_numba(
-    pos, vel, acc, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL
+    pos, vel, acc, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL, rows=None
 ) -> Gradients:
-    """Fast twin of ``gradients_reference``."""
-    n = len(pos)
+    """Fast twin of ``gradients_reference``. ``rows``: only these particles (in that order)."""
+    rows = _rows(rows, len(pos))
+    n = len(rows)
     div, curl, ddiv = np.empty(n), np.empty(n), np.empty(n)
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
     kid = KERNEL_IDS[kernel_name]
     _gradients_kernel(
         np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
         np.ascontiguousarray(acc, float), np.ascontiguousarray(mass, float),
-        np.ascontiguousarray(h, float), nb.offset, nb.index, box, kid, C_NORM[kid], div, curl, ddiv,
+        np.ascontiguousarray(h, float), nb.offset, nb.index, box, kid, C_NORM[kid], rows,
+        div, curl, ddiv,
     )  # fmt: skip
     return Gradients(div, curl, ddiv)
