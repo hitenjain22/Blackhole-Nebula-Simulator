@@ -58,3 +58,20 @@ The plan's ISCO demo ("circular orbits at r = 6.2 and 5.8 with a 0.1% velocity n
 ## 2026-10-14: Star field look (Step 2.4; artistic, not physics)
 
 Procedural sky (no catalogue): 100,000 stars, magnitudes −1 to 8 with N(<m) ∝ 10^(0.5 m), temperatures 3,000–30,000 K (placeholder colours until Phase 9), Gaussian spots of 1.5 texels; cube map 2048² × 6 faces, rgba16float with mips, 268 MB on the GPU (plan: ≈ 270 MB). **Milky Way band included (Hiten's choice).** Brightness chosen by eye from a comparison of 0.08 / 0.6 / 15 / 40: **15** (soft glow; 40 looks foggy). Preview exposure: the 99.98th-percentile pixel luminance maps to display 0.5 (the 99th percentile over-exposed faint stars into "snow"). Final shots set exposure by keyframes (Phase 9); star brightness is an artistic multiplier, labelled in the credits (phase-09 §9.5). Building the map takes ~25 s; worth caching once videos need it.
+
+## 2026-10-14: Renderer timing and Phase 8–9 budget (Step 2.6)
+
+Star field + black hole (no gas), Iris Plus GPU, `scripts/render_benchmark.py`:
+
+| Resolution | Rays/px | GPU render | Tone map + encode (CPU) | Per frame | 2-min video (3,600 frames) |
+|---|---|---|---|---|---|
+| 1280×720 | 1 | 0.10 s | 0.41 s | 0.51 s | 31 min |
+| 1280×720 | 4 | 0.16 s | 0.46 s | 0.62 s | 37 min |
+| 1280×720 | 16 | 0.46 s | 0.30 s | 0.76 s | 46 min |
+| 1920×1080 | 1 | 0.21 s | 0.76 s | 0.97 s | 58 min |
+| 1920×1080 | 4 | 0.41 s | 0.71 s | 1.12 s | 67 min |
+| 1920×1080 | 16 | 1.02 s | 0.71 s | 1.73 s | 104 min |
+
+Slowest GPU tile 0.074 s (limit ~1 s): 256 × 256 tiles are fine. Not yet measured: 4K (~4× 1080p).
+
+**Notes.** (1) At low ray counts the CPU tone-mapping step costs more than the GPU render; moving it to the GPU (Phase 9 or 10) would cut ~0.4–0.7 s per frame. (2) Phase 8–9 estimate: the plan expects gas to make each ray ~10–50× more expensive. At 1080p, 4 rays/px that is ~4–20 s per frame of GPU time, plus < 1 s of particle deposition: a 2-minute video takes ~4–20 hours, i.e. one or two overnight renders, consistent with the plan's budget (phase-08 §8.7: ~20 s/frame, two nights).
