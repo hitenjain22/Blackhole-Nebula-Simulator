@@ -226,40 +226,90 @@ def compute_density(
 
 # --------------------------------------------------------------------------- forces
 #
-# Pressure force and P dV heating, no dissipation yet (Phantom Eqs. 34-35; Price 2012 §3):
-#     dv_i/dt = - sum_j m_j [ P_i/(Omega_i rho_i^2) grad_i W_ij(h_i)
-#                           + P_j/(Omega_j rho_j^2) grad_i W_ij(h_j) ]
-#     du_i/dt =   P_i/(Omega_i rho_i^2) sum_j m_j (v_i - v_j) . grad_i W_ij(h_i)
-# with grad_i W_ij(h) = r_hat_ij dW/dr(|r_ij|, h), r_ij = x_i - x_j. Pair terms are
-# antisymmetric, so momentum, angular momentum and total energy sum(m (v^2/2 + u)) are
-# conserved to round-off by the sums themselves.
+# Pressure force, P dV heating (Phantom Eqs. 34-35; Price 2012 §3) and, optionally, shock
+# capturing (Eqs. 39-43; formulas in physics/viscosity.py):
+#     dv_a/dt = - sum_b m_b [ (P_a + q^a_ab)/(Omega_a rho_a^2) F_ab(h_a)
+#                           + (P_b + q^b_ab)/(Omega_b rho_b^2) F_ab(h_b) ] r_hat_ab
+#     du_a/dt =   P_a/(Omega_a rho_a^2) sum_b m_b (v_ab . r_hat_ab) F_ab(h_a)
+#               - 1/(Omega_a rho_a) sum_b m_b v_sig,a 1/2 (v_ab . r_hat)^2 F_ab(h_a)   [approaching]
+#               + sum_b m_b alpha_u v^u_sig (u_a - u_b) 1/2 [F_ab(h_a)/(Omega_a rho_a)
+#                                                          + F_ab(h_b)/(Omega_b rho_b)]
+# with F_ab(h) = dW/dr(|r_ab|, h) and r_ab = x_a - x_b. Pair terms are antisymmetric (and the
+# shock heating matches the viscous work), so momentum, angular momentum and the total
+# energy sum(m (v^2/2 + u)) are conserved to round-off by the sums themselves.
+
+COND_PRESSURE = 0  # v^u_sig = sqrt(|P_a - P_b| / rho_ab)   (Price 2008; Phantom Eq. 43)
+COND_VELOCITY = 1  # v^u_sig = |v_ab . r_hat_ab|          (Phantom Eq. 44, with external forces)
+
+
+@dataclass(frozen=True)
+class ShockCapturing:
+    """Shock-capturing settings. ``None`` arrays passed to the force pass switch terms off."""
+
+    beta: float = 2.0  # physics.viscosity.BETA_AV
+    alpha_u: float = 1.0  # physics.viscosity.ALPHA_U
+    conductivity_signal: int = COND_PRESSURE
+
+
+DEFAULT_SHOCK = ShockCapturing()
 
 
 @dataclass
 class ForceResult:
     acc: np.ndarray  # (N, 3) hydro acceleration
     dudt: np.ndarray  # (N,)
+    vsig_max: np.ndarray  # (N,) largest signal speed with any neighbour (Courant condition)
 
 
-def forces_reference(pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic"):
-    """Readable reference of the pressure force and heating (one particle at a time)."""
+def forces_reference(
+    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic",
+    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
+) -> ForceResult:  # fmt: skip
+    """Readable reference (one particle at a time). Viscosity is on when ``alpha`` and ``c_s``
+    are given; conductivity when ``u`` is given as well."""
+    from nebula.physics import viscosity as visc
+
     kernel = get_kernel(kernel_name)
     n = len(pos)
-    acc, dudt = np.zeros((n, 3)), np.zeros(n)
-    for i in range(n):
-        j = nb.of(i)
-        j = j[j != i]
-        dx = minimum_image(pos[i] - pos[j], nb.box)
+    acc, dudt, vsig_max = np.zeros((n, 3)), np.zeros(n), np.zeros(n)
+    use_visc = alpha is not None and c_s is not None
+    use_cond = use_visc and u is not None
+    for a in range(n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)
         r = np.linalg.norm(dx, axis=1)
         rhat = dx / r[:, None]
-        gi = kernel.dw_dr(r, h[i])
-        gj = kernel.dw_dr(r, h[j])
-        pi = pressure[i] / (omega[i] * rho[i] ** 2)
-        pj = pressure[j] / (omega[j] * rho[j] ** 2)
-        acc[i] = -np.sum((mass[j] * (pi * gi + pj * gj))[:, None] * rhat, axis=0)
-        vdotr = np.sum((vel[i] - vel[j]) * rhat, axis=1)
-        dudt[i] = pi * np.sum(mass[j] * vdotr * gi)
-    return ForceResult(acc, dudt)
+        fa = kernel.dw_dr(r, h[a])
+        fb = kernel.dw_dr(r, h[b])
+        vdotr = np.sum((vel[a] - vel[b]) * rhat, axis=1)
+        num_a, num_b = np.full(len(b), pressure[a]), pressure[b].astype(float)
+        heat = pressure[a] / (omega[a] * rho[a] ** 2) * np.sum(mass[b] * vdotr * fa)
+        if use_visc:
+            vsig_a = visc.viscous_signal_speed(alpha[a], c_s[a], vdotr, shock.beta)
+            vsig_b = visc.viscous_signal_speed(alpha[b], c_s[b], vdotr, shock.beta)
+            num_a = num_a + visc.viscous_q(rho[a], vsig_a, vdotr)
+            num_b = num_b + visc.viscous_q(rho[b], vsig_b, vdotr)
+            approaching = vdotr < 0
+            heat -= np.sum((mass[b] * vsig_a * 0.5 * vdotr**2 * fa)[approaching]) / (
+                omega[a] * rho[a]
+            )
+            vsig_max[a] = max(np.max(vsig_a), c_s[a]) if len(b) else c_s[a]
+            if use_cond:
+                if shock.conductivity_signal == COND_PRESSURE:
+                    vu = visc.conductivity_signal_speed(pressure[a], pressure[b], rho[a], rho[b])
+                else:
+                    vu = np.abs(vdotr)
+                heat += np.sum(
+                    mass[b] * shock.alpha_u * vu * (u[a] - u[b])
+                    * 0.5 * (fa / (omega[a] * rho[a]) + fb / (omega[b] * rho[b]))
+                )  # fmt: skip
+        pair = mass[b] * (
+            num_a / (omega[a] * rho[a] ** 2) * fa + num_b / (omega[b] * rho[b] ** 2) * fb
+        )
+        acc[a] = -np.sum(pair[:, None] * rhat, axis=0)
+        dudt[a] = heat
+    return ForceResult(acc, dudt, vsig_max)
 
 
 @numba.njit(cache=True)
@@ -270,21 +320,24 @@ def _dwdr(r, h, kid, cnorm):
 
 @numba.njit(parallel=True, cache=True)
 def _forces_kernel(
-    pos, vel, mass, h, rho, omega, pressure, offset, index, box, kid, cnorm, acc, dudt
-):
-    for i in numba.prange(pos.shape[0]):  # writes only to row i
-        pi = pressure[i] / (omega[i] * rho[i] * rho[i])
+    pos, vel, mass, h, rho, omega, pressure, u, c_s, alpha, offset, index, box, kid, cnorm,
+    use_visc, use_cond, beta, alpha_u, cond_signal, acc, dudt, vsig_max,
+):  # fmt: skip
+    for a in numba.prange(pos.shape[0]):  # writes only to row a
+        inv_or_a = 1.0 / (omega[a] * rho[a])
         ax = 0.0
         ay = 0.0
         az = 0.0
-        du = 0.0
-        for k in range(offset[i], offset[i + 1]):
-            j = index[k]
-            if j == i:
+        work = 0.0
+        heat = 0.0
+        vmax = c_s[a] if use_visc else 0.0
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
                 continue
-            dx0 = pos[i, 0] - pos[j, 0]
-            dx1 = pos[i, 1] - pos[j, 1]
-            dx2 = pos[i, 2] - pos[j, 2]
+            dx0 = pos[a, 0] - pos[b, 0]
+            dx1 = pos[a, 1] - pos[b, 1]
+            dx2 = pos[a, 2] - pos[b, 2]
             if box[0] > 0.0:
                 dx0 -= box[0] * np.round(dx0 / box[0])
             if box[1] > 0.0:
@@ -295,38 +348,174 @@ def _forces_kernel(
             rx = dx0 / r
             ry = dx1 / r
             rz = dx2 / r
-            gi = _dwdr(r, h[i], kid, cnorm)
-            gj = _dwdr(r, h[j], kid, cnorm)
-            pj = pressure[j] / (omega[j] * rho[j] * rho[j])
-            f = mass[j] * (pi * gi + pj * gj)
+            fa = _dwdr(r, h[a], kid, cnorm)
+            fb = _dwdr(r, h[b], kid, cnorm)
+            vdotr = (
+                (vel[a, 0] - vel[b, 0]) * rx
+                + (vel[a, 1] - vel[b, 1]) * ry
+                + (vel[a, 2] - vel[b, 2]) * rz
+            )
+            num_a = pressure[a]
+            num_b = pressure[b]
+            if use_visc:
+                # mirrors physics.viscosity.viscous_signal_speed and viscous_q
+                vsig_a = alpha[a] * c_s[a] + beta * abs(vdotr)
+                vsig_b = alpha[b] * c_s[b] + beta * abs(vdotr)
+                if vsig_a > vmax:
+                    vmax = vsig_a
+                if vdotr < 0.0:
+                    num_a += -0.5 * rho[a] * vsig_a * vdotr
+                    num_b += -0.5 * rho[b] * vsig_b * vdotr
+                    heat -= mass[b] * vsig_a * 0.5 * vdotr * vdotr * fa * inv_or_a
+                if use_cond:
+                    # mirrors physics.viscosity.conductivity_signal_speed (or |v_ab . r_hat|)
+                    if cond_signal == 0:
+                        vu = np.sqrt(abs(pressure[a] - pressure[b]) / (0.5 * (rho[a] + rho[b])))
+                    else:
+                        vu = abs(vdotr)
+                    heat += (
+                        mass[b]
+                        * alpha_u
+                        * vu
+                        * (u[a] - u[b])
+                        * 0.5
+                        * (fa * inv_or_a + fb / (omega[b] * rho[b]))
+                    )
+            f = mass[b] * (
+                num_a / (omega[a] * rho[a] * rho[a]) * fa
+                + num_b / (omega[b] * rho[b] * rho[b]) * fb
+            )
             ax -= f * rx
             ay -= f * ry
             az -= f * rz
-            vdotr = (
-                (vel[i, 0] - vel[j, 0]) * rx
-                + (vel[i, 1] - vel[j, 1]) * ry
-                + (vel[i, 2] - vel[j, 2]) * rz
-            )
-            du += mass[j] * vdotr * gi
-        acc[i, 0] = ax
-        acc[i, 1] = ay
-        acc[i, 2] = az
-        dudt[i] = pi * du
+            work += mass[b] * vdotr * fa
+        acc[a, 0] = ax
+        acc[a, 1] = ay
+        acc[a, 2] = az
+        dudt[a] = pressure[a] * inv_or_a / rho[a] * work + heat
+        vsig_max[a] = vmax
 
 
 def forces_numba(
-    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic"
-) -> ForceResult:
-    """Fast (parallel Numba) pressure force and heating; twin of ``forces_reference``."""
+    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic",
+    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
+) -> ForceResult:  # fmt: skip
+    """Fast (parallel Numba) twin of ``forces_reference``."""
     n = len(pos)
-    acc, dudt = np.empty((n, 3)), np.empty(n)
+    acc, dudt, vsig_max = np.empty((n, 3)), np.empty(n), np.empty(n)
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
     kid = KERNEL_IDS[kernel_name]
+    use_visc = alpha is not None and c_s is not None
+    use_cond = use_visc and u is not None
+    zeros = np.zeros(n)
+
+    def arr(x):
+        return zeros if x is None else np.ascontiguousarray(x, float)
+
     _forces_kernel(
         np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
         np.ascontiguousarray(mass, float), np.ascontiguousarray(h, float),
         np.ascontiguousarray(rho, float), np.ascontiguousarray(omega, float),
-        np.ascontiguousarray(pressure, float), nb.offset, nb.index, box, kid, C_NORM[kid],
-        acc, dudt,
+        np.ascontiguousarray(pressure, float), arr(u), arr(c_s), arr(alpha),
+        nb.offset, nb.index, box, kid, C_NORM[kid], use_visc, use_cond,
+        float(shock.beta), float(shock.alpha_u), int(shock.conductivity_signal),
+        acc, dudt, vsig_max,
     )  # fmt: skip
-    return ForceResult(acc, dudt)
+    return ForceResult(acc, dudt, vsig_max)
+
+
+# --------------------------------------------------------------------------- gradients
+#
+# Velocity and acceleration gradients for the shock switch (Phantom Eqs. 51-54, after
+# Cullen & Dehnen 2010 App. B3), exact for linear fields thanks to the matrix correction:
+#     R_lj = sum_b m_b (x_b - x_a)^l dW_ab(h_a)/dx_a^j          (~ identity)
+#     G_kj = sum_b m_b (v_b - v_a)^k dW_ab(h_a)/dx_a^j  ->  dv^k/dx^j = (G R^-1)_kj
+# with dW_ab/dx_a = r_hat_ab F_ab(h_a). Then div v = trace, curl v from the antisymmetric
+# part, and d(div v)/dt = div a - sum_ij (dv^i/dx^j)(dv^j/dx^i) using the previous step's
+# accelerations a.
+
+
+@dataclass
+class Gradients:
+    div_v: np.ndarray
+    curl_v: np.ndarray  # magnitude |curl v|
+    ddivv_dt: np.ndarray
+
+
+def _gradient_scalars(dv: np.ndarray, da: np.ndarray) -> tuple[float, float, float]:
+    """(div v, |curl v|, d(div v)/dt) from gradient matrices dv[k, j] = dv^k/dx^j and da."""
+    curl = np.array([dv[2, 1] - dv[1, 2], dv[0, 2] - dv[2, 0], dv[1, 0] - dv[0, 1]])
+    return float(np.trace(dv)), float(np.linalg.norm(curl)), float(np.trace(da) - np.sum(dv * dv.T))
+
+
+def gradients_reference(pos, vel, acc, mass, h, nb: Neighbours, kernel_name="cubic") -> Gradients:
+    """Readable reference of the corrected velocity / acceleration gradients."""
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    div, curl, ddiv = np.empty(n), np.empty(n), np.empty(n)
+    for a in range(n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)  # x_a - x_b
+        r = np.linalg.norm(dx, axis=1)
+        grad = (kernel.dw_dr(r, h[a]) / r)[:, None] * dx  # dW_ab(h_a)/dx_a
+        m = mass[b][:, None, None]
+        rmat = np.sum(m * (-dx)[:, :, None] * grad[:, None, :], axis=0)
+        gv = np.sum(m * (vel[b] - vel[a])[:, :, None] * grad[:, None, :], axis=0)
+        ga = np.sum(m * (acc[b] - acc[a])[:, :, None] * grad[:, None, :], axis=0)
+        rinv = np.linalg.inv(rmat)
+        div[a], curl[a], ddiv[a] = _gradient_scalars(gv @ rinv, ga @ rinv)
+    return Gradients(div, curl, ddiv)
+
+
+@numba.njit(parallel=True, cache=True)
+def _gradients_kernel(pos, vel, acc, mass, h, offset, index, box, kid, cnorm, div, curl, ddiv):
+    for a in numba.prange(pos.shape[0]):  # writes only to row a
+        rmat = np.zeros((3, 3))
+        gv = np.zeros((3, 3))
+        ga = np.zeros((3, 3))
+        dx = np.empty(3)
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
+                continue
+            for c in range(3):
+                d = pos[a, c] - pos[b, c]
+                if box[c] > 0.0:
+                    d -= box[c] * np.round(d / box[c])
+                dx[c] = d
+            r = np.sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2])
+            g = _dwdr(r, h[a], kid, cnorm) / r
+            for i in range(3):
+                for j in range(3):
+                    gj = mass[b] * g * dx[j]
+                    rmat[i, j] -= dx[i] * gj
+                    gv[i, j] += (vel[b, i] - vel[a, i]) * gj
+                    ga[i, j] += (acc[b, i] - acc[a, i]) * gj
+        rinv = np.linalg.inv(rmat)
+        dv = gv @ rinv
+        da = ga @ rinv
+        div[a] = dv[0, 0] + dv[1, 1] + dv[2, 2]
+        c0 = dv[2, 1] - dv[1, 2]
+        c1 = dv[0, 2] - dv[2, 0]
+        c2 = dv[1, 0] - dv[0, 1]
+        curl[a] = np.sqrt(c0 * c0 + c1 * c1 + c2 * c2)
+        s = 0.0
+        for i in range(3):
+            for j in range(3):
+                s += dv[i, j] * dv[j, i]
+        ddiv[a] = da[0, 0] + da[1, 1] + da[2, 2] - s
+
+
+def gradients_numba(pos, vel, acc, mass, h, nb: Neighbours, kernel_name="cubic") -> Gradients:
+    """Fast twin of ``gradients_reference``."""
+    n = len(pos)
+    div, curl, ddiv = np.empty(n), np.empty(n), np.empty(n)
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _gradients_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
+        np.ascontiguousarray(acc, float), np.ascontiguousarray(mass, float),
+        np.ascontiguousarray(h, float), nb.offset, nb.index, box, kid, C_NORM[kid], div, curl, ddiv,
+    )  # fmt: skip
+    return Gradients(div, curl, ddiv)
