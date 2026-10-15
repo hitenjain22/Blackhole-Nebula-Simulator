@@ -81,6 +81,6 @@ def test_neighbour_numbers():
     """§4: (4 pi/3)(2 eta)^3 = 57.9058 for eta = 1.2; Phantom Table 1: 137 for C4, hfact 1.6."""
     check("cubic, eta=1.2: neighbours", 57.9058, CUBIC.expected_neighbours(1.2), rtol=1e-6)
     check("Wendland C4, eta=1.6: neighbours", 137.0, WENDLAND_C4.expected_neighbours(), atol=0.5)
-    check("get_kernel('cubic') is the default", CUBIC, get_kernel())
+    check("get_kernel() default is Wendland C4 (DECISIONS, Step 3.6)", WENDLAND_C4, get_kernel())
     with pytest.raises(ValueError):
         get_kernel("gaussian")

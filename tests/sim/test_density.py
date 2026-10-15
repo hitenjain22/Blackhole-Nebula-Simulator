@@ -4,7 +4,7 @@ import numba
 import numpy as np
 import pytest
 
-from nebula.physics.kernels import CUBIC, WENDLAND_C4
+from nebula.physics.kernels import CUBIC, WENDLAND_C4, get_kernel
 from nebula.sim.ic import fcc_lattice, smoothing_length_uniform
 from nebula.sim.kernels_nb import kernel_df, kernel_f
 from nebula.sim.neighbours import find_neighbours, minimum_image
@@ -109,8 +109,8 @@ def test_omega_matches_finite_difference(rng):
             r = np.linalg.norm(pos[nb.of(i)] - pos[i], axis=1)
             h, e = res.h[i], 1e-6 * res.h[i]
             drho = (
-                np.sum(mass[nb.of(i)] * CUBIC.w(r, h + e))
-                - np.sum(mass[nb.of(i)] * CUBIC.w(r, h - e))
+                np.sum(mass[nb.of(i)] * get_kernel().w(r, h + e))
+                - np.sum(mass[nb.of(i)] * get_kernel().w(r, h - e))
             ) / (2 * e)
             fd.append(1 + h / (3 * res.rho[i]) * drho)
         check(

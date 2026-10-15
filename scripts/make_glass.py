@@ -1,6 +1,6 @@
 """Make and store the relaxed glass (Phase 3, Step 3.4) and a picture of it.
 
-data/glass_4096.npy             4,096 particles in the periodic unit box (density noise < 1%)
+data/glass_4096.npy, glass_512.npy   relaxed glasses in the periodic unit box (noise < 1%)
 outputs/checks/glass.png        thin slice: random points vs the glass, coloured by density
 
 Run: uv run python scripts/make_glass.py
@@ -29,14 +29,14 @@ def rho_of(pos):
 
 
 def main() -> None:
-    glass, log = make_glass(N, seed=1)
-    path = glass_path(N)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, glass)
-    print(
-        f"Glass of {N} particles: {log.steps} steps, noise {log.noise[0]:.3f} -> "
-        f"{log.noise[-1]:.4f}; saved {path}"
-    )
+    for n in (512, N):
+        g, log = make_glass(n, seed=1)
+        path = glass_path(n)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(path, g)
+        print(f"Glass of {n}: {log.steps} steps, noise {log.noise[0]:.3f} -> {log.noise[-1]:.4f}")
+        if n == N:
+            glass = g
 
     random = np.random.default_rng(1).uniform(0, 1, (N, 3))
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))

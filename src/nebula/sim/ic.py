@@ -27,6 +27,7 @@ def fcc_lattice(n_cells: int, box: float = 1.0) -> np.ndarray:
     return pos
 
 
-def smoothing_length_uniform(n_particles: int, volume: float, eta: float = 1.2) -> float:
-    """h = eta (m / rho)^(1/3) = eta (V / N)^(1/3) for a uniform distribution."""
+def smoothing_length_uniform(n_particles: int, volume: float, eta: float = 1.6) -> float:
+    """h = eta (m / rho)^(1/3) = eta (V / N)^(1/3) for a uniform distribution (default eta is
+    physics.kernels.DEFAULT_ETA, the Wendland C4 value)."""
     return eta * (volume / n_particles) ** (1.0 / 3.0)

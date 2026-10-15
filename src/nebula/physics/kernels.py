@@ -12,8 +12,8 @@ Kernels (checked against Phantom Eqs. 17 and 21 on 2026-10-14):
         f(q) = (1 - q/2)^6 (35/12 q^2 + 3 q + 1)  (q < 2);  0  (q >= 2)
 Units: r and h in code lengths; W in 1/length^3. Pure functions, NumPy arrays or scalars.
 
-The kernel choice lives here only: ``get_kernel(name)``. Numba copies used inside the SPH
-kernels name the function they mirror and are tested against it.
+The kernel choice lives here only: ``get_kernel(name)``, default ``DEFAULT_KERNEL``. Numba
+copies used inside the SPH kernels name the function they mirror and are tested against it.
 """
 
 from dataclasses import dataclass
@@ -85,8 +85,14 @@ CUBIC = Kernel("cubic", 1.0 / np.pi, 1.2, cubic_f, cubic_df)
 WENDLAND_C4 = Kernel("wendland_c4", 495.0 / (256.0 * np.pi), 1.6, wendland_c4_f, wendland_c4_df)
 _KERNELS = {k.name: k for k in (CUBIC, WENDLAND_C4)}
 
+# Project default (docs/DECISIONS.md, Step 3.6): Wendland C4 with eta = 1.6 (~137 neighbours).
+# The plan's original default, the cubic spline at eta = 1.2, failed the sound-wave
+# convergence test (its glass noise floor, 0.34%, scatters small waves; Wendland: 0.13%).
+DEFAULT_KERNEL = "wendland_c4"
+DEFAULT_ETA = WENDLAND_C4.hfact
 
-def get_kernel(name: str = "cubic") -> Kernel:
+
+def get_kernel(name: str = DEFAULT_KERNEL) -> Kernel:
     """The kernel selected by name in a run config ("cubic" or "wendland_c4")."""
     try:
         return _KERNELS[name]

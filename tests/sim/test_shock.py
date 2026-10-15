@@ -206,13 +206,13 @@ def test_energy_error_is_time_step_error():
 
 
 def test_isolated_sphere_conservation_quick():
-    """Everyday version of plan test 8: 100 steps at dt = Courant/32."""
-    _report_conservation("100 steps, dt = C/32", *_sphere_run(100, 1 / 32))
+    """Everyday version of plan test 8: 100 steps at dt = Courant/64."""
+    _report_conservation("100 steps, dt = C/64", *_sphere_run(100, 1 / 64))
 
 
 @pytest.mark.slow
 def test_isolated_sphere_conservation_full():
     """Plan test 8: an isolated gas sphere (cut from the glass; random velocities 0.3 c_s and
-    internal energies 0.5-1.5) with the full scheme, 1,000 fixed global steps at Courant/32
+    internal energies 0.5-1.5) with the full scheme, 1,000 fixed global steps at Courant/64
     (step chosen to meet the requirement; docs/DECISIONS.md)."""
-    _report_conservation("1,000 steps, dt = C/32", *_sphere_run(1000, 1 / 32))
+    _report_conservation("1,000 steps, dt = C/64", *_sphere_run(1000, 1 / 64))

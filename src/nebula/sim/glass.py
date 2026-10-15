@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from nebula.physics.eos import isothermal_pressure
+from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
 from nebula.sim.ic import smoothing_length_uniform
 from nebula.sim.sph import compute_density, forces_numba
 
@@ -24,16 +25,24 @@ class GlassLog:
     noise: list[float]  # std(rho)/mean(rho) per step
 
 
-def density_noise(pos: np.ndarray, box: float = 1.0) -> float:
+def density_noise(
+    pos: np.ndarray, box: float = 1.0, kernel: str = DEFAULT_KERNEL, eta: float = DEFAULT_ETA
+) -> float:
     """std(rho)/mean(rho) of equal-mass particles in a periodic box."""
     n = len(pos)
-    h0 = np.full(n, smoothing_length_uniform(n, box**3))
-    d = compute_density(pos, np.full(n, 1.0 / n), h0, box=box)
+    h0 = np.full(n, smoothing_length_uniform(n, box**3, eta))
+    d = compute_density(pos, np.full(n, 1.0 / n), h0, box=box, kernel_name=kernel, eta=eta)
     return float(d.rho.std() / d.rho.mean())
 
 
 def make_glass(
-    n: int, seed: int = 1, target_noise: float = 0.01, max_steps: int = 2000, settle: int = 50
+    n: int,
+    seed: int = 1,
+    target_noise: float = 0.01,
+    max_steps: int = 2000,
+    settle: int = 50,
+    kernel: str = DEFAULT_KERNEL,
+    eta: float = DEFAULT_ETA,
 ) -> tuple[np.ndarray, GlassLog]:
     """Relax n random particles in the periodic unit box into a glass. Runs until the noise is
     below target_noise, then ``settle`` more steps. Returns positions in [0, 1)^3."""
@@ -41,10 +50,10 @@ def make_glass(
     pos = rng.uniform(0.0, 1.0, size=(n, 3))
     vel = np.zeros_like(pos)
     mass = np.full(n, 1.0 / n)
-    h = np.full(n, smoothing_length_uniform(n, 1.0))
+    h = np.full(n, smoothing_length_uniform(n, 1.0, eta))
     noise, below = [], None
     for step in range(max_steps):
-        d = compute_density(pos, mass, h, box=1.0)
+        d = compute_density(pos, mass, h, box=1.0, kernel_name=kernel, eta=eta)
         h = d.h
         noise.append(float(d.rho.std() / d.rho.mean()))
         if below is None and noise[-1] < target_noise:
@@ -52,7 +61,15 @@ def make_glass(
         if below is not None and step >= below + settle:
             break
         f = forces_numba(
-            pos, vel, mass, d.h, d.rho, d.omega, isothermal_pressure(d.rho, 1.0), d.neighbours
+            pos,
+            vel,
+            mass,
+            d.h,
+            d.rho,
+            d.omega,
+            isothermal_pressure(d.rho, 1.0),
+            d.neighbours,
+            kernel,
         )
         dt = 0.2 * h.min()  # Courant step for sound speed 1
         vel = (vel + dt * f.acc) * 0.8  # strong damping: the particles settle, they do not ring

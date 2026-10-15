@@ -21,6 +21,7 @@ import numpy as np
 
 from nebula.physics import viscosity as visc
 from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed, isothermal_pressure
+from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
 from nebula.sim.sph import (
     COND_PRESSURE,
     ShockCapturing,
@@ -34,8 +35,8 @@ from nebula.sim.sph import (
 class HydroConfig:
     gamma: float = 5.0 / 3.0
     isothermal_cs: float | None = None  # if set: P = c_s^2 rho, u not evolved
-    kernel: str = "cubic"
-    eta: float = 1.2
+    kernel: str = DEFAULT_KERNEL
+    eta: float = DEFAULT_ETA
     box: tuple | None = None  # periodic box lengths, or None (open)
     h_max: float = np.inf
     courant: float = 0.3

@@ -24,3 +24,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# Claude Code session files
+.claude/*.lock

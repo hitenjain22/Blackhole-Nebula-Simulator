@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import numba
 import numpy as np
 
-from nebula.physics.kernels import get_kernel
+from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL, get_kernel
 from nebula.sim.kernels_nb import C_NORM, KERNEL_IDS, kernel_df, kernel_f
 from nebula.sim.neighbours import Neighbours, find_neighbours, minimum_image
 
@@ -60,8 +60,8 @@ def density_reference(
     h_start,
     nb: Neighbours,
     h_search,
-    kernel_name="cubic",
-    eta=1.2,
+    kernel_name=DEFAULT_KERNEL,
+    eta=DEFAULT_ETA,
     tol=1e-4,
     h_max=np.inf,
 ) -> DensityResult:
@@ -183,8 +183,8 @@ def density_numba(
     h_start,
     nb: Neighbours,
     h_search,
-    kernel_name="cubic",
-    eta=1.2,
+    kernel_name=DEFAULT_KERNEL,
+    eta=DEFAULT_ETA,
     tol=1e-4,
     h_max=np.inf,
 ) -> DensityResult:
@@ -204,7 +204,15 @@ def density_numba(
 
 
 def compute_density(
-    pos, mass, h_guess, box=None, kernel_name="cubic", eta=1.2, tol=1e-4, h_max=np.inf, skin=1.25
+    pos,
+    mass,
+    h_guess,
+    box=None,
+    kernel_name=DEFAULT_KERNEL,
+    eta=DEFAULT_ETA,
+    tol=1e-4,
+    h_max=np.inf,
+    skin=1.25,
 ) -> DensityResult:
     """Density pass with automatic neighbour lists: search radius 2 h_guess x skin; particles
     whose h grows past it are redone with larger lists (at most 8 rounds)."""
@@ -262,7 +270,7 @@ class ForceResult:
 
 
 def forces_reference(
-    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic",
+    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name=DEFAULT_KERNEL,
     u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
 ) -> ForceResult:  # fmt: skip
     """Readable reference (one particle at a time). Viscosity is on when ``alpha`` and ``c_s``
@@ -397,7 +405,7 @@ def _forces_kernel(
 
 
 def forces_numba(
-    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic",
+    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name=DEFAULT_KERNEL,
     u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
 ) -> ForceResult:  # fmt: skip
     """Fast (parallel Numba) twin of ``forces_reference``."""
@@ -448,7 +456,9 @@ def _gradient_scalars(dv: np.ndarray, da: np.ndarray) -> tuple[float, float, flo
     return float(np.trace(dv)), float(np.linalg.norm(curl)), float(np.trace(da) - np.sum(dv * dv.T))
 
 
-def gradients_reference(pos, vel, acc, mass, h, nb: Neighbours, kernel_name="cubic") -> Gradients:
+def gradients_reference(
+    pos, vel, acc, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL
+) -> Gradients:
     """Readable reference of the corrected velocity / acceleration gradients."""
     kernel = get_kernel(kernel_name)
     n = len(pos)
@@ -507,7 +517,9 @@ def _gradients_kernel(pos, vel, acc, mass, h, offset, index, box, kid, cnorm, di
         ddiv[a] = da[0, 0] + da[1, 1] + da[2, 2] - s
 
 
-def gradients_numba(pos, vel, acc, mass, h, nb: Neighbours, kernel_name="cubic") -> Gradients:
+def gradients_numba(
+    pos, vel, acc, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL
+) -> Gradients:
     """Fast twin of ``gradients_reference``."""
     n = len(pos)
     div, curl, ddiv = np.empty(n), np.empty(n), np.empty(n)

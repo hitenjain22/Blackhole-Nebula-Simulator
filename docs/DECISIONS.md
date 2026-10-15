@@ -83,3 +83,15 @@ Slowest GPU tile 0.074 s (limit ~1 s): 256 × 256 tiles are fine. Not yet measur
 **Plan test 8** (isolated box, full scheme, energy < 10⁻⁶ over 1,000 fixed steps). The equations conserve energy exactly at every instant (measured 7 × 10⁻¹⁸ relative); what remains is the second-order time-stepping error of the kick-drift-kick integrator with predicted velocities, falling 3.8× per halving of dt. Setup: an isolated sphere cut from the glass (738 particles), random velocities 0.3 c_s, u in 0.5–1.5. Max |ΔE/E| over 1,000 steps: 2.1 × 10⁻⁶ at dt = Courant/16 (fails), **5.0 × 10⁻⁷ at Courant/32 (passes)**. Chosen: Courant/32 for this test. Caveat: 1,000 such steps cover the time of ~31 normal steps. Production runs use Phase 4's block steps and their own ledger tests (phase-04 test 4).
 
 **Open for Phase 4/5 (rule 7, to agree with Hiten):** Phantom uses a different conductivity signal speed when external forces act (|v_ab · r̂_ab|, its Eq. 44, after Wadsley et al. 2008) because the pressure-based one conducts heat spuriously in hydrostatic gas held up by gravity. Both are implemented (`COND_PRESSURE`, `COND_VELOCITY`); Phase 3 tests use the plan's pressure-based form.
+
+## 2026-10-14: Default SPH kernel changed to Wendland C4 (Step 3.6; Hiten's decision)
+
+**What the plan said:** cubic spline, η = 1.2 (≈ 58 neighbours) by default; Wendland C4 "as an alternative selected by config" (phase-03 §3.1).
+
+**What happened:** plan test 4 (sound wave, amplitude 10⁻⁴, on a relaxed glass) requires the L1 error to decrease with resolution. With the cubic spline it did not: slice-averaged L1 6.2% at 32 particles per wavelength, 7.7% at 64. Diagnosis: (1) the loss is not time-step error (halving dt changed nothing) and not dissipation (≈ 6% height loss per period with viscosity and conductivity both off); (2) on a regular lattice the same wave keeps its height (99.3% → 99.9%), so it is scattering by the glass's disorder; (3) the cubic-spline glass cannot be relaxed below a noise floor of 0.34% (50, 400 or 1,500 extra settling steps: 0.34–0.39%), 34× the wave's amplitude. This is SPH's known resolution-independent ("E0") error, which depends on neighbour number, not particle count.
+
+**Wendland C4, η = 1.6 (≈ 137 neighbours):** glass noise floor 0.13%; L1 2.3% → 1.3% (32 → 64 per wavelength; decreasing, as required); phase error 0.32% → 0.17% (limit 1%). Cost: ≈ 2.4× more neighbour pairs per step.
+
+**Decision (Hiten, 2026-10-14):** Wendland C4 with η = 1.6 is the project default (`physics.kernels.DEFAULT_KERNEL`). Both glasses in `data/` were regenerated with it (noise 0.13%). The cubic spline stays available by name. The Sod shock tube passed with the cubic spline (plateaus within 1.5%) and is re-run with Wendland C4.
+
+**Update to the Step 3.5 energy test after the kernel change (2026-10-14):** with Wendland C4 (larger h, so a longer Courant step) and the regenerated glass, the 1,000-step test gave max |ΔE/E| = 1.16 × 10⁻⁶ at Courant/32 (fails) and **2.6 × 10⁻⁷ at Courant/64 (passes)**; the step is now Courant/64. Same caveat as before: the equations conserve energy to round-off; this test bounds the time-stepping error only.
