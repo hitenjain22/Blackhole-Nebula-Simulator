@@ -60,10 +60,7 @@ def run_items(
     For small jobs (tests, lookup tables); images go through ``run_tiled``-style tiling.
     """
     device = get_device()
-    module = device.create_shader_module(code=shader_code)
-    pipeline = device.create_compute_pipeline(
-        layout="auto", compute={"module": module, "entry_point": "main"}
-    )
+    pipeline = get_pipeline(shader_code)
     usage = wgpu.BufferUsage
     uni = device.create_buffer_with_data(
         data=uniform + bytes(-len(uniform) % 16), usage=usage.UNIFORM
@@ -102,15 +99,41 @@ class TileTimings:
         return sum(self.per_tile)
 
 
-def run_tiled(
-    shader_code: str, width: int, height: int, tile: int = 256
-) -> tuple[np.ndarray, TileTimings]:
-    """Run a compute shader over a width x height image in tiles; return (H, W, 4) float32."""
-    device = get_device()
-    module = device.create_shader_module(code=shader_code)
-    pipeline = device.create_compute_pipeline(
-        layout="auto", compute={"module": module, "entry_point": "main"}
+_PIPELINES: dict[str, wgpu.GPUComputePipeline] = {}
+
+
+def get_pipeline(shader_code: str) -> wgpu.GPUComputePipeline:
+    """Compiled compute pipeline for this WGSL source, cached (compiling takes ~0.3 s)."""
+    if shader_code not in _PIPELINES:
+        device = get_device()
+        module = device.create_shader_module(code=shader_code)
+        _PIPELINES[shader_code] = device.create_compute_pipeline(
+            layout="auto", compute={"module": module, "entry_point": "main"}
+        )
+    return _PIPELINES[shader_code]
+
+
+def uniform_buffer(data: bytes) -> wgpu.GPUBuffer:
+    """A uniform buffer holding ``data`` (padded to a multiple of 16 bytes)."""
+    return get_device().create_buffer_with_data(
+        data=data + bytes(-len(data) % 16), usage=wgpu.BufferUsage.UNIFORM
     )
+
+
+def run_tiled(
+    shader_code: str,
+    width: int,
+    height: int,
+    tile: int = 256,
+    extra: list[dict] | None = None,
+) -> tuple[np.ndarray, TileTimings]:
+    """Run a compute shader over a width x height image in tiles; return (H, W, 4) float32.
+
+    ``extra``: further bind-group entries (binding >= 2), e.g. a camera uniform buffer or a
+    texture view and sampler, shared by all tiles.
+    """
+    device = get_device()
+    pipeline = get_pipeline(shader_code)
     out_buf = device.create_buffer(
         size=tile * tile * 16, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
     )
@@ -122,6 +145,7 @@ def run_tiled(
         entries=[
             {"binding": 0, "resource": {"buffer": uni_buf}},
             {"binding": 1, "resource": {"buffer": out_buf}},
+            *(extra or []),
         ],
     )
     image = np.empty((height, width, 4), dtype=np.float32)
