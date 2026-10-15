@@ -50,3 +50,7 @@ Requirement (phase-01 Step 1.4, test 4): over 3 radial periods of the cloud orbi
 | **0.00125** | 41,155 | **6.4 × 10⁻⁵** ✓ | 5.1 × 10⁻⁷ | 5.6 × 10⁻⁷ | 24.0398° |
 
 The plan's "η = 0.005 gave 4 × 10⁻⁵" was the end-of-run value; the maximum is 25× larger. Relative to |H| the error is amplified because the orbit is nearly parabolic (|H| = 2 × 10⁻⁴ while the potential at pericentre is 0.04). **Chosen: η_orb = 0.00125** (also the value Phase 4's ledger test already specifies). Consequence: ~13,700 orbit steps per radial orbit per particle instead of the ~3,400 the plan assumed; Phase 4–7 cost estimates must use this. Option to revisit in Phase 4 (via rule 7, with tests): time-symmetric step selection (Hut, Makino & McMillan 1995), which may allow a larger η. Fixed-step tests use η = 0.02 for the circular orbit (plan's reference value; max |ΔH/H| 5.6 × 10⁻⁹ over 1,000 orbits).
+
+## 2026-10-14: ISCO demo uses a radial push, not a slow-down (Step 1.5)
+
+The plan's ISCO demo ("circular orbits at r = 6.2 and 5.8 with a 0.1% velocity nudge") doesn't say which way to nudge. A 0.1% slow-down makes **both** particles plunge: it lowers L² below 12, the minimum for any circular orbit (r = 6.2: L² 12.0125 → 11.9885), so the stable "valley" outside r = 6 disappears. Used instead: the same small inward radial push for both (radial velocity 0.1% of the orbital speed, L unchanged). Result: r = 6.2 oscillates between 6.165 and 6.234 to t = 2,500; r = 5.8 plunges at t ≈ 320. The plot title states the push.
