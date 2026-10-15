@@ -27,7 +27,7 @@ def render(
     n_sub: int = 4,
     sky_params=(0.0, 0.0),
     extra: list[dict] | None = None,
-    shader: str = "render_sky.wgsl",
+    shader: str = "render_grid.wgsl",
     tile: int = 256,
 ) -> tuple[np.ndarray, TileTimings]:
     """Render one HDR frame: (H, W, 4) float32 = linear RGB + fraction of sub-rays captured.
@@ -35,7 +35,11 @@ def render(
     cam_buf = uniform_buffer(camera.uniform_bytes(n_sub, mode, sky_params))
     entries = [{"binding": 2, "resource": {"buffer": cam_buf}}, *(extra or [])]
     return run_tiled(
-        load_shader("schw_ray.wgsl", shader), camera.width, camera.height, tile, entries
+        load_shader("schw_ray.wgsl", "camera_rays.wgsl", shader),
+        camera.width,
+        camera.height,
+        tile,
+        entries,
     )
 
 

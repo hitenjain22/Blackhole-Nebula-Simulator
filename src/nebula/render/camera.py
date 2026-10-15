@@ -5,7 +5,7 @@ aberration, which is added later only if a shot needs it, with a test). Viewing 
 are unit vectors in the static observer's own orthonormal frame, whose axes are aligned
 with the coordinate x, y, z directions; the ray tracer turns them into impact parameters
 (physics/geodesics.py). The WGSL copy of ``directions`` is ``pixel_dir`` in
-shaders/render_sky.wgsl (tested against it).
+shaders/camera_rays.wgsl (tested against it).
 
 Image convention: pixel (i, j) has column i (0 = left) and row j (0 = top); continuous pixel
 coordinates run from 0 to width / height, so pixel centres are at i + 0.5, j + 0.5.
@@ -15,11 +15,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Render modes understood by shaders/render_sky.wgsl.
+# Render modes understood by shaders/camera_rays.wgsl and its entry shaders.
 MODE_FLAT_GNOMONIC_GRID = 0  # straight rays, grid of straight lines on the sky (camera test)
 MODE_HOLE_LATLONG_GRID = 1  # bent rays, latitude-longitude grid on the sky
 MODE_FLAT_LATLONG_GRID = 2  # straight rays, latitude-longitude grid
 MODE_HOLE_STARS = 3  # bent rays, star-field cube map (Step 2.4)
+MODE_FLAT_STARS = 4  # straight rays, star-field cube map
 MODE_DEBUG_DIRECTION = 10  # output the world direction of the pixel centre
 MODE_DEBUG_GNOMONIC = 11  # output (d_x/d_z, d_y/d_z, d_z) of the pixel centre, straight rays
 
@@ -87,7 +88,7 @@ class Camera:
         return (x + 1.0) * self.width / 2.0, (1.0 - y) * self.height / 2.0
 
     def uniform_bytes(self, n_sub: int, mode: int, sky_params=(0.0, 0.0)) -> bytes:
-        """The ``Camera`` uniform of shaders/render_sky.wgsl: n_sub x n_sub sub-rays per
+        """The ``Camera`` uniform of shaders/camera_rays.wgsl: n_sub x n_sub sub-rays per
         pixel on a fixed stratified pattern; ``sky_params`` are mode-specific."""
         f32 = np.zeros(20, dtype=np.float32)
         f32[0:3] = self.position
@@ -101,7 +102,7 @@ class Camera:
 
 def sub_pixel_offsets(n_sub: int) -> np.ndarray:
     """The fixed n_sub x n_sub stratified sub-ray pattern, offsets in [0, 1)^2 (same every
-    frame, so nothing flickers). Mirrors the loop in shaders/render_sky.wgsl."""
+    frame, so nothing flickers). Mirrors the sub-ray loops of the entry shaders."""
     k = (np.arange(n_sub) + 0.5) / n_sub
     a, b = np.meshgrid(k, k, indexing="xy")
     return np.column_stack([a.ravel(), b.ravel()])

@@ -48,7 +48,7 @@ def test_camera_basis():
 
 
 def test_gpu_directions_match_python():
-    """GPU pixel_dir (render_sky.wgsl) vs Camera.directions, randomly oriented camera."""
+    """GPU pixel_dir (camera_rays.wgsl) vs Camera.directions, randomly oriented camera."""
     cam = Camera(
         position=(17.0, -31.0, 9.0),
         look_at=(3, 2, -1),

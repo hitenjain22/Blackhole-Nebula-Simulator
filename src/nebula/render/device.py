@@ -53,6 +53,7 @@ def run_items(
     n_items: int,
     out_item_bytes: int,
     workgroup: int = 64,
+    extra: list[dict] | None = None,
 ) -> bytes:
     """Run a compute shader once per item (see the module docstring for the binding layout)
     and return the raw output buffer (n_items * out_item_bytes bytes).
@@ -73,6 +74,7 @@ def run_items(
         entries.append({"binding": k, "resource": {"buffer": buf}})
     out = device.create_buffer(size=n_items * out_item_bytes, usage=usage.STORAGE | usage.COPY_SRC)
     entries.append({"binding": len(inputs) + 1, "resource": {"buffer": out}})
+    entries.extend(extra or [])  # e.g. a texture view and sampler at the next bindings
     bind_group = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=entries)
     encoder = device.create_command_encoder()
     cpass = encoder.begin_compute_pass()
