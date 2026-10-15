@@ -328,25 +328,24 @@ class CubeMap:
         return texels * 8  # rgba16float
 
 
-def build_cube_map(cfg: StarFieldConfig | None = None) -> CubeMap:
-    cfg = cfg or StarFieldConfig()
-    size = cfg.face_size
-    stars = generate_stars(cfg)
+def _deposit_stars(direction, rgb_flux, size: int, sigma_texels: float) -> np.ndarray:
+    """Radiance faces (6, size, size, 3) float64 of Gaussian star spots, each star's light
+    exactly conserved (weights normalized over all faces)."""
     omega = texel_solid_angles(size)
-    texel_angle = np.pi / 2 / size
-    sigma = cfg.star_sigma_texels * texel_angle
-    radius = int(np.ceil(4 * cfg.star_sigma_texels)) + 1
-    total_w = np.zeros(len(stars.flux))
+    sigma = sigma_texels * np.pi / 2 / size
+    radius = int(np.ceil(4 * sigma_texels)) + 1
+    total_w = np.zeros(len(direction))
     for face in range(6):
-        total_w += _weights_one_face(stars.direction, face, size, sigma, radius, omega)
-    scaled = stars.rgb / total_w[:, None]
+        total_w += _weights_one_face(direction, face, size, sigma, radius, omega)
+    scaled = rgb_flux / total_w[:, None]
     faces = np.zeros((6, size, size, 3), dtype=np.float64)
     for face in range(6):
-        _deposit(faces[face], stars.direction, scaled, face, size, sigma, radius, omega)
-    if cfg.band:
-        mean_radiance = stars.flux.sum() / (4 * np.pi)
-        for face in range(6):
-            faces[face] += band_radiance(texel_directions(face, size), cfg, mean_radiance)
+        _deposit(faces[face], direction, scaled, face, size, sigma, radius, omega)
+    return faces
+
+
+def _finish(faces: np.ndarray, total_flux: float) -> CubeMap:
+    """Scale to PEAK_VALUE, convert to float32 and build the mip chain (2x2 box averages)."""
     scale = faces.max() / PEAK_VALUE
     faces = (faces / scale).astype(np.float32)
     mips = []
@@ -355,7 +354,30 @@ def build_cube_map(cfg: StarFieldConfig | None = None) -> CubeMap:
         s = level.shape[1] // 2
         level = level.reshape(6, s, 2, s, 2, 3).mean(axis=(2, 4)).astype(np.float32)
         mips.append(level)
-    return CubeMap(faces, mips, float(scale), float(stars.flux.sum()))
+    return CubeMap(faces, mips, float(scale), float(total_flux))
+
+
+def build_cube_map(cfg: StarFieldConfig | None = None) -> CubeMap:
+    """The procedural sky of ``cfg``: stars plus (optionally) the Milky Way band."""
+    cfg = cfg or StarFieldConfig()
+    size = cfg.face_size
+    stars = generate_stars(cfg)
+    faces = _deposit_stars(stars.direction, stars.rgb, size, cfg.star_sigma_texels)
+    if cfg.band:
+        mean_radiance = stars.flux.sum() / (4 * np.pi)
+        for face in range(6):
+            faces[face] += band_radiance(texel_directions(face, size), cfg, mean_radiance)
+    return _finish(faces, stars.flux.sum())
+
+
+def single_star_cube_map(direction, sigma_deg: float, face_size: int = 512) -> CubeMap:
+    """A black sky with one white Gaussian star (angular sigma in degrees) in ``direction``:
+    the light source for the Einstein-ring validation image (phase-02 Step 2.5)."""
+    d = np.asarray(direction, float)[None, :]
+    d /= np.linalg.norm(d)
+    sigma_texels = np.radians(sigma_deg) / (np.pi / 2 / face_size)
+    faces = _deposit_stars(d, np.ones((1, 3)), face_size, sigma_texels)
+    return _finish(faces, 1.0)
 
 
 # --------------------------------------------------------------------------- GPU
