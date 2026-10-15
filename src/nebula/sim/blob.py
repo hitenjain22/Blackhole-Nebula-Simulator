@@ -58,12 +58,14 @@ def _errors(led, led0):
     )
 
 
-def hot_blob(eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False):
+def hot_blob(
+    eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False, **hydro_kw
+):
     """Returns a dict: t, energy and angular-momentum error series, max of each, the largest u
     reached, the lowest particle angular momentum and largest h seen (the blob must stay a
     blob), and the number of steps (particle-steps for block steps)."""
     cc = CoupledConfig(
-        hydro=HydroConfig(courant=courant, conductivity_signal=coupled.COND_VELOCITY),
+        hydro=HydroConfig(courant=courant, conductivity_signal=coupled.COND_VELOCITY, **hydro_kw),
         eta_orb=eta_orb,
         wrong_coupling=wrong,
     )

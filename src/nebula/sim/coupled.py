@@ -32,10 +32,10 @@ from nebula.sim.integrator import glf_step_many
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
     COND_VELOCITY,
-    ShockCapturing,
     compute_density,
     forces_numba,
     gradients_numba,
+    velocity_gradients_numba,
 )
 
 
@@ -94,11 +94,16 @@ def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasS
         alpha = visc.alpha_update(alpha, a_loc, dt_alpha, visc.decay_time(d.h, cs))
     elif hc.viscosity and not hc.switch:
         alpha = np.full(len(st.x), hc.alpha_const)
+    shock = hc.shock()
+    grad_v = (
+        velocity_gradients_numba(st.x, v, st.mass, d.h, nb, hc.kernel)
+        if shock.reconstruction
+        else None
+    )
     f = forces_numba(
         st.x, v, st.mass, d.h, d.rho, d.omega, p_gas, nb, hc.kernel,
         u=st.u if hc.conductivity else None, c_s=cs if hc.viscosity else None,
-        alpha=alpha if hc.viscosity else None,
-        shock=ShockCapturing(hc.beta, hc.alpha_u, hc.conductivity_signal),
+        alpha=alpha if hc.viscosity else None, shock=shock, grad_v=grad_v,
     )  # fmt: skip
     return replace(
         st, h=d.h, alpha=alpha, a_hydro=f.acc, dudt=f.dudt, rho=d.rho, c_s=cs,

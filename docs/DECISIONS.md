@@ -189,3 +189,39 @@ Standing guidance from Hiten: take as long as needed (days or weeks) to find and
 - **D9** approved: keep Wendland C4, η = 1.6 (the cubic spline's particle fell in even earlier, review run H).
 - **D11** approved: fix the gradient-pass crash when the correction matrix is near-singular (h_max capped, too few neighbours): fall back to the uncorrected gradient.
 - D3 (resolution) and D10 (speed-up) follow from the runs below: 10k radius-25 with D2 and swallowing, then 50k overnight, temperatures at closest approach compared with the gravity-only ceiling (radius 25: typical ~2 × 10⁻⁸, hottest 1% ~1–3 × 10⁻⁶).
+
+## 2026-10-15: D2 implemented: velocity reconstruction in the viscosity, with a continuous gate (please review the gate)
+
+**What was built** (`physics/viscosity.py`, `sim/sph.py`): the pair's velocity jump is reconstructed to the midpoint with each particle's corrected velocity gradient and the van Leer limiter with the closeness factor (Frontiere, Raskin & Owen 2017 Eqs. 48–53 = the linear part of Rosswog 2020 MAGMA2 Eqs. 17, 21–23, both read from the papers; η_crit = 1/hfact = 0.625, η_fold = 0.2). A readable reference and a Numba version agree to 10⁻¹²; the readable formulas live in `physics/viscosity.py`. On by default (`HydroConfig.reconstruction`). In a smooth supersonic squeeze it removes the viscous heating (2.8 × 10⁻² → 1.6 × 10⁻¹⁹ without the closeness factor, 2.2 × 10⁻⁵ with it); pair forces stay antisymmetric (momentum, angular momentum and energy conserved to round-off).
+
+**The gate: this project's choice, not the papers'.** Which velocity jump drives the viscous pressure q:
+- the review's prototype used the reconstructed jump only when both the reconstructed and the actual jump say "approaching". q then snaps off when the actual jump crosses zero. On block steps (pair forces act at different times) this made the angular-momentum drift fall only **1.90×** per halving (the check needs ≥ 3×; reproduced here exactly as in the review);
+- MAGMA2's own gate (reconstructed jump only) is continuous but allows negative viscous heating, and in the block-step blob it **drove one particle's internal energy below zero** (run stopped);
+- **chosen: the "min-mod" gate**, μ = max(reconstructed, actual) when both are approaching, else 0: the less compressive of the two. It is continuous, never heats negatively, and never gives more viscosity than the plain form. Block-step blob: energy 1.63 × 10⁻⁵ → 4.06 × 10⁻⁶ (ratio 4.01), **angular momentum 1.49 × 10⁻¹⁰ → 2.6 × 10⁻¹¹ (ratio 5.7)**, 12× smaller than the plain viscosity's 3.1 × 10⁻¹⁰. So the review's stop condition (cannot reach 3×) did not arise. All three gates remain selectable (`ShockCapturing.recon_gate`) for the record.
+
+**D11 implemented:** a near-singular correction matrix (fewer than 4 neighbours, or |det R| < 10⁻⁶ (tr R/3)³) falls back to the uncorrected gradient G/(tr R/3) in both gradient passes (switch and reconstruction), instead of crashing. Results elsewhere are bit-identical.
+
+**D4 recorded (scenario change, approved by Hiten):** the cloud radius becomes 25 (was 100). Expected values that scale with the radius (tidal energy spread ±R/r_a², arrival-time spread ~21,800, expansion before pericentre) were computed for radius 100 in expected-values §2/§2b and are not changed; for radius 25 they scale down ~4× and are reported, not tested, until recomputed with a reference script. The 1k cloud is a smoke test only (D1).
+
+**D6 implemented** (`sim/accretion.py`): particles inside r_acc = 4 are removed at the end of their own step (their state is then true, not predicted); mass, m(H + u), m(x × p) and m p go into a removed ledger that `blocks.ledger` adds back. The removal is exact (totals unchanged to 10⁻¹⁴); a plunge on the first approach is flagged (the plan's alarm). **D5 implemented** (`sim/diagnostics.py`): matches the review's across-the-hole numbers exactly on run C. Run folders, manifests and 15-minute checkpoints: `sim/runio.py`, `scripts/cloud_run.py` (resume is bit-identical).
+
+**Hiten's approval of the min-mod gate (2026-10-15), conditional.** Our own choice, not from Frontiere et al. 2017 or Rosswog 2020:
+
+    μ_ab = max(v*_ab · r̂_ab, v_ab · r̂_ab)   if both are negative (approaching), else 0
+    q_a = −½ ρ_a v_sig,a μ_ab,   v_sig,a = α_a c_s,a + β |μ_ab|
+    du_a/dt (shock heating) = −Σ_b m_b v_sig,a ½ μ_ab (v_ab · r̂_ab) F_ab(h_a) / (Ω_a ρ_a)
+
+where v*_ab is the reconstructed jump (Frontiere Eqs. 48–53). Reason: q must change smoothly with time for the block-step angular-momentum error to shrink as fast as the steps (q switching off abruptly gave 1.9× per halving; this gives 5.7×), must never heat negatively (MAGMA2's gate drove a particle's u below 0), and should never exceed the plain viscosity. Approved on two conditions; if either fails, stop and tell Hiten: (1) the full slow suite passes with tolerances unchanged; (2) the 10k radius-25 run matches the review: 0 swallowed, lowest L about 5, 0% of pairs across the hole, typical gas near the hole about 1.5 × 10⁻⁶.
+
+## 2026-10-15: Hiten's decisions on the Phase 5/6 update list
+
+1. **Phase 6 runs use 10k, not 1k** (R6.1, R6.3a–d, R6.4, R6.5). 1k stays a smoke test only (D1).
+2. **Snapshots follow Phase 10.2a's rule from Phase 5 on**: Δt_snap = clamp(T_orb(r_med)/40, 10, 10⁴), T_orb(r) = 2π r^(3/2), r_med = median radius of the gas inside r = 2,000 (all gas if none), plus event snapshots.
+3. **Shock marker:** the viscous heating rate after reconstruction replaces "α_AV > 0.5" (the switch's α is ~1 for all the cold gas and no longer marks shocks).
+4. After the slow suite passes: update the Phase 5 and 6 files for the other items of the list; no existing expected value is changed.
+5. **On hold until Hiten picks the Phase 6 cloud size** (review §7: first crash vs radius; a radius-50 test is running in the review session): the crash timing, a new expected-values table, the tidal-spread check and the scenario-knob note.
+6. The 10k radius-25 run goes ahead once the suite passes (it is the check of D2 against the review). The updated review (with §7 and `crash_by_radius.py`) replaced the old copy.
+
+## 2026-10-15: Gresho test baseline after D2 (Hiten approved the recommended option)
+
+With D2 the low-resolution Gresho ratio (switch / constant α = 1) came out at 0.713 against the 0.70 limit, although both errors fell: constant α = 1 from 0.255 to 0.174, the switch from 0.143 to 0.124 (review: 0.123). Reconstruction removes most of the viscosity in the vortex's smooth shear even at α = 1, so the comparison run improved most. That is expected from the sources: Frontiere et al. 2017 find their limited viscosity, without a switch, preserves the Gresho vortex best ("the dominant effect"), and Rosswog 2020 runs every test with α = 1 plus reconstruction. **Decision:** the yardstick stays the *standard* scheme (constant α = 1, no reconstruction), as in the plan's wording; the 0.70 limit is unchanged; and a new check requires that reconstruction does not make the vortex worse (switch + reconstruction ≤ switch alone). Cross-check of the implementation against open source: PySPH's MAGMA2 module has the same midpoint reconstruction, limiter, closeness factor and raw-velocity heating; the differences are its optional second-derivative term and its published gate (ours: min-mod, approved above with conditions).

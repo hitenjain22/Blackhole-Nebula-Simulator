@@ -47,10 +47,16 @@ import numpy as np
 from nebula.physics import viscosity as visc
 from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed
 from nebula.physics.gravity import gn_angmom, gn_hamiltonian, gn_p_from_v, gn_v_from_p
+from nebula.sim.accretion import RemovedLedger, record_removal
 from nebula.sim.coupled import CoupledConfig
 from nebula.sim.integrator import glf_step_many
 from nebula.sim.neighbours import Neighbours, tighten
-from nebula.sim.sph import ShockCapturing, compute_density, forces_numba, gradients_numba
+from nebula.sim.sph import (
+    compute_density,
+    forces_numba,
+    gradients_numba,
+    velocity_gradients_numba,
+)
 from nebula.sim.timesteps import K_MAX, allowed_level, level_for_dt, ticks
 
 
@@ -61,6 +67,7 @@ class BlockConfig:
     limiter: bool = True  # neighbour level limiter and wake-up (Step 4.4)
     max_gap: int = 2  # neighbouring levels differ by at most this (factor 4)
     hydro: bool = True  # False: gravity only (plan test 1; no density or forces)
+    r_acc: float | None = None  # swallowing radius (sim/accretion.py; Phase 5: 4.0)
 
 
 @dataclass
@@ -93,6 +100,13 @@ class BlockState:
     woken: int = 0  # wake-ups so far
     last_pairs: object = field(default=None)  # interacting pairs of the last active set
     timers: dict = field(default_factory=lambda: {"flow": 0.0, "hydro": 0.0, "levels": 0.0})
+    # identity and history for swallowing (sim/accretion.py)
+    ids: np.ndarray = field(default=None)  # original particle numbers
+    r0: np.ndarray = field(default=None)  # starting radius
+    L0: np.ndarray = field(default=None)  # starting |angular momentum|
+    vr_neg: np.ndarray = field(default=None)  # radial velocity < 0 at the last active time
+    passed_peri: np.ndarray = field(default=None)  # has turned outward near the hole
+    removed: RemovedLedger = field(default_factory=RemovedLedger)
 
     @property
     def t(self) -> float:
@@ -182,11 +196,20 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
         )
     elif hc.viscosity and not hc.switch:
         alpha[rows] = hc.alpha_const
+    shock = hc.shock()
+    grad_v = None
+    if shock.reconstruction:
+        # gradients of the rows and of all their neighbours at the current time (like their
+        # densities: stale neighbour gradients would make the pair's reconstruction differ
+        # between a's and b's steps); full lists from the (valid) neighbour cache
+        touched = _with_neighbours(nb, rows, len(st.x))
+        grad_v = velocity_gradients_numba(
+            st.x, v, st.mass, h, st.neighbour_cache.neighbours, hc.kernel, rows=touched
+        )
     f = forces_numba(
         st.x, v, st.mass, h, rho, omega, p_gas, nb, hc.kernel,
         u=u if hc.conductivity else None, c_s=cs if hc.viscosity else None,
-        alpha=alpha if hc.viscosity else None,
-        shock=ShockCapturing(hc.beta, hc.alpha_u, hc.conductivity_signal), rows=rows,
+        alpha=alpha if hc.viscosity else None, shock=shock, rows=rows, grad_v=grad_v,
     )  # fmt: skip
     st.alpha = alpha
     st.a_hydro[rows] = f.acc
@@ -328,6 +351,11 @@ def initialise(
         else np.asarray(level_offset, np.int64),
         n_stop=int(round((t_stop - t0) / tick)),
     )  # fmt: skip
+    st.ids = np.arange(n)
+    st.r0 = np.linalg.norm(x, axis=1)
+    st.L0 = np.linalg.norm(gn_angmom(x, p) if cc.hole else np.cross(x, p), axis=1)
+    st.vr_neg = np.sum(x * _velocity(cc, x, p), axis=1) < 0
+    st.passed_peri = np.zeros(n, bool)
     rows = np.arange(n)
     nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p), st.u, 0.0, None)
     st.level[:] = 0
@@ -367,7 +395,46 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     st.timers["levels"] += time.perf_counter() - t2
     st.active_counts.append(len(rows))
     st.particle_steps += len(rows)
+    if cc.hole:
+        rows = _swallow(st, cfg, rows)
     return rows
+
+
+def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
+    """Update the active particles' pericentre flags; remove those inside r_acc (their state is
+    true at their own step end) into the removed-particle ledger. Returns the active rows that
+    remain, renumbered."""
+    cc = cfg.coupled
+    x, p = st.x[rows], st.p[rows]
+    r = np.linalg.norm(x, axis=1)
+    vr = np.sum(x * _velocity(cc, x, p), axis=1)
+    turned = st.vr_neg[rows] & (vr > 0) & (r < 0.5 * st.r0[rows])  # outward again, near the hole
+    st.passed_peri[rows] |= turned
+    st.vr_neg[rows] = vr < 0
+    if cfg.r_acc is None or not np.any(r < cfg.r_acc):
+        return rows
+    gone = rows[r < cfg.r_acc]
+    xs, ps = st.x[gone], st.p[gone]
+    record_removal(
+        st.removed, st.t, st.ids[gone], st.mass[gone], gn_hamiltonian(xs, ps), st.u[gone],
+        gn_angmom(xs, ps), ps, np.linalg.norm(xs, axis=1), st.passed_peri[gone], st.L0[gone],
+        "accreted",
+    )  # fmt: skip
+    keep = np.ones(len(st.x), bool)
+    keep[gone] = False
+    _prune(st, keep)
+    new_index = np.cumsum(keep) - 1
+    return new_index[rows[keep[rows]]]
+
+
+def _prune(st: BlockState, keep: np.ndarray) -> None:
+    """Drop particles from every per-particle array; neighbour lists are rebuilt next step."""
+    n = len(keep)
+    for name, value in vars(st).items():
+        if isinstance(value, np.ndarray) and value.shape[:1] == (n,):
+            setattr(st, name, value[keep])
+    st.neighbour_cache = None
+    st.last_pairs = None
 
 
 def run(st: BlockState, cfg: BlockConfig, t_end: float, callback=None) -> BlockState:
@@ -391,15 +458,20 @@ def run(st: BlockState, cfg: BlockConfig, t_end: float, callback=None) -> BlockS
 
 
 def ledger(st: BlockState, cfg: BlockConfig) -> dict:
-    """Totals as in coupled.ledger (true values when st.synced(), predicted otherwise)."""
+    """Totals as in coupled.ledger (true values when st.synced(), predicted otherwise),
+    including the particles removed so far (sim/accretion.py)."""
     cc = cfg.coupled
     h = gn_hamiltonian(st.x, st.p) if cc.hole else 0.5 * np.sum(st.p * st.p, axis=1)
     am = gn_angmom(st.x, st.p) if cc.hole else np.cross(st.x, st.p)
+    rm = st.removed
     return {
-        "energy": float(np.sum(st.mass * (h + st.u))),
+        "energy": float(np.sum(st.mass * (h + st.u))) + rm.energy,
         "abs_h": float(np.sum(st.mass * np.abs(h))),
-        "angmom": np.sum(st.mass[:, None] * am, axis=0),
-        "momentum": np.sum(st.mass[:, None] * st.p, axis=0),
+        "angmom": np.sum(st.mass[:, None] * am, axis=0) + rm.angmom,
+        "momentum": np.sum(st.mass[:, None] * st.p, axis=0) + rm.momentum,
+        "mass": float(np.sum(st.mass)) + rm.mass,
+        "removed_mass": rm.mass,
+        "removed_count": rm.count,
     }
 
 

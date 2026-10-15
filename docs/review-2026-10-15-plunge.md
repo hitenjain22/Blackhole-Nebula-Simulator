@@ -253,6 +253,8 @@ Print a warning when the across-the-hole percentage is above 1%. This turns toda
 > 4. D4 (cloud radius 25 instead of 100) is approved as a scenario change. Record it in DECISIONS.md. Then run the 10k radius-25 cloud with D2 and swallowing on, and compare it with the review's own run, where nothing was swallowed by t = 400,000. Report the swallowed fraction and the typical and hottest-1% gas at closest approach against the gravity-only ceiling in the review's §2d.
 > 5. Then run 50k overnight (radius 25, with D2) and compare its temperatures at closest approach with the same ceiling.
 >
+> Whenever you compare with the review, put your numbers next to the review's in a table and say in plain words which match and which don't.
+>
 > Never change an expected value or a tolerance.
 
 (Hiten: if you don't approve D2 or D4, delete its item from that message. Without D4, item 4 becomes "run the 10k radius-100 cloud with D2" and item 5 needs far more particles; see D3.)
@@ -288,3 +290,19 @@ Times are single-core on my machine, at about 20,000 particle-steps per second w
 | `lend.py RUN.npz times` | angular-momentum change of the gas that has passed closest approach | seconds |
 
 Runs A, B and C are `run_cloud.py` with `hydro=off`, `visc=off`, and no options, respectively.
+
+---
+
+## 7. Addendum (evening of 15 Oct): cloud size and the Phase 6 stream crash
+
+Your Claude Code spotted something I missed when recommending D4. Phase 6's first stream crash comes from the spread in orbital energy across the cloud, and that spread scales with the cloud's radius. A smaller cloud stays together longer, so its stream takes more passages to grow long enough to run into itself. I reran the plan's own script 12 for other radii (`scripts/crash_by_radius.py`; same test-particle model, pressure ignored). Its radius-100 result matches expected-values §2b exactly.
+
+| Cloud radius | First crash | Time (1 M ≈ 21.2 s) | Share of the stream still incoming at first contact |
+|---|---|---|---|
+| 25 | passage 8 | t ≈ 5.9 million (about 4 years) | 3% |
+| 50 | passage 4, barely; clearly at passage 5 | t ≈ 2.8 million / 3.6 million | 1% |
+| 60 | passage 4 | t ≈ 2.8 million (about 1.9 years) | 10% |
+| 75 | passage 3, barely | t ≈ 2.0 million | 3% |
+| 100 | passage 3 | t ≈ 2.0 million (about 1.3 years) | 24% |
+
+Phase 6 plans to run to t = 3 million. So radius 25 gets a clean first pass at 10k but pushes the crash to about twice the planned run length. Radius 100 crashes on time, but needs roughly 100k–300k particles near the hole (D3). Radius 50–60 might do both, and a radius-50 test at 10k with the fix is running now. Nothing changes for the 10k radius-25 run: it is still the check that the real D2 matches the prototype. Decide the Phase 6 cloud size once the radius-50 result is in.

@@ -29,6 +29,7 @@ from nebula.sim.sph import (
     compute_density,
     forces_numba,
     gradients_numba,
+    velocity_gradients_numba,
 )
 
 
@@ -51,6 +52,17 @@ class HydroConfig:
     beta: float = visc.BETA_AV
     alpha_u: float = visc.ALPHA_U
     conductivity_signal: int = COND_PRESSURE
+    reconstruction: bool = True  # velocity reconstruction in the viscosity (DECISIONS D2)
+    recon_closeness: bool = True  # its closeness factor (Frontiere et al. 2017 Eq. 51)
+    recon_gate: int = 2  # sph.GATE_MINMOD (DECISIONS D2)
+
+    def shock(self) -> ShockCapturing:
+        """The force pass's shock-capturing settings for this configuration."""
+        return ShockCapturing(
+            self.beta, self.alpha_u, self.conductivity_signal,
+            reconstruction=self.reconstruction and self.viscosity,
+            closeness=self.recon_closeness, eta_crit=1.0 / self.eta, recon_gate=self.recon_gate,
+        )  # fmt: skip
 
 
 @dataclass
@@ -101,13 +113,18 @@ def evaluate(
         alpha = visc.alpha_update(alpha, a_loc, dt_alpha, visc.decay_time(d.h, cs))
     elif cfg.viscosity and not cfg.switch:
         alpha = np.full(len(state.x), cfg.alpha_const)
-    shock = ShockCapturing(cfg.beta, cfg.alpha_u, cfg.conductivity_signal)
+    shock = cfg.shock()
+    grad_v = (
+        velocity_gradients_numba(state.x, state.v, state.mass, d.h, nb, cfg.kernel)
+        if shock.reconstruction
+        else None
+    )
     f = forces_numba(
         state.x, state.v, state.mass, d.h, d.rho, d.omega, p, nb, cfg.kernel,
         u=state.u if (cfg.conductivity and cfg.isothermal_cs is None) else None,
         c_s=cs if cfg.viscosity else None,
         alpha=alpha if cfg.viscosity else None,
-        shock=shock,
+        shock=shock, grad_v=grad_v,
     )  # fmt: skip
     dudt = np.zeros(len(state.x)) if cfg.isothermal_cs is not None else f.dudt
     vsig = f.vsig_max if cfg.viscosity else np.maximum(cs, 0.0)

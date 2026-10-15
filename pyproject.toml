@@ -32,7 +32,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["reference/scripts"]
+extend-exclude = ["reference/scripts", "scripts/review-2026-10-15"]  # external records, kept as received
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "NPY"]

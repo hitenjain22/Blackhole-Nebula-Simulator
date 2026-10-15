@@ -327,6 +327,7 @@ def compute_density(
 
 COND_PRESSURE = 0  # v^u_sig = sqrt(|P_a - P_b| / rho_ab)   (Price 2008; Phantom Eq. 43)
 COND_VELOCITY = 1  # v^u_sig = |v_ab . r_hat_ab|          (Phantom Eq. 44, with external forces)
+GATE_BOTH, GATE_PUBLISHED, GATE_MINMOD = 0, 1, 2  # ShockCapturing.recon_gate
 
 
 @dataclass(frozen=True)
@@ -336,6 +337,20 @@ class ShockCapturing:
     beta: float = 2.0  # physics.viscosity.BETA_AV
     alpha_u: float = 1.0  # physics.viscosity.ALPHA_U
     conductivity_signal: int = COND_PRESSURE
+    # velocity reconstruction in the viscosity (physics/viscosity.py; DECISIONS D2). Needs the
+    # velocity gradients of every particle in the force sums (``grad_v``).
+    reconstruction: bool = False
+    closeness: bool = True  # Frontiere et al. 2017 Eq. 51 second factor
+    eta_crit: float = 1.0 / DEFAULT_ETA  # 1 / hfact (Frontiere: 1/n_h)
+    eta_fold: float = 0.2
+    # which velocity jump drives q (mu = jump used; q = -1/2 rho v_sig mu, heating with v_ab.r):
+    #   GATE_MINMOD:    mu = max(v*_ab.r, v_ab.r) if both < 0 (physics.viscosity.viscous_jump;
+    #                   continuous, never negative heating, never above plain): the default
+    #   GATE_BOTH:      mu = v*_ab.r if both v*_ab.r and v_ab.r < 0 (review prototype; switches
+    #                   off abruptly: block-step angular momentum only 1.9x per halving)
+    #   GATE_PUBLISHED: mu = v*_ab.r if v*_ab.r < 0 (MAGMA2 Eq. 15; can heat negatively)
+    # (kept for the record of the D2 comparison and its tests)
+    recon_gate: int = 2
 
 
 DEFAULT_SHOCK = ShockCapturing()
@@ -350,10 +365,12 @@ class ForceResult:
 
 def forces_reference(
     pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name=DEFAULT_KERNEL,
-    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK,
+    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK, grad_v=None,
 ) -> ForceResult:  # fmt: skip
     """Readable reference (one particle at a time). Viscosity is on when ``alpha`` and ``c_s``
-    are given; conductivity when ``u`` is given as well."""
+    are given; conductivity when ``u`` is given as well. With ``shock.reconstruction`` the
+    viscosity uses the reconstructed velocity jump (physics/viscosity.py) and needs ``grad_v``
+    (N, 3, 3), the velocity gradients of all particles."""
     from nebula.physics import viscosity as visc
 
     kernel = get_kernel(kernel_name)
@@ -361,6 +378,8 @@ def forces_reference(
     acc, dudt, vsig_max = np.zeros((n, 3)), np.zeros(n), np.zeros(n)
     use_visc = alpha is not None and c_s is not None
     use_cond = use_visc and u is not None
+    if use_visc and shock.reconstruction and (grad_v is None or np.shape(grad_v) != (n, 3, 3)):
+        raise ValueError("velocity reconstruction needs grad_v of shape (N, 3, 3)")
     for a in range(n):
         b = nb.of(a)
         b = b[b != a]
@@ -373,15 +392,28 @@ def forces_reference(
         num_a, num_b = np.full(len(b), pressure[a]), pressure[b].astype(float)
         heat = pressure[a] / (omega[a] * rho[a] ** 2) * np.sum(mass[b] * vdotr * fa)
         if use_visc:
-            vsig_a = visc.viscous_signal_speed(alpha[a], c_s[a], vdotr, shock.beta)
-            vsig_b = visc.viscous_signal_speed(alpha[b], c_s[b], vdotr, shock.beta)
-            num_a = num_a + visc.viscous_q(rho[a], vsig_a, vdotr)
-            num_b = num_b + visc.viscous_q(rho[b], vsig_b, vdotr)
-            approaching = vdotr < 0
-            heat -= np.sum((mass[b] * vsig_a * 0.5 * vdotr**2 * fa)[approaching]) / (
-                omega[a] * rho[a]
-            )
-            vsig_max[a] = max(np.max(vsig_a), c_s[a]) if len(b) else c_s[a]
+            vdr = vdotr  # velocity jump seen by the viscosity
+            if shock.reconstruction:
+                phi = visc.van_leer_limiter(visc.limiter_ratio(grad_v[a], grad_v[b], dx))
+                if shock.closeness:
+                    eta_ab = np.minimum(r / h[a], r / h[b])
+                    phi = phi * visc.closeness_factor(eta_ab, shock.eta_crit, shock.eta_fold)
+                jump = visc.reconstructed_jump(vel[a], vel[b], grad_v[a], grad_v[b], dx, phi)
+                vdr = np.sum(jump * rhat, axis=1)
+            if shock.reconstruction and shock.recon_gate == GATE_PUBLISHED:
+                on = vdr < 0
+            elif shock.reconstruction and shock.recon_gate == GATE_MINMOD:
+                on = (vdr < 0) & (vdotr < 0)
+                vdr = np.where(on, visc.viscous_jump(vdr, vdotr), vdr)
+            else:
+                on = (vdr < 0) & (vdotr < 0)  # q only for pairs approaching both ways
+            vsig_a = visc.viscous_signal_speed(alpha[a], c_s[a], vdr, shock.beta)
+            vsig_b = visc.viscous_signal_speed(alpha[b], c_s[b], vdr, shock.beta)
+            num_a = num_a + np.where(on, visc.viscous_q(rho[a], vsig_a, vdr), 0.0)
+            num_b = num_b + np.where(on, visc.viscous_q(rho[b], vsig_b, vdr), 0.0)
+            heat -= np.sum((mass[b] * vsig_a * 0.5 * vdr * vdotr * fa)[on]) / (omega[a] * rho[a])
+            vsig_cfl = visc.viscous_signal_speed(alpha[a], c_s[a], vdotr, shock.beta)
+            vsig_max[a] = max(np.max(vsig_cfl), c_s[a]) if len(b) else c_s[a]
             if use_cond:
                 if shock.conductivity_signal == COND_PRESSURE:
                     vu = visc.conductivity_signal_speed(pressure[a], pressure[b], rho[a], rho[b])
@@ -408,7 +440,8 @@ def _dwdr(r, h, kid, cnorm):
 @numba.njit(parallel=True, cache=True)
 def _forces_kernel(
     pos, vel, mass, h, rho, omega, pressure, u, c_s, alpha, offset, index, box, kid, cnorm,
-    use_visc, use_cond, beta, alpha_u, cond_signal, rows, acc, dudt, vsig_max,
+    use_visc, use_cond, beta, alpha_u, cond_signal, rows, use_recon, closeness, eta_crit,
+    eta_fold, gate, gv, acc, dudt, vsig_max,
 ):  # fmt: skip
     for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
         a = rows[q]
@@ -445,7 +478,47 @@ def _forces_kernel(
             )
             num_a = pressure[a]
             num_b = pressure[b]
-            if use_visc:
+            if use_visc and use_recon:
+                # mirrors physics.viscosity: limiter_ratio, van_leer_limiter, closeness_factor,
+                # reconstructed_jump (projections G x with x = x_a - x_b)
+                ga0 = gv[a, 0, 0] * dx0 + gv[a, 0, 1] * dx1 + gv[a, 0, 2] * dx2
+                ga1 = gv[a, 1, 0] * dx0 + gv[a, 1, 1] * dx1 + gv[a, 1, 2] * dx2
+                ga2 = gv[a, 2, 0] * dx0 + gv[a, 2, 1] * dx1 + gv[a, 2, 2] * dx2
+                gb0 = gv[b, 0, 0] * dx0 + gv[b, 0, 1] * dx1 + gv[b, 0, 2] * dx2
+                gb1 = gv[b, 1, 0] * dx0 + gv[b, 1, 1] * dx1 + gv[b, 1, 2] * dx2
+                gb2 = gv[b, 2, 0] * dx0 + gv[b, 2, 1] * dx1 + gv[b, 2, 2] * dx2
+                pa = dx0 * ga0 + dx1 * ga1 + dx2 * ga2
+                pb = dx0 * gb0 + dx1 * gb1 + dx2 * gb2
+                phi = 0.0
+                if pb != 0.0:
+                    ratio = pa / pb
+                    if ratio > 0.0:
+                        phi = min(1.0, 4.0 * ratio / ((1.0 + ratio) * (1.0 + ratio)))
+                if closeness:
+                    eta_ab = min(r / h[a], r / h[b])
+                    if eta_ab < eta_crit:
+                        t = (eta_ab - eta_crit) / eta_fold
+                        phi *= np.exp(-t * t)
+                vdr = (
+                    ((vel[a, 0] - 0.5 * phi * ga0) - (vel[b, 0] + 0.5 * phi * gb0)) * rx
+                    + ((vel[a, 1] - 0.5 * phi * ga1) - (vel[b, 1] + 0.5 * phi * gb1)) * ry
+                    + ((vel[a, 2] - 0.5 * phi * ga2) - (vel[b, 2] + 0.5 * phi * gb2)) * rz
+                )
+                on = vdr < 0.0 and vdotr < 0.0
+                if gate == 1:
+                    on = vdr < 0.0
+                elif gate == 2 and vdotr > vdr:  # mirrors physics.viscosity.viscous_jump
+                    vdr = vdotr
+                vsig_a = alpha[a] * c_s[a] + beta * abs(vdr)
+                vsig_b = alpha[b] * c_s[b] + beta * abs(vdr)
+                vsig_cfl = alpha[a] * c_s[a] + beta * abs(vdotr)
+                if vsig_cfl > vmax:
+                    vmax = vsig_cfl
+                if on:
+                    num_a += -0.5 * rho[a] * vsig_a * vdr
+                    num_b += -0.5 * rho[b] * vsig_b * vdr
+                    heat -= mass[b] * vsig_a * 0.5 * vdr * vdotr * fa * inv_or_a
+            elif use_visc:
                 # mirrors physics.viscosity.viscous_signal_speed and viscous_q
                 vsig_a = alpha[a] * c_s[a] + beta * abs(vdotr)
                 vsig_b = alpha[b] * c_s[b] + beta * abs(vdotr)
@@ -455,20 +528,20 @@ def _forces_kernel(
                     num_a += -0.5 * rho[a] * vsig_a * vdotr
                     num_b += -0.5 * rho[b] * vsig_b * vdotr
                     heat -= mass[b] * vsig_a * 0.5 * vdotr * vdotr * fa * inv_or_a
-                if use_cond:
-                    # mirrors physics.viscosity.conductivity_signal_speed (or |v_ab . r_hat|)
-                    if cond_signal == 0:
-                        vu = np.sqrt(abs(pressure[a] - pressure[b]) / (0.5 * (rho[a] + rho[b])))
-                    else:
-                        vu = abs(vdotr)
-                    heat += (
-                        mass[b]
-                        * alpha_u
-                        * vu
-                        * (u[a] - u[b])
-                        * 0.5
-                        * (fa * inv_or_a + fb / (omega[b] * rho[b]))
-                    )
+            if use_cond:  # (use_cond implies use_visc)
+                # mirrors physics.viscosity.conductivity_signal_speed (or |v_ab . r_hat|)
+                if cond_signal == 0:
+                    vu = np.sqrt(abs(pressure[a] - pressure[b]) / (0.5 * (rho[a] + rho[b])))
+                else:
+                    vu = abs(vdotr)
+                heat += (
+                    mass[b]
+                    * alpha_u
+                    * vu
+                    * (u[a] - u[b])
+                    * 0.5
+                    * (fa * inv_or_a + fb / (omega[b] * rho[b]))
+                )
             f = mass[b] * (
                 num_a / (omega[a] * rho[a] * rho[a]) * fa
                 + num_b / (omega[b] * rho[b] * rho[b]) * fb
@@ -486,10 +559,11 @@ def _forces_kernel(
 
 def forces_numba(
     pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name=DEFAULT_KERNEL,
-    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK, rows=None,
+    u=None, c_s=None, alpha=None, shock: ShockCapturing = DEFAULT_SHOCK, rows=None, grad_v=None,
 ) -> ForceResult:  # fmt: skip
     """Fast (parallel Numba) twin of ``forces_reference``. ``rows``: only these particles
-    (results in that order; inputs are still for all particles); default all."""
+    (results in that order; inputs are still for all particles); default all. ``grad_v``
+    (N, 3, 3): velocity gradients of all particles, needed with ``shock.reconstruction``."""
     n = len(pos)
     rows = _rows(rows, n)
     acc, dudt, vsig_max = np.empty((len(rows), 3)), np.empty(len(rows)), np.empty(len(rows))
@@ -497,6 +571,10 @@ def forces_numba(
     kid = KERNEL_IDS[kernel_name]
     use_visc = alpha is not None and c_s is not None
     use_cond = use_visc and u is not None
+    use_recon = use_visc and shock.reconstruction
+    if use_recon and (grad_v is None or np.shape(grad_v) != (n, 3, 3)):
+        raise ValueError("velocity reconstruction needs grad_v of shape (N, 3, 3)")
+    gv = np.ascontiguousarray(grad_v, float) if use_recon else np.zeros((1, 3, 3))
     zeros = np.zeros(n)
 
     def arr(x):
@@ -509,12 +587,18 @@ def forces_numba(
         np.ascontiguousarray(pressure, float), arr(u), arr(c_s), arr(alpha),
         nb.offset, nb.index, box, kid, C_NORM[kid], use_visc, use_cond,
         float(shock.beta), float(shock.alpha_u), int(shock.conductivity_signal), rows,
+        use_recon, bool(shock.closeness), float(shock.eta_crit), float(shock.eta_fold),
+        int(shock.recon_gate), gv,
         acc, dudt, vsig_max,
     )  # fmt: skip
     return ForceResult(acc, dudt, vsig_max)
 
 
 # --------------------------------------------------------------------------- gradients
+#
+# Near-singular correction matrix (DECISIONS D11): with too few neighbours (e.g. h capped at
+# h_max) R can be singular and inverting it crashed. Then the uncorrected estimate is used,
+# R ~ rho I replaced by its mean diagonal: dv/dx ~ G / (tr R / 3) (0 without neighbours).
 #
 # Velocity and acceleration gradients for the shock switch (Phantom Eqs. 51-54, after
 # Cullen & Dehnen 2010 App. B3), exact for linear fields thanks to the matrix correction:
@@ -538,6 +622,40 @@ def _gradient_scalars(dv: np.ndarray, da: np.ndarray) -> tuple[float, float, flo
     return float(np.trace(dv)), float(np.linalg.norm(curl)), float(np.trace(da) - np.sum(dv * dv.T))
 
 
+SINGULAR_TOL = 1e-6  # |det R| below this x (tr R / 3)^3: R treated as singular
+
+
+def _corrected(rmat: np.ndarray, cnt: int, *grads):
+    """Each gradient sum G times R^-1, or the uncorrected fallback (see above)."""
+    scale = np.trace(rmat) / 3.0
+    if cnt < 4 or not scale > 0 or not abs(np.linalg.det(rmat)) >= SINGULAR_TOL * scale**3:
+        return tuple(g / scale if scale > 0 else np.zeros((3, 3)) for g in grads)
+    rinv = np.linalg.inv(rmat)
+    return tuple(g @ rinv for g in grads)
+
+
+def velocity_gradients_reference(
+    pos, vel, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL, rows=None
+) -> np.ndarray:
+    """Readable reference of the corrected velocity gradient G_ij = d v^i / d x^j (the same
+    estimate as the switch's, exact for linear fields), for ``rows`` (default all); returned
+    as (N, 3, 3) with zeros elsewhere. Used by the velocity reconstruction."""
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    out = np.zeros((n, 3, 3))
+    for a in _rows(rows, n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)
+        r = np.linalg.norm(dx, axis=1)
+        grad = (kernel.dw_dr(r, h[a]) / r)[:, None] * dx
+        m = mass[b][:, None, None]
+        rmat = np.sum(m * (-dx)[:, :, None] * grad[:, None, :], axis=0)
+        gv = np.sum(m * (vel[b] - vel[a])[:, :, None] * grad[:, None, :], axis=0)
+        (out[a],) = _corrected(rmat, len(b), gv)
+    return out
+
+
 def gradients_reference(
     pos, vel, acc, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL
 ) -> Gradients:
@@ -555,9 +673,69 @@ def gradients_reference(
         rmat = np.sum(m * (-dx)[:, :, None] * grad[:, None, :], axis=0)
         gv = np.sum(m * (vel[b] - vel[a])[:, :, None] * grad[:, None, :], axis=0)
         ga = np.sum(m * (acc[b] - acc[a])[:, :, None] * grad[:, None, :], axis=0)
-        rinv = np.linalg.inv(rmat)
-        div[a], curl[a], ddiv[a] = _gradient_scalars(gv @ rinv, ga @ rinv)
+        div[a], curl[a], ddiv[a] = _gradient_scalars(*_corrected(rmat, len(b), gv, ga))
     return Gradients(div, curl, ddiv)
+
+
+@numba.njit(cache=True)
+def _near_singular(rmat, cnt):
+    """Mirrors the test in ``_corrected``."""
+    scale = (rmat[0, 0] + rmat[1, 1] + rmat[2, 2]) / 3.0
+    if cnt < 4 or not scale > 0.0:
+        return True
+    return not abs(np.linalg.det(rmat)) >= SINGULAR_TOL * scale**3
+
+
+@numba.njit(parallel=True, cache=True)
+def _velocity_gradient_kernel(pos, vel, mass, h, offset, index, box, kid, cnorm, rows, out):
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to out[a]
+        a = rows[q]
+        rmat = np.zeros((3, 3))
+        gv = np.zeros((3, 3))
+        dx = np.empty(3)
+        cnt = 0
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
+                continue
+            cnt += 1
+            for c in range(3):
+                d = pos[a, c] - pos[b, c]
+                if box[c] > 0.0:
+                    d -= box[c] * np.round(d / box[c])
+                dx[c] = d
+            r = np.sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2])
+            g = _dwdr(r, h[a], kid, cnorm) / r
+            for i in range(3):
+                for j in range(3):
+                    gj = mass[b] * g * dx[j]
+                    rmat[i, j] -= dx[i] * gj
+                    gv[i, j] += (vel[b, i] - vel[a, i]) * gj
+        if _near_singular(rmat, cnt):
+            scale = (rmat[0, 0] + rmat[1, 1] + rmat[2, 2]) / 3.0
+            inv_s = 1.0 / scale if scale > 0.0 else 0.0
+            out[a] = gv * inv_s
+        else:
+            out[a] = gv @ np.linalg.inv(rmat)
+
+
+def velocity_gradients_numba(
+    pos, vel, mass, h, nb: Neighbours, kernel_name=DEFAULT_KERNEL, rows=None, out=None
+) -> np.ndarray:
+    """Fast twin of ``velocity_gradients_reference``: fills ``out`` (N, 3, 3; zeros if not
+    given) for ``rows`` and returns it. The lists may be a superset (pairs beyond 2 h_a add
+    exact zeros)."""
+    n = len(pos)
+    rows = _rows(rows, n)
+    out = np.zeros((n, 3, 3)) if out is None else out
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _velocity_gradient_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
+        np.ascontiguousarray(mass, float), np.ascontiguousarray(h, float), nb.offset, nb.index,
+        box, kid, C_NORM[kid], rows, out,
+    )  # fmt: skip
+    return out
 
 
 @numba.njit(parallel=True, cache=True)
@@ -570,10 +748,12 @@ def _gradients_kernel(
         gv = np.zeros((3, 3))
         ga = np.zeros((3, 3))
         dx = np.empty(3)
+        cnt = 0
         for k in range(offset[a], offset[a + 1]):
             b = index[k]
             if b == a:
                 continue
+            cnt += 1
             for c in range(3):
                 d = pos[a, c] - pos[b, c]
                 if box[c] > 0.0:
@@ -587,9 +767,15 @@ def _gradients_kernel(
                     rmat[i, j] -= dx[i] * gj
                     gv[i, j] += (vel[b, i] - vel[a, i]) * gj
                     ga[i, j] += (acc[b, i] - acc[a, i]) * gj
-        rinv = np.linalg.inv(rmat)
-        dv = gv @ rinv
-        da = ga @ rinv
+        if _near_singular(rmat, cnt):  # DECISIONS D11
+            scale = (rmat[0, 0] + rmat[1, 1] + rmat[2, 2]) / 3.0
+            inv_s = 1.0 / scale if scale > 0.0 else 0.0
+            dv = gv * inv_s
+            da = ga * inv_s
+        else:
+            rinv = np.linalg.inv(rmat)
+            dv = gv @ rinv
+            da = ga @ rinv
         div[q] = dv[0, 0] + dv[1, 1] + dv[2, 2]
         c0 = dv[2, 1] - dv[1, 2]
         c1 = dv[0, 2] - dv[2, 0]
