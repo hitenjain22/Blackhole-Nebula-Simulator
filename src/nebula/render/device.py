@@ -1,0 +1,98 @@
+"""GPU device and tiled compute dispatch (Phase 0, Step 0.4).
+
+Images are computed in tiles so no single GPU dispatch runs long enough to trip the macOS
+GPU watchdog or freeze the screen (CLAUDE.md, "This machine"). Results go to a storage
+*buffer* of vec4<f32> per pixel (buffers avoid texture-format limits) and are read back
+to NumPy one tile at a time.
+
+Shader contract for ``run_tiled``: entry point ``main`` with @workgroup_size(8, 8), and
+
+    struct Tile { origin: vec2<u32>, image: vec2<u32>, size: vec2<u32>, _pad: vec2<u32> };
+    @group(0) @binding(0) var<uniform> tile: Tile;
+    @group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
+
+writing pixel (origin + local) to out[local.y * size.x + local.x].
+"""
+
+import time
+from dataclasses import dataclass, field
+from functools import cache
+from pathlib import Path
+
+import numpy as np
+import wgpu
+
+SHADER_DIR = Path(__file__).parent / "shaders"
+WORKGROUP = 8
+
+
+@cache
+def get_device() -> wgpu.GPUDevice:
+    """The high-performance GPU (Intel Iris Plus via Metal on this Mac), created once."""
+    adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    if adapter is None:
+        raise RuntimeError("No GPU adapter found")
+    return adapter.request_device_sync()
+
+
+def load_shader(name: str) -> str:
+    return (SHADER_DIR / name).read_text()
+
+
+@dataclass
+class TileTimings:
+    """Wall time per tile (dispatch + readback), in seconds."""
+
+    per_tile: list[float] = field(default_factory=list)
+
+    @property
+    def max(self) -> float:
+        return max(self.per_tile)
+
+    @property
+    def total(self) -> float:
+        return sum(self.per_tile)
+
+
+def run_tiled(
+    shader_code: str, width: int, height: int, tile: int = 256
+) -> tuple[np.ndarray, TileTimings]:
+    """Run a compute shader over a width x height image in tiles; return (H, W, 4) float32."""
+    device = get_device()
+    module = device.create_shader_module(code=shader_code)
+    pipeline = device.create_compute_pipeline(
+        layout="auto", compute={"module": module, "entry_point": "main"}
+    )
+    out_buf = device.create_buffer(
+        size=tile * tile * 16, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+    )
+    uni_buf = device.create_buffer(
+        size=32, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
+    )
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": uni_buf}},
+            {"binding": 1, "resource": {"buffer": out_buf}},
+        ],
+    )
+    image = np.empty((height, width, 4), dtype=np.float32)
+    timings = TileTimings()
+    for y0 in range(0, height, tile):
+        for x0 in range(0, width, tile):
+            tw, th = min(tile, width - x0), min(tile, height - y0)
+            t0 = time.perf_counter()
+            params = np.array([x0, y0, width, height, tw, th, 0, 0], dtype=np.uint32)
+            device.queue.write_buffer(uni_buf, 0, params.tobytes())
+            encoder = device.create_command_encoder()
+            cpass = encoder.begin_compute_pass()
+            cpass.set_pipeline(pipeline)
+            cpass.set_bind_group(0, bind_group)
+            cpass.dispatch_workgroups(-(-tw // WORKGROUP), -(-th // WORKGROUP), 1)
+            cpass.end()
+            device.queue.submit([encoder.finish()])
+            # read_buffer waits for the GPU, so the timing covers the whole tile.
+            data = device.queue.read_buffer(out_buf, 0, tw * th * 16)
+            timings.per_tile.append(time.perf_counter() - t0)
+            image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(th, tw, 4)
+    return image, timings
