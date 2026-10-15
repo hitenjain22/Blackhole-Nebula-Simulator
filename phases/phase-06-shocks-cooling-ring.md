@@ -2,13 +2,17 @@
 
 **Goal:** follow stages 4 and 5. The stretched cloud keeps orbiting; its relativistic precession makes the outgoing stream crash into the incoming one; the crash shocks and heats the gas; the gas loses orbital energy, circularizes and settles into a hot torus near r ≈ 51; radiative cooling decides whether that torus is thick and puffy or a thin ring.
 
-**Ends with:** 1k and 10k runs from the start to a formed torus, with the gas + radiation equation of state and cooling on; a four-panel thin-vs-thick comparison (β scan); a Newtonian control run showing why relativity matters; the first light curve; flat ledgers throughout.
+**Updated 2026-10-15** (Hiten's decisions after the plunge review, `docs/DECISIONS.md`): all science runs use 10k (1k is a smoke test only, D1); the viscosity uses velocity reconstruction (D2); swallowing at r_acc = 4 is built (D6). The Phase 6 cloud size is not chosen yet: everything marked *(pending: cloud size)* waits for it (review §7 gives the first crash for radii 25–100).
+
+**Ends with:** 10k runs from the start to a formed torus, with the gas + radiation equation of state and cooling on; a four-panel thin-vs-thick comparison (β scan); a Newtonian control run showing why relativity matters; the first light curve; flat ledgers throughout.
 
 **Primary sources:** Bonnerot et al. 2016 (MNRAS 455, 2253: disc formation from tidal disruptions on eccentric orbits; efficient vs inefficient cooling), Hayasaki, Stone & Loeb 2013 (circularization driven by relativistic precession), Bonnerot & Stone 2021 (review: self-intersection, nozzle shock, circularization), Gammie 2001 (β-cooling), Lombardi et al. 2015 and Stamatellos et al. 2007 (approximate radiative cooling for SPH), Price 2008 (artificial conductivity at contact discontinuities). See `reference/references.md` for which were checked online.
 
 ---
 
 ## 6.1 The physical picture, with numbers to expect
+
+*(pending: cloud size)* The crash timing below (table and "probably passage 2 or 3") is for a radius-100 cloud. For other radii see review §7: radius 25 crashes only at passage 8 (t ≈ 5.9 million), radius 100 at passage 3.
 
 All numbers here are in `reference/expected-values.md` §2b and §9 with how they were computed. They are **predictions to compare against**, not test tolerances: when the run disagrees, find out why and write it up (it may be the hydrodynamics doing something the test-particle estimate can't).
 
@@ -51,7 +55,7 @@ c_s = √(Γ₁ P / ρ)
 ```
 - Solve for T from (ρ, u) with Newton's method on **log T**, with bisection fallback on [1 K, 10¹³ K]; tolerance 10⁻¹² relative. Never solve the quartic in closed form (cancellation).
 - Work in physical units inside the function; `units.py` converts code ρ (via the cloud mass scale) and code u (× c²). This is the only place the cloud mass enters the dynamics.
-- The cloud itself at 10⁴ K and ρ ≈ 1.9 × 10⁻⁷ kg/m³ already has P_rad/P_gas ≈ 0.1, so **production runs use this EOS from t = 0**. (Phase 5 runs with ideal gas remain valid as development runs.)
+- The cloud itself at 10⁴ K and ρ ≈ 1.9 × 10⁻⁷ kg/m³ already has P_rad/P_gas ≈ 0.1, so **production runs use this EOS from t = 0**. *(pending: cloud size: these numbers are for radius 100; a smaller, denser cloud has a much smaller radiation fraction, ~0.002 at radius 25; using the full EOS from t = 0 is fine either way.)* (Phase 5 runs with ideal gas remain valid as development runs.)
 - **Assumption to state in the report: local thermodynamic equilibrium (LTE)**, i.e. gas and radiation share one temperature. What makes radiation thermalize is **absorption**, not electron scattering (scattering only bounces photons around; it doesn't create or destroy them). The right measure is the effective optical depth τ_eff = κ_eff ρ L with κ_eff = √(κ_abs(κ_abs + κ_es)) (Phase 9 uses the same κ_eff). Rough plan-time estimates with a free–free (Kramers-type) κ_abs, coefficient from memory (check it in Frank, King & Raine before quoting): the 10⁴ K cloud has τ_eff ~ 10³ (thick: LTE fine; at 10⁴ K hydrogen's bound–free absorption makes it even thicker), but the 10⁶ K torus has τ_eff of only **a few to ~15** (free–free absorption falls as T^(−7/2); metal bound–free absorption adds up to ~20×). So **LTE in the hot torus is an approximation, not a given**: the gas could be hotter than the radiation in its thin outer layers. Say so in the report.
 - Diagnostics (per particle, physical units, every snapshot): τ_es,h = κ_es ρ h and τ_eff,h = κ_eff ρ h, with κ_abs and κ_eff from `physics/opacity.py` (written here, with tests against hand-computed values from the textbook coefficient, and reused by Phase 9). Report the mass fractions with τ_eff,h < 1 and with τ_eff over the torus thickness < 1. If most of the torus mass has τ_eff < 1, stop and discuss with Hiten (cut-list option: the diffusion-cooling scheme below).
 
@@ -81,27 +85,30 @@ E_radiated += m (u − u_new)
 | 2 | EOS limits | Γ₁ → 5/3 as β_gas → 1 and → 4/3 as β_gas → 0: within 10⁻⁶ at the two extreme points of expected-values §9 (ρ = 10³, T = 10³ and ρ = 10⁻¹⁵, T = 10⁸), whose u and P also match to rtol 10⁻⁸ |
 | 3 | EOS round trip | T → u → T on a 200 × 200 grid of ρ ∈ [10⁻¹⁵, 10³] kg/m³, T ∈ [10³, 10¹⁰] K: max error 10⁻¹⁰ |
 | 4 | Radiation-dominated shock tube | Sod initial state, EOS forced into the radiation limit (P = ρu/3, an exact γ = 4/3 gas): match the γ = 4/3 exact solution: p* 0.306011, u* 0.953205, ρ*L 0.411437, ρ*R 0.278585, shock speed 1.728999 (same requirements as Phase 3's Sod) |
-| 5 | Colliding streams | two cold uniform slabs colliding head-on at ±v (strong shock): post-shock gas at rest with u = v²/2 within 5%, compression 4 (γ = 5/3) or 7 (γ = 4/3) within 10%, shock speed v/3 or v/6 within 5%; total energy conserved to 10⁻⁶. This is the self-intersection in miniature. |
+| 5 | Colliding streams | two cold uniform slabs colliding head-on at ±v (strong shock): post-shock gas at rest with u = v²/2 within 5%, compression 4 (γ = 5/3) or 7 (γ = 4/3) within 10%, shock speed v/3 or v/6 within 5%; total energy conserved to 10⁻⁶. This is the self-intersection in miniature, and the key check that real shocks are fully captured with velocity reconstruction (D2) on: at a sharp step reconstruction lowers the interface heating (~40% of plain in a unit test), so the jump conditions here must still hold. |
 | 6 | β-cooling, static particle | u(t) matches u_floor + (u₀ − u_floor)e^(−t/t_cool) to 10⁻¹²; ledger: Σ m Δu = E_radiated to round-off |
 | 7 | Cooling under block steps | the same particle cooled with 1 step or 1,024 steps over the same interval: identical u to 10⁻¹² |
-| 8 | Hot blob ledger with cooling | Phase 4 test 4 (same orbit, η_orb = 0.00125, C_cour = 0.15) with β = 10 and the full EOS: maximum \|Δ(Σ m(H + u) + E_rad)\| / Σ m\|H\| < 10⁻⁵ over one orbit, and falling 3–5× when η_orb and C_cour are halved |
+| 8 | Hot blob ledger with cooling | Phase 4 test 4 as it now runs (D8: blob u = 4 × 10⁻⁸, from apocentre through pericentre to t = 18,000, not a full orbit; same orbit, η_orb = 0.00125, C_cour = 0.15) with β = 10 and the full EOS: maximum \|Δ(Σ m(H + u) + E_rad)\| / Σ m\|H\| < 10⁻⁵ over that run, and falling 3–5× when η_orb and C_cour are halved |
 | 9 | Floor | a particle cooled for 100 t_cool sits at u_floor exactly and never below |
 
 ---
 
 ## 6.4 Runs
 
-All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x × p); escape radius 50,000 (removed as "escaped", ledgered); gas + radiation EOS; T_floor = 10⁴ K; the Phase 5 initial conditions.
+All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x × p; built, D6); escape radius 50,000 (removed as "escaped", ledgered; **to build**: the same removed-particle ledger with a second reason); gas + radiation EOS; T_floor = 10⁴ K; the Phase 5 initial conditions *(pending: cloud size)*; the hole-resolution check (D5) in every snapshot.
 
 | Run | Particles | Gravity | β | End | Purpose |
 |---|---|---|---|---|---|
-| R6.1 | 1k | GN | 230 | t = 3.0 × 10⁶ (~2 years) or torus formed + 10 ring orbits | first full circularization |
-| R6.2 | 10k | GN | 230 | same | the everyday-resolution result |
-| R6.3a–d | 1k | GN | 1, 10, 100, ∞ | same | thin ring vs thick torus |
-| R6.4 | 1k | **Newtonian** point mass | 230 | same | control: no precession, so no early crossing |
-| R6.5 | 1k | GN | 230, seeds 1–3 | same | run-to-run scatter (random glass carving) |
+| R6.0 | 1k | GN | 230 | short | smoke test only (D1): does it run, are the ledgers flat |
+| R6.1 | **10k** | GN | 230 | t = 3.0 × 10⁶ (~2 years) or torus formed + 10 ring orbits *(pending: cloud size; at radius 25 the first crash would come only near t ≈ 5.9 × 10⁶)* | first full circularization |
+| R6.2 | 10k | GN | 230 | same | the everyday-resolution result (with R6.1 now also 10k: merge or use for a second configuration) |
+| R6.3a–d | **10k** | GN | 1, 10, 100, ∞ | same | thin ring vs thick torus |
+| R6.4 | **10k** | **Newtonian** point mass | 230 | same | control: no precession, so no early crossing |
+| R6.5 | **10k** | GN | 230, seeds 1–3 | same | run-to-run scatter (random glass carving: **to build**, a random rotation/offset of the glass before carving; the current carving is deterministic) |
 
-**Run length budget.** Most of the 3 × 10⁶ is cheap (gas far out takes huge steps). Cost concentrates at pericentre passages, crashes and in the torus. Expect R6.1 in tens of minutes and R6.2 in a few hours; **measure** R6.1 first and extrapolate before launching R6.2. Checkpoint every 15 minutes (simple version here; Phase 10 makes it robust).
+All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
+
+**Run length budget.** Most of the 3 × 10⁶ is cheap (gas far out takes huge steps). Cost concentrates at pericentre passages, crashes and in the torus. The old estimate (R6.1 in tens of minutes, R6.2 in a few hours) assumed 1k runs and predates the measured speed (~30,000 particle-updates/s, Step 3.8), D2's extra gradient pass (~20–30%) and 10k for every run: **remeasure** on the first 10k run (Phase 5) and extrapolate before launching the Phase 6 set. *(pending: cloud size: a later crash lengthens every run.)* Checkpoint every 15 minutes (simple version here; Phase 10 makes it robust).
 
 **Stop condition for "torus formed".** Define with the diagnostics below: ≥ 50% of the remaining bound mass has orbital eccentricity < 0.3 and r < 200. Record that time as t_circ.
 
@@ -115,7 +122,7 @@ All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x 
 - **Per-particle orbit elements** from (H, ℓ) via the exact Schwarzschild turning points (E = √(1 + 2H), ℓ = |x × p|; solve E² = (1 − 2/r)(1 + ℓ²/r²) for r_peri, r_apo): eccentricity e = (r_apo − r_peri)/(r_apo + r_peri). Flag unbound (H ≥ 0) and plunging (no turning point above r = 4) particles.
 - Eccentricity histogram (mass-weighted) over time: the circularization movie in one plot.
 - Ring/torus mass (e < 0.3, r < 200); its mass-weighted mean radius; thickness H/r = rms(z)/r; radial extent (10th–90th percentile r).
-- Mass in shocks (α_AV > 0.5) and its location (marks crash sites).
+- Mass in shocks and its location (marks crash sites): the marker is the **viscous heating rate after reconstruction** (Hiten, 2026-10-15), not α_AV > 0.5 (the switch's α sits at ~1 for all the cold gas and no longer marks shocks).
 - Luminosity L(t) = Σ m (du/dt)_cool in watts and in units of L_Edd = 5.41 × 10³⁷ W; cumulative E_rad.
 - Accretion rate Ṁ(t) at r_acc (binned; in M☉/yr and Eddington units, Ṁ_Edd = 0.0955 M☉/yr for 10% efficiency).
 - Temperature distribution (mass-weighted histogram of log T); mass fractions with τ_eff,h < 1 and τ_es,h < 1.
@@ -141,7 +148,7 @@ All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x 
 | Problem | Symptom | Fix |
 |---|---|---|
 | Stream thinner than h at the crash | crash looks smeared; dissipation depends strongly on particle number | report particles per stream cross-section at r_SI; compare 1k vs 10k (Phase 12 does 1k → 50k); it's a known resolution limit, report it |
-| **Numerical circularization** (too much artificial viscosity bleeding orbital energy without a real crash) | gas circularizes before any crash; the Newtonian control circularizes almost as fast as GN | check R6.4: if it circularizes comparably, the effect is numerical; check the Cullen–Dehnen switch decays away from shocks; compare α_max = 1 vs 2; never claim a circularization time without this check |
+| **Numerical circularization** (too much artificial viscosity bleeding orbital energy without a real crash) | gas circularizes before any crash; the Newtonian control circularizes almost as fast as GN | check R6.4: if it circularizes comparably, the effect is numerical; check the Cullen–Dehnen switch decays away from shocks; compare α_max = 1 vs 2 **and reconstruction (D2) on vs off**; check the hole-resolution numbers (D5) for the torus at r ≈ 51 (kernels must stay small compared with r there); never claim a circularization time without this check |
 | No crash ever happens | stream keeps orbiting through passage 3+ | compare with the 6.1 table: crash at passage 3 is expected even without hydro; if not, check the stream's energy spread (Phase 5 histogram) and the precession (Phase 1 tests under hydro) |
 | EOS solver fails for extreme u/ρ | NaN temperatures in hot, thin gas | log-space Newton + bisection on a wide bracket; test 3 covers the range |
 | u clipped somewhere | energy ledger drifts upward | only cooling touches the floor; grep for any `max(u, …)`; test 9 |
@@ -152,7 +159,7 @@ All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x 
 | Results differ wildly between seeds | R6.5 scatter large | it's real stochasticity at low resolution; report mean and spread |
 | Circularization slower than budget | t_circ beyond 3 × 10⁶ | extend in steps with checkpoints; don't raise η or C_cour to "speed up" (CLAUDE.md rule) |
 
-**Scenario knob (only with Hiten's agreement, logged in DECISIONS.md):** if the crash starts too late for a good story, a larger cloud (R = 150–200) doubles the energy spread and makes it start earlier. Don't change the scenario quietly.
+*(pending: cloud size — this knob now interacts with D4: a larger cloud crashes earlier but needs more particles near the hole; review §7.)* **Scenario knob (only with Hiten's agreement, logged in DECISIONS.md):** if the crash starts too late for a good story, a larger cloud (R = 150–200) doubles the energy spread and makes it start earlier. Don't change the scenario quietly.
 
 ---
 
