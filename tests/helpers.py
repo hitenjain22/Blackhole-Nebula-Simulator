@@ -25,12 +25,16 @@ def _fmt(value) -> str:
     return str(value)
 
 
+def _num(x: float) -> str:
+    return f"{x:.0e}" if x < 0.01 else f"{x:g}"
+
+
 def _tol_text(rtol, atol) -> str:
     parts = []
     if rtol is not None:
-        parts.append(f"rtol {rtol:g}")
+        parts.append(f"rtol {_num(rtol)}")
     if atol is not None:
-        parts.append(f"atol {atol:g}")
+        parts.append(f"atol {_num(atol)}")
     return ", ".join(parts) if parts else "exact"
 
 
