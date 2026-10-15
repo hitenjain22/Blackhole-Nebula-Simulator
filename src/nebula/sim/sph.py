@@ -222,3 +222,111 @@ def compute_density(
         h_search[grow] = np.minimum(h_search[grow] * 1.5, h_max)
         h_guess = res.h
     raise RuntimeError("smoothing lengths kept outgrowing the neighbour search")
+
+
+# --------------------------------------------------------------------------- forces
+#
+# Pressure force and P dV heating, no dissipation yet (Phantom Eqs. 34-35; Price 2012 §3):
+#     dv_i/dt = - sum_j m_j [ P_i/(Omega_i rho_i^2) grad_i W_ij(h_i)
+#                           + P_j/(Omega_j rho_j^2) grad_i W_ij(h_j) ]
+#     du_i/dt =   P_i/(Omega_i rho_i^2) sum_j m_j (v_i - v_j) . grad_i W_ij(h_i)
+# with grad_i W_ij(h) = r_hat_ij dW/dr(|r_ij|, h), r_ij = x_i - x_j. Pair terms are
+# antisymmetric, so momentum, angular momentum and total energy sum(m (v^2/2 + u)) are
+# conserved to round-off by the sums themselves.
+
+
+@dataclass
+class ForceResult:
+    acc: np.ndarray  # (N, 3) hydro acceleration
+    dudt: np.ndarray  # (N,)
+
+
+def forces_reference(pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic"):
+    """Readable reference of the pressure force and heating (one particle at a time)."""
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    acc, dudt = np.zeros((n, 3)), np.zeros(n)
+    for i in range(n):
+        j = nb.of(i)
+        j = j[j != i]
+        dx = minimum_image(pos[i] - pos[j], nb.box)
+        r = np.linalg.norm(dx, axis=1)
+        rhat = dx / r[:, None]
+        gi = kernel.dw_dr(r, h[i])
+        gj = kernel.dw_dr(r, h[j])
+        pi = pressure[i] / (omega[i] * rho[i] ** 2)
+        pj = pressure[j] / (omega[j] * rho[j] ** 2)
+        acc[i] = -np.sum((mass[j] * (pi * gi + pj * gj))[:, None] * rhat, axis=0)
+        vdotr = np.sum((vel[i] - vel[j]) * rhat, axis=1)
+        dudt[i] = pi * np.sum(mass[j] * vdotr * gi)
+    return ForceResult(acc, dudt)
+
+
+@numba.njit(cache=True)
+def _dwdr(r, h, kid, cnorm):
+    """dW/dr; mirrors physics.kernels.Kernel.dw_dr."""
+    return cnorm / h**4 * kernel_df(r / h, kid)
+
+
+@numba.njit(parallel=True, cache=True)
+def _forces_kernel(
+    pos, vel, mass, h, rho, omega, pressure, offset, index, box, kid, cnorm, acc, dudt
+):
+    for i in numba.prange(pos.shape[0]):  # writes only to row i
+        pi = pressure[i] / (omega[i] * rho[i] * rho[i])
+        ax = 0.0
+        ay = 0.0
+        az = 0.0
+        du = 0.0
+        for k in range(offset[i], offset[i + 1]):
+            j = index[k]
+            if j == i:
+                continue
+            dx0 = pos[i, 0] - pos[j, 0]
+            dx1 = pos[i, 1] - pos[j, 1]
+            dx2 = pos[i, 2] - pos[j, 2]
+            if box[0] > 0.0:
+                dx0 -= box[0] * np.round(dx0 / box[0])
+            if box[1] > 0.0:
+                dx1 -= box[1] * np.round(dx1 / box[1])
+            if box[2] > 0.0:
+                dx2 -= box[2] * np.round(dx2 / box[2])
+            r = np.sqrt(dx0 * dx0 + dx1 * dx1 + dx2 * dx2)
+            rx = dx0 / r
+            ry = dx1 / r
+            rz = dx2 / r
+            gi = _dwdr(r, h[i], kid, cnorm)
+            gj = _dwdr(r, h[j], kid, cnorm)
+            pj = pressure[j] / (omega[j] * rho[j] * rho[j])
+            f = mass[j] * (pi * gi + pj * gj)
+            ax -= f * rx
+            ay -= f * ry
+            az -= f * rz
+            vdotr = (
+                (vel[i, 0] - vel[j, 0]) * rx
+                + (vel[i, 1] - vel[j, 1]) * ry
+                + (vel[i, 2] - vel[j, 2]) * rz
+            )
+            du += mass[j] * vdotr * gi
+        acc[i, 0] = ax
+        acc[i, 1] = ay
+        acc[i, 2] = az
+        dudt[i] = pi * du
+
+
+def forces_numba(
+    pos, vel, mass, h, rho, omega, pressure, nb: Neighbours, kernel_name="cubic"
+) -> ForceResult:
+    """Fast (parallel Numba) pressure force and heating; twin of ``forces_reference``."""
+    n = len(pos)
+    acc, dudt = np.empty((n, 3)), np.empty(n)
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _forces_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
+        np.ascontiguousarray(mass, float), np.ascontiguousarray(h, float),
+        np.ascontiguousarray(rho, float), np.ascontiguousarray(omega, float),
+        np.ascontiguousarray(pressure, float), nb.offset, nb.index, box, kid, C_NORM[kid],
+        acc, dudt,
+    )  # fmt: skip
+    return ForceResult(acc, dudt)
