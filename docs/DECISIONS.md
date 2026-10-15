@@ -95,3 +95,9 @@ Slowest GPU tile 0.074 s (limit ~1 s): 256 × 256 tiles are fine. Not yet measur
 **Decision (Hiten, 2026-10-14):** Wendland C4 with η = 1.6 is the project default (`physics.kernels.DEFAULT_KERNEL`). Both glasses in `data/` were regenerated with it (noise 0.13%). The cubic spline stays available by name. The Sod shock tube passed with the cubic spline (plateaus within 1.5%) and is re-run with Wendland C4.
 
 **Update to the Step 3.5 energy test after the kernel change (2026-10-14):** with Wendland C4 (larger h, so a longer Courant step) and the regenerated glass, the 1,000-step test gave max |ΔE/E| = 1.16 × 10⁻⁶ at Courant/32 (fails) and **2.6 × 10⁻⁷ at Courant/64 (passes)**; the step is now Courant/64. Same caveat as before: the equations conserve energy to round-off; this test bounds the time-stepping error only.
+
+## 2026-10-15: Gresho criterion, Sedov constant, and Sedov after the speed-up (Step 3.7; decided overnight, Hiten asleep)
+
+- **Gresho "substantially":** the plan asks the switch to "cut the error substantially". Made quantitative as: velocity L1 at t = 1 with the switch ≤ 70% of the L1 with constant α = 1, and falling with resolution. Measured: 0.143 / 0.255 = 0.56 (16 per unit length), 0.091 / 0.195 = 0.47 (32 per unit); switch L1 0.143 → 0.091 with resolution. The vortex is 2D, run as a slab periodic in z (thickness 1/2).
+- **Sedov constant verified:** new script `reference/scripts/22_sedov_constant.py` integrates the self-similar equations: ξ₀ = 1.151666 for γ = 5/3 (quoted 1.1517), 1.032777 for γ = 1.4 (classic 1.033). Noted in expected-values §4 without changing the value.
+- **Order:** the Sedov blast needs ~110,000 particles (R ≥ 10 h inside the periodic box) with one global time step; at the measured speed (~7 minutes per time unit for 16,000 particles) that is many hours. Step 3.8 (speed) is done first, then the Sedov test. Nothing is skipped.

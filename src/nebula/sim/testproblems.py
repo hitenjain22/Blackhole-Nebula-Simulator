@@ -188,3 +188,105 @@ def sound_measure(prob: Problem, st: HydroState, baseline: HydroState) -> WaveMe
 
 def run_problem(prob: Problem, callback=None) -> HydroState:
     return run(prob.state, prob.cfg, prob.t_end, callback=callback)
+
+
+# --------------------------------------------------------------------------- Gresho vortex
+#
+# Gresho & Chan (1990), as used by Springel (2010) and Cullen & Dehnen (2010); expected-values
+# §4: rho = 1, gamma = 5/3, a steady vortex (pressure gradient balances rotation exactly):
+#     v_phi = 5r (r < 0.2); 2 - 5r (0.2 <= r < 0.4); 0 (r >= 0.4)
+#     P = 5 + 12.5 r^2 (r < 0.2); 9 + 12.5 r^2 - 20 r + 4 ln(5r) (0.2-0.4); 3 + 4 ln 2 (r >= 0.4)
+# It is 2D: run as a slab periodic in z (unit square periodic in x, y; centre at (0.5, 0.5)).
+
+GRESHO_GAMMA = 5.0 / 3.0
+
+
+def gresho_vphi(r):
+    r = np.asarray(r, float)
+    return np.where(r < 0.2, 5 * r, np.where(r < 0.4, 2 - 5 * r, 0.0))
+
+
+def gresho_pressure(r):
+    r = np.asarray(r, float)
+    rs = np.maximum(r, 1e-12)
+    inner = 5 + 12.5 * r**2
+    mid = 9 + 12.5 * r**2 - 20 * r + 4 * np.log(5 * rs)
+    return np.where(r < 0.2, inner, np.where(r < 0.4, mid, 3 + 4 * np.log(2)))
+
+
+def gresho_setup(resolution: str = "low", switch: bool = True) -> Problem:
+    """low: 16 particles per unit length (glass_512, 2,048 particles); high: 32 per unit
+    (glass_4096, 16,384). Slab thickness 1/2. switch=False: constant alpha = 1."""
+    glass = load_glass(512 if resolution == "low" else 4096)
+    depth = 0.5
+    x = tile_glass(glass, (2, 2, 1), (1.0, 1.0, depth))
+    n = len(x)
+    mass = depth / n
+    d = x[:, :2] - 0.5
+    r = np.linalg.norm(d, axis=1)
+    vphi = gresho_vphi(r)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ehat = np.where(r[:, None] > 0, np.column_stack([-d[:, 1], d[:, 0]]) / r[:, None], 0.0)
+    v = np.zeros_like(x)
+    v[:, :2] = vphi[:, None] * ehat
+    u = gresho_pressure(r) / ((GRESHO_GAMMA - 1.0) * 1.0)
+    cfg = HydroConfig(
+        gamma=GRESHO_GAMMA, box=(1.0, 1.0, depth), switch=switch, alpha_const=1.0, alpha_init=0.0
+    )
+    st = initialise(x, v, u, mass, np.full(n, cfg.eta * mass ** (1 / 3)), cfg)
+    return Problem(st, cfg, 1.0, 0.0, {})
+
+
+def gresho_l1(st: HydroState) -> tuple[float, np.ndarray, np.ndarray]:
+    """L1 error of v_phi over particles with r < 0.5, and binned profile (r, <v_phi>)."""
+    d = st.x[:, :2] - 0.5
+    r = np.linalg.norm(d, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        vphi = (d[:, 0] * st.v[:, 1] - d[:, 1] * st.v[:, 0]) / r
+    sel = (r < 0.5) & (r > 0)
+    l1 = float(np.mean(np.abs(vphi[sel] - gresho_vphi(r[sel]))))
+    edges = np.linspace(0, 0.5, 26)
+    centres, prof = _bin(r[sel], vphi[sel], edges)
+    return l1, centres, prof
+
+
+# --------------------------------------------------------------------------- Sedov blast
+#
+# Energy E = 1 deposited in the internal energy of the particles within reach of the box
+# centre (kernel-weighted, background smoothing length) in a uniform glass of density 1,
+# gamma = 5/3; background u = 1e-6 of the peak blast value (negligible pressure). Exact:
+# shock radius R = xi0 (E t^2 / rho)^(1/5), xi0 = 1.151666 (expected-values §4, script 22).
+
+SEDOV_GAMMA = 5.0 / 3.0
+SEDOV_XI0 = 1.151666
+
+
+def sedov_setup(tiles: int = 3) -> Problem:
+    """Periodic unit box tiled with tiles^3 copies of glass_4096 (3 -> 110,592 particles)."""
+    from nebula.physics.kernels import get_kernel
+
+    x = tile_glass(load_glass(4096), (tiles, tiles, tiles), (1.0, 1.0, 1.0))
+    n = len(x)
+    mass = 1.0 / n
+    cfg = HydroConfig(gamma=SEDOV_GAMMA, box=(1.0, 1.0, 1.0))
+    h_bg = cfg.eta * mass ** (1 / 3)
+    r = np.linalg.norm(x - 0.5, axis=1)
+    w = get_kernel(cfg.kernel).w(r, h_bg)
+    u_blast = w / np.sum(w) / mass  # sum(m u) = E = 1
+    u = np.maximum(u_blast, 1e-6 * u_blast.max())
+    st = initialise(x, np.zeros_like(x), u, mass, np.full(n, h_bg), cfg)
+    return Problem(st, cfg, 0.0, 0.0, {"h_bg": h_bg, "energy": 1.0})
+
+
+def sedov_radius(st: HydroState, h_bg: float) -> tuple[float, np.ndarray, np.ndarray]:
+    """Shock radius = where the radially binned density peaks (parabola-refined)."""
+    r = np.linalg.norm(st.x - 0.5, axis=1)
+    edges = np.arange(0.0, 0.5, 0.25 * h_bg)
+    centres, prof = _bin(r, st.rho, edges)
+    k = int(np.nanargmax(prof))
+    a, b, _ = np.polyfit(centres[k - 1 : k + 2] - centres[k], prof[k - 1 : k + 2], 2)
+    return float(centres[k] - b / (2 * a)), centres, prof
+
+
+def sedov_exact_radius(t: float, energy: float = 1.0) -> float:
+    return SEDOV_XI0 * (energy * t * t) ** 0.2

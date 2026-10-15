@@ -108,7 +108,7 @@ p* = 0.303130, u* = 0.927453, ρ*L = 0.426319, ρ*R = 0.265574, shock speed 1.75
 
 **Head-on collision of two cold streams at ±v** (strong-shock jump conditions): post-shock gas at rest, u = v²/2; compression (γ+1)/(γ−1) = 4 (γ = 5/3) or 7 (γ = 4/3); shock speed in the lab frame v/3 or v/6.
 
-**Sedov blast** (γ = 5/3): R = ξ₀ (E t²/ρ)^(1/5), ξ₀ ≈ 1.1517. *From the literature (e.g., Kamm & Timmes 2007), not recomputed here; check before using as a tight tolerance.*
+**Sedov blast** (γ = 5/3): R = ξ₀ (E t²/ρ)^(1/5), ξ₀ ≈ 1.1517. *From the literature (e.g., Kamm & Timmes 2007), not recomputed here; check before using as a tight tolerance.* **Verified 2026-10-15** (Phase 3, Step 3.7) by `22`, which integrates the self-similar equations from the shock inward: ξ₀ = 1.151666 (γ = 5/3); cross-check γ = 1.4 gives 1.032777 (classic value for air, 1.033).
 
 **Gresho–Chan vortex** (ρ = 1, γ = 5/3; Gresho & Chan 1990 as used by Springel 2010): v_φ = 5r (r < 0.2); 2 − 5r (0.2 ≤ r < 0.4); 0 (r ≥ 0.4). P = 5 + 12.5r² (r < 0.2); 9 + 12.5r² − 20r + 4 ln(5r) (0.2–0.4); 3 + 4 ln 2 (r ≥ 0.4). Steady: any change is numerical error.
 
@@ -309,3 +309,4 @@ Plan-time checks, not project code (SciPy/NumPy; `17` needs `colour-science`). R
 | 19_pericentre_variants | precession, r_SI, r_circ for r_p = 15, 25, 40 |
 | 20_kerr_efficiency_scenario | ISCO efficiencies, torus precession, Eddington and energy numbers |
 | 21_precision_and_review_checks | extra-digit EOS, ray and orbit values; hot-blob ledger orbit; colour-LUT interpolation error; band fractions; Doppler test ring |
+| 22_sedov_constant | Sedov–Taylor constant ξ₀ from the self-similar ODEs (added in Phase 3) |
