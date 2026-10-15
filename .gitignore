@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.ipynb_checkpoints/
+
+# Virtual environment (rebuilt with `uv sync`)
+.venv/
+
+# Large, regenerated outputs (PLAN.md §6)
+/runs/
+/frames/
+/videos/
+*.npz
+
+# Check images are regenerated, not committed; milestone images go to docs/figures/.
+/outputs/*
+!/outputs/checks/
+/outputs/checks/*
+!/outputs/checks/.gitkeep
+
+# macOS
+.DS_Store

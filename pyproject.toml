@@ -1,0 +1,38 @@
+[project]
+name = "nebula"
+version = "0.1.0"
+description = "A gas cloud torn apart and swallowed by a black hole: SPH simulation and GPU ray-traced rendering."
+readme = "README.md"
+authors = [
+    { name = "hitenjain22", email = "jjain.hiten@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "imageio>=2.38.1",
+    "imageio-ffmpeg>=0.6.0",
+    "matplotlib>=3.11.2",
+    # Capped: 0.62.x is the last Numba with Intel-Mac wheels (see docs/DECISIONS.md).
+    "numba>=0.62.1,<0.63",
+    "numpy>=2.3.5",
+    "scipy>=1.18.1",
+    "wgpu>=0.32.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["reference/scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "NPY"]
