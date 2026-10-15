@@ -12,6 +12,11 @@ Shader contract for ``run_tiled``: entry point ``main`` with @workgroup_size(8, 
     @group(0) @binding(1) var<storage, read_write> out: array<vec4<f32>>;
 
 writing pixel (origin + local) to out[local.y * size.x + local.x].
+
+Shader contract for ``run_items`` (one invocation per item, e.g. per test ray): entry point
+``main`` with @workgroup_size(64), binding 0 a uniform struct (any layout; its bytes are
+passed in), bindings 1..k read-only storage inputs, binding k+1 the read_write output.
+Shader libraries (e.g. schw_ray.wgsl) are combined with an entry shader by ``load_shader``.
 """
 
 import time
@@ -35,8 +40,51 @@ def get_device() -> wgpu.GPUDevice:
     return adapter.request_device_sync()
 
 
-def load_shader(name: str) -> str:
-    return (SHADER_DIR / name).read_text()
+def load_shader(*names: str) -> str:
+    """WGSL source of one or more files in render/shaders, concatenated in order (WGSL has no
+    #include: libraries come first, then the entry shader that calls them)."""
+    return "\n".join((SHADER_DIR / name).read_text() for name in names)
+
+
+def run_items(
+    shader_code: str,
+    uniform: bytes,
+    inputs: list[np.ndarray],
+    n_items: int,
+    out_item_bytes: int,
+    workgroup: int = 64,
+) -> bytes:
+    """Run a compute shader once per item (see the module docstring for the binding layout)
+    and return the raw output buffer (n_items * out_item_bytes bytes).
+
+    For small jobs (tests, lookup tables); images go through ``run_tiled``-style tiling.
+    """
+    device = get_device()
+    module = device.create_shader_module(code=shader_code)
+    pipeline = device.create_compute_pipeline(
+        layout="auto", compute={"module": module, "entry_point": "main"}
+    )
+    usage = wgpu.BufferUsage
+    uni = device.create_buffer_with_data(
+        data=uniform + bytes(-len(uniform) % 16), usage=usage.UNIFORM
+    )
+    entries = [{"binding": 0, "resource": {"buffer": uni}}]
+    for k, arr in enumerate(inputs, start=1):
+        buf = device.create_buffer_with_data(
+            data=np.ascontiguousarray(arr).tobytes(), usage=usage.STORAGE
+        )
+        entries.append({"binding": k, "resource": {"buffer": buf}})
+    out = device.create_buffer(size=n_items * out_item_bytes, usage=usage.STORAGE | usage.COPY_SRC)
+    entries.append({"binding": len(inputs) + 1, "resource": {"buffer": out}})
+    bind_group = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=entries)
+    encoder = device.create_command_encoder()
+    cpass = encoder.begin_compute_pass()
+    cpass.set_pipeline(pipeline)
+    cpass.set_bind_group(0, bind_group)
+    cpass.dispatch_workgroups(-(-n_items // workgroup), 1, 1)
+    cpass.end()
+    device.queue.submit([encoder.finish()])
+    return bytes(device.queue.read_buffer(out))
 
 
 @dataclass
