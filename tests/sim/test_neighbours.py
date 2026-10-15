@@ -90,3 +90,74 @@ def test_neighbour_count_on_lattice():
     counts = find_neighbours(pos, h, box=1.0).counts - 1  # excluding self
     check("fcc lattice, eta=1.2: neighbours (excl. self) vs 57.9", 57.9, counts.mean(), rtol=0.1)
     check("every particle has the same count (perfect lattice)", True, bool(np.ptp(counts) == 0))
+
+
+# --------------------------------------------------------------------------- Numba cell grid
+
+
+def _same_lists(a, b) -> bool:
+    return bool(np.array_equal(a.offset, b.offset) and np.array_equal(a.index, b.index))
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["open_uneven", "periodic_cube", "periodic_long_box", "isolated_large_h", "clump_and_halo"],
+)
+def test_numba_grid_matches_kdtree(rng, case):
+    """find_neighbours_numba gives exactly the cKDTree reference lists (rule 2)."""
+    from nebula.sim.neighbours import find_neighbours_numba
+
+    if case == "open_uneven":
+        pos, h = _uneven(rng, 3000, 2.0)
+        box = None
+    elif case == "periodic_cube":
+        pos, h = _uneven(rng, 3000, 2.0)
+        box = 2.0
+    elif case == "periodic_long_box":  # like the Sod tube: 16x longer than wide
+        box = np.array([2.0, 0.125, 0.125])
+        pos = rng.uniform(0, 1, (4000, 3)) * box
+        h = rng.uniform(0.005, 0.03, 4000)
+    elif case == "isolated_large_h":
+        pos = np.concatenate([rng.uniform(0, 1, (2000, 3)), [[5.0, 5.0, 5.0], [-3.0, 0.5, 0.5]]])
+        h = np.concatenate([np.full(2000, 0.04), [4.0, 2.5]])
+        box = None
+    else:  # dense clump inside a sparse halo: h varies 100x
+        pos = np.concatenate([rng.normal(0, 0.02, (2000, 3)), rng.uniform(-1, 1, (500, 3))])
+        h = np.concatenate([np.full(2000, 0.005), np.full(500, 0.5)])
+        box = None
+    ref = find_neighbours(pos, h, box=box)
+    fast = find_neighbours_numba(pos, h, box=box)
+    check(f"Numba grid = cKDTree lists ({case})", True, _same_lists(ref, fast))
+
+
+def test_numba_grid_single_particle():
+    from nebula.sim.neighbours import find_neighbours_numba
+
+    nb = find_neighbours_numba(np.array([[0.3, 0.2, 0.1]]), np.array([0.1]))
+    check("single particle: lists itself only", [0], nb.of(0).tolist())
+
+
+def test_tighten_keeps_exactly_the_interacting_pairs(rng):
+    """Lists built with a 1.25x search margin, tightened at the true h, equal the lists built
+    at h directly; and the force pass gives bit-identical results on either."""
+    from nebula.sim.neighbours import find_neighbours_numba, tighten
+    from nebula.sim.sph import compute_density, forces_numba
+
+    pos, h = _uneven(rng, 3000, 2.0)
+    loose = find_neighbours_numba(pos, 1.25 * h, box=2.0)
+    tight = tighten(loose, pos, h)
+    direct = find_neighbours_numba(pos, h, box=2.0)
+    check("tightened lists = lists built at h", True, _same_lists(tight, direct))
+    mass = np.full(len(pos), 1e-3)
+    h_guess = np.full(len(pos), 1.6 * (8.0 / len(pos)) ** (1 / 3))  # from the mean density
+    d = compute_density(pos, mass, h_guess, box=2.0)
+    vel = rng.normal(0, 0.1, pos.shape)
+    u = rng.uniform(0.5, 1.5, len(pos))
+    p = (2 / 3) * d.rho * u
+    cs = np.sqrt(10 / 9 * u)
+    alpha = rng.uniform(0, 1, len(pos))
+    nb_tight = tighten(d.neighbours, pos, d.h)
+    a = forces_numba(pos, vel, mass, d.h, d.rho, d.omega, p, d.neighbours, u=u, c_s=cs, alpha=alpha)
+    b = forces_numba(pos, vel, mass, d.h, d.rho, d.omega, p, nb_tight, u=u, c_s=cs, alpha=alpha)
+    same = np.array_equal(a.acc, b.acc) and np.array_equal(a.dudt, b.dudt)
+    check("forces on tightened lists bit-identical", True, bool(same))

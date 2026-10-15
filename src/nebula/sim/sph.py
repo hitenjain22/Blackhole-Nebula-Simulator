@@ -26,7 +26,7 @@ import numpy as np
 
 from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL, get_kernel
 from nebula.sim.kernels_nb import C_NORM, KERNEL_IDS, kernel_df, kernel_f
-from nebula.sim.neighbours import Neighbours, find_neighbours, minimum_image
+from nebula.sim.neighbours import Neighbours, find_neighbours_numba, minimum_image
 
 FLAG_OK = 0
 FLAG_AT_H_MAX = 1  # no root below h_max: h capped (too few neighbours)
@@ -44,6 +44,25 @@ class DensityResult:
     iterations: np.ndarray
     flags: np.ndarray
     neighbours: Neighbours
+    cache: "NeighbourCache | None" = None
+
+
+@dataclass
+class NeighbourCache:
+    """Neighbour lists kept between steps ("Verlet lists"): built at positions x_ref with search
+    smoothing lengths h_search, so they hold every pair with r < 2 max(hs_i, hs_j) then.
+
+    Validity (exact): if no particle has moved more than d_max since, any pair that now has
+    r < 2 max(h_i, h_j) had r_build < 2 max(h_i + d_max, h_j + d_max); so the lists are
+    complete for every particle with h_i <= hs_i - d_max. That bound is passed to the density
+    solver as its search limit; a particle that needs more is flagged and the lists rebuilt.
+    """
+
+    neighbours: Neighbours
+    x_ref: np.ndarray
+    h_search: np.ndarray
+    builds: int = 1
+    reuses: int = 0
 
 
 # --------------------------------------------------------------------------- reference
@@ -112,11 +131,26 @@ def density_reference(
 
 
 @numba.njit(cache=True)
-def _sums(i, h, pos, mass, offset, index, box, kid, cnorm):
-    """rho_sum(h) and sum_j m_j dW/dh for particle i (mirrors _rho_sum_reference)."""
+def _sums(r, m, cnt, h, kid, cnorm):
+    """rho_sum(h) and sum_j m_j dW/dh from precomputed neighbour distances r[:cnt] and masses
+    m[:cnt] (mirrors _rho_sum_reference)."""
     rs = 0.0
     dws = 0.0
     inv_h = 1.0 / h
+    for k in range(cnt):
+        q = r[k] * inv_h
+        if q < 2.0:
+            fq = kernel_f(q, kid)
+            rs += m[k] * cnorm * inv_h**3 * fq
+            dws += m[k] * (-cnorm * inv_h**4 * (3.0 * fq + q * kernel_df(q, kid)))
+    return rs, dws
+
+
+@numba.njit(cache=True)
+def _distances(i, r_max, pos, mass, offset, index, box, r, m):
+    """Distances (minimum image) and masses of i's list entries closer than r_max, into r, m;
+    returns how many. Done once per particle: the Newton iterations only re-evaluate W."""
+    cnt = 0
     for k in range(offset[i], offset[i + 1]):
         j = index[k]
         d2 = 0.0
@@ -125,12 +159,11 @@ def _sums(i, h, pos, mass, offset, index, box, kid, cnorm):
             if box[c] > 0.0:
                 dx -= box[c] * np.round(dx / box[c])
             d2 += dx * dx
-        q = np.sqrt(d2) * inv_h
-        if q < 2.0:
-            fq = kernel_f(q, kid)
-            rs += mass[j] * cnorm * inv_h**3 * fq
-            dws += mass[j] * (-cnorm * inv_h**4 * (3.0 * fq + q * kernel_df(q, kid)))
-    return rs, dws
+        if d2 < r_max * r_max:
+            r[cnt] = np.sqrt(d2)
+            m[cnt] = mass[j]
+            cnt += 1
+    return cnt
 
 
 @numba.njit(parallel=True, cache=True)
@@ -140,6 +173,10 @@ def _density_kernel(
 ):  # fmt: skip
     for i in numba.prange(pos.shape[0]):
         m_i = mass[i]
+        row = offset[i + 1] - offset[i]
+        r = np.empty(row)
+        m = np.empty(row)
+        cnt = _distances(i, 2.0 * min(h_search[i], h_max), pos, mass, offset, index, box, r, m)
         hi = min(h_search[i], h_max)
         lo = 0.0
         h = min(h_start[i], hi)
@@ -148,7 +185,7 @@ def _density_kernel(
         it = 0
         while it < 50:
             it += 1
-            rs, dws = _sums(i, h, pos, mass, offset, index, box, kid, cnorm)
+            rs, dws = _sums(r, m, cnt, h, kid, cnorm)
             f = rs - m_i * (eta / h) ** 3
             df = dws + 3.0 * m_i * eta**3 / h**4
             if f > 0:
@@ -165,11 +202,11 @@ def _density_kernel(
             h = h_new
         h_lim = min(h_search[i], h_max)
         if h >= h_lim * (1 - 1e-3):  # near the limit: is there a root below it at all?
-            rs_lim, _ = _sums(i, h_lim, pos, mass, offset, index, box, kid, cnorm)
+            rs_lim, _ = _sums(r, m, cnt, h_lim, kid, cnorm)
             if rs_lim - m_i * (eta / h_lim) ** 3 < 0:
                 h = h_lim
                 flag = 1 if h_lim >= h_max else 2
-        rs, dws = _sums(i, h, pos, mass, offset, index, box, kid, cnorm)
+        rs, dws = _sums(r, m, cnt, h, kid, cnorm)
         h_out[i] = h
         rho[i] = rs
         omega[i] = 1.0 + h / (3.0 * rs) * dws
@@ -212,22 +249,42 @@ def compute_density(
     eta=DEFAULT_ETA,
     tol=1e-4,
     h_max=np.inf,
-    skin=1.25,
+    skin=1.4,
+    cache: NeighbourCache | None = None,
 ) -> DensityResult:
-    """Density pass with automatic neighbour lists: search radius 2 h_guess x skin; particles
-    whose h grows past it are redone with larger lists (at most 8 rounds)."""
+    """Density pass with neighbour lists. Lists are built with search radius 2 h_guess x skin,
+    or reused from ``cache`` while still provably complete (see NeighbourCache); particles whose
+    h outgrows the search are redone with rebuilt lists, doubling their search (up to 12
+    rounds). The result carries the cache to pass to the next call."""
     h_guess = np.asarray(h_guess, float)
-    h_search = np.minimum(h_guess * skin, h_max)
-    if box is not None:
-        h_search = np.minimum(h_search, 0.2499 * np.min(np.broadcast_to(box, (3,))))
-    for _ in range(8):
-        nb = find_neighbours(pos, h_search, box=box)
+    box_arr = None if box is None else np.broadcast_to(np.asarray(box, float), (3,))
+    cap = h_max if box_arr is None else min(h_max, 0.2499 * float(np.min(box_arr)))
+    if cache is not None and len(cache.x_ref) == len(pos):
+        d = minimum_image(np.asarray(pos, float) - cache.x_ref, box_arr)
+        d_max = float(np.sqrt(np.max(np.sum(d * d, axis=1)))) if len(pos) else 0.0
+        h_eff = cache.h_search - d_max
+        if np.all(h_eff > 0.5 * h_guess):
+            res = density_numba(
+                pos, mass, h_guess, cache.neighbours, h_eff, kernel_name, eta, tol, h_max
+            )
+            if not np.any(res.flags == FLAG_SEARCH_TOO_SMALL):
+                cache.reuses += 1
+                res.cache = cache
+                return res
+            h_guess = np.maximum(h_guess, res.h)
+    builds = 0 if cache is None else cache.builds
+    h_search = np.minimum(h_guess * skin, cap)
+    for _ in range(12):
+        nb = find_neighbours_numba(pos, h_search, box=box_arr)
+        builds += 1
         res = density_numba(pos, mass, h_guess, nb, h_search, kernel_name, eta, tol, h_max)
         grow = res.flags == FLAG_SEARCH_TOO_SMALL
         if not np.any(grow):
+            reuses = 0 if cache is None else cache.reuses
+            res.cache = NeighbourCache(nb, np.array(pos, float), h_search.copy(), builds, reuses)
             return res
         h_search = h_search.copy()
-        h_search[grow] = np.minimum(h_search[grow] * 1.5, h_max)
+        h_search[grow] = np.minimum(h_search[grow] * 2.0, cap)
         h_guess = res.h
     raise RuntimeError("smoothing lengths kept outgrowing the neighbour search")
 

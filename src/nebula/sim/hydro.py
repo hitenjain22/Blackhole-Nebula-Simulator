@@ -22,6 +22,7 @@ import numpy as np
 from nebula.physics import viscosity as visc
 from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed, isothermal_pressure
 from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
+from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
     COND_PRESSURE,
     ShockCapturing,
@@ -40,6 +41,7 @@ class HydroConfig:
     box: tuple | None = None  # periodic box lengths, or None (open)
     h_max: float = np.inf
     courant: float = 0.3
+    skin: float = 1.4  # neighbour-search margin; 1.4 was fastest of 1.25/1.4/1.6 (DECISIONS 3.8)
     c_force: float = 0.25
     viscosity: bool = True
     conductivity: bool = True
@@ -67,6 +69,7 @@ class HydroState:
     c_s: np.ndarray = field(default=None)
     vsig_max: np.ndarray = field(default=None)
     n_flagged: int = 0  # density flags (h at its cap) in the last evaluation
+    neighbour_cache: object = field(default=None)  # sph.NeighbourCache, reused between steps
 
 
 def _eos(cfg: HydroConfig, rho, u):
@@ -84,13 +87,15 @@ def evaluate(
     step over which the viscosity switch is advanced (0 at start-up: alpha left as is)."""
     box = None if cfg.box is None else np.asarray(cfg.box, float)
     d = compute_density(
-        state.x, state.mass, state.h, box=box, kernel_name=cfg.kernel, eta=cfg.eta, h_max=cfg.h_max
-    )
+        state.x, state.mass, state.h, box=box, kernel_name=cfg.kernel, eta=cfg.eta,
+        h_max=cfg.h_max, cache=state.neighbour_cache, skin=cfg.skin,
+    )  # fmt: skip
     p, cs = _eos(cfg, d.rho, state.u)
+    nb = tighten(d.neighbours, state.x, d.h)  # only interacting pairs (identical sums, less work)
     alpha = state.alpha
     if cfg.viscosity and cfg.switch and dt_alpha > 0:
         a_prev = np.zeros_like(state.x) if acc_prev is None else acc_prev
-        g = gradients_numba(state.x, state.v, a_prev, state.mass, d.h, d.neighbours, cfg.kernel)
+        g = gradients_numba(state.x, state.v, a_prev, state.mass, d.h, nb, cfg.kernel)
         xi = visc.balsara_xi(g.div_v, g.curl_v)
         a_loc = visc.alpha_local(d.h, g.ddivv_dt, xi, cs)
         alpha = visc.alpha_update(alpha, a_loc, dt_alpha, visc.decay_time(d.h, cs))
@@ -98,7 +103,7 @@ def evaluate(
         alpha = np.full(len(state.x), cfg.alpha_const)
     shock = ShockCapturing(cfg.beta, cfg.alpha_u, cfg.conductivity_signal)
     f = forces_numba(
-        state.x, state.v, state.mass, d.h, d.rho, d.omega, p, d.neighbours, cfg.kernel,
+        state.x, state.v, state.mass, d.h, d.rho, d.omega, p, nb, cfg.kernel,
         u=state.u if (cfg.conductivity and cfg.isothermal_cs is None) else None,
         c_s=cs if cfg.viscosity else None,
         alpha=alpha if cfg.viscosity else None,
@@ -108,7 +113,7 @@ def evaluate(
     vsig = f.vsig_max if cfg.viscosity else np.maximum(cs, 0.0)
     return replace(
         state, h=d.h, alpha=alpha, acc=f.acc, dudt=dudt, rho=d.rho, pressure=p, c_s=cs,
-        vsig_max=vsig, n_flagged=int(np.sum(d.flags != 0)),
+        vsig_max=vsig, n_flagged=int(np.sum(d.flags != 0)), neighbour_cache=d.cache,
     )  # fmt: skip
 
 
