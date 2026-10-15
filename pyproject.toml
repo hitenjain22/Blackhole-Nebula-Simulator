@@ -39,3 +39,5 @@ select = ["E", "F", "I", "B", "UP", "NPY"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = ["slow: long tests, skipped by default; run with `uv run pytest -s -m slow`"]

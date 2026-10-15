@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from nebula.render.video import write_video
+from tests.helpers import check
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -20,14 +21,6 @@ def video_stream_line(path) -> str:
     return next(line for line in info.splitlines() if "Video:" in line)
 
 
-def report(checks: dict) -> None:
-    print()
-    for name, (expected, actual) in checks.items():
-        ok = expected == actual
-        print(f"video {name:16s} | {expected} | {actual} | {'PASS' if ok else 'FAIL'}")
-    assert all(e == a for e, a in checks.values())
-
-
 def test_video_format(tmp_path):
     n, w, h = 12, 64, 48
     frames = (np.full((h, w, 3), 10 * k, dtype=np.uint8) for k in range(n))
@@ -38,16 +31,16 @@ def test_video_format(tmp_path):
     # e.g. "Video: h264 (High) (...), yuv420p(tv, bt709, progressive), 64x48 ..., 30 fps"
     # ffmpeg prints a single "bt709" only when matrix, primaries and transfer are all bt709.
     pix = re.search(r"(yuv\w+)\(([^)]*)\)", stream)
-    report(
-        {
-            "frame count": (n, imageio_ffmpeg.count_frames_and_secs(str(path))[0]),
-            "codec": ("h264", re.search(r"Video: (\w+)", stream).group(1)),
-            "pixel format": ("yuv420p", pix.group(1)),
-            "range, colour tags": ("tv, bt709", ", ".join(pix.group(2).split(", ")[:2])),
-            "size": (f"{w}x{h}", re.search(r", (\d+x\d+)", stream).group(1)),
-            "fps": ("30", re.search(r"([\d.]+) fps", stream).group(1)),
-        }
-    )
+    rows = {
+        "frame count": (n, imageio_ffmpeg.count_frames_and_secs(str(path))[0]),
+        "codec": ("h264", re.search(r"Video: (\w+)", stream).group(1)),
+        "pixel format": ("yuv420p", pix.group(1)),
+        "range, colour tags": ("tv, bt709", ", ".join(pix.group(2).split(", ")[:2])),
+        "size": (f"{w}x{h}", re.search(r", (\d+x\d+)", stream).group(1)),
+        "fps": ("30", re.search(r"([\d.]+) fps", stream).group(1)),
+    }
+    for name, (expected, actual) in rows.items():
+        check(f"video {name}", expected, actual)
 
 
 def test_colours_are_bt709(tmp_path):
@@ -83,9 +76,7 @@ def test_colours_are_bt709(tmp_path):
         g = (yy - kr * r - kb * b) / (1 - kr - kb)
         rgb = np.round(255 * np.array([r, g, b]))
         worst = max(worst, int(np.abs(rgb - colours[i]).max()))
-    verdict = "PASS" if worst <= 3 else "FAIL"
-    print(f"\nvideo BT.709 colour round trip | <= 3 levels | {worst} levels | {verdict}")
-    assert worst <= 3
+    check("video BT.709 colour round trip (levels)", 0, worst, atol=3)
 
 
 def test_odd_size_refused(tmp_path):
