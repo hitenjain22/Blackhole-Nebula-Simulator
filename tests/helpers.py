@@ -48,13 +48,25 @@ def _print_header() -> None:
         _header_printed = True
 
 
-def check(name: str, expected, actual, rtol: float | None = None, atol: float | None = None):
+def check(
+    name: str,
+    expected,
+    actual,
+    rtol: float | None = None,
+    atol: float | None = None,
+    per_vector: bool = False,
+):
     """Print one table row and assert that ``actual`` matches ``expected``.
 
     Passes when |actual - expected| <= atol + rtol * |expected| for every element (missing
     tolerances count as 0). With neither tolerance given, values must be exactly equal; that
     is also how non-numeric values (strings, booleans) are compared. Arrays report their
     worst element.
+
+    ``per_vector=True`` is for arrays of 3-vectors (last axis): |.| is then the vector length,
+    so the error of each vector is measured against that vector's size, not against each of
+    its components (a component that is nearly zero only because of how the axes happen to
+    point would otherwise dominate; see docs/DECISIONS.md, Step 1.2).
     """
     _print_header()
     numeric = rtol is not None or atol is not None
@@ -64,17 +76,24 @@ def check(name: str, expected, actual, rtol: float | None = None, atol: float | 
         a = np.asarray(actual, dtype=np.float64)
         if e.shape != a.shape and e.size != 1:
             raise ValueError(f"{name}: shape mismatch {e.shape} vs {a.shape}")
-        err = np.abs(a - e)
-        limit = (atol or 0.0) + (rtol or 0.0) * np.abs(e)
+        if per_vector:
+            err = np.linalg.norm(a - e, axis=-1)
+            size = np.linalg.norm(np.broadcast_to(e, a.shape), axis=-1)
+        else:
+            err = np.abs(a - e)
+            size = np.abs(np.broadcast_to(e, a.shape))
+        limit = (atol or 0.0) + (rtol or 0.0) * size
         ok = bool(np.all(err <= limit)) and not np.any(np.isnan(a))
         if a.size > 1:
             worst = int(np.argmax(err - limit))
             with np.errstate(divide="ignore", invalid="ignore"):
-                rel = np.max(err / np.abs(e)) if np.all(e != 0) else np.nan
+                rel = np.max(err / size) if np.all(size != 0) else np.nan
             extra = f"  (max abs err {err.max():.3g}, max rel err {rel:.3g}, worst index {worst})"
     else:
         ok = bool(np.all(np.asarray(expected == actual)))
     verdict = "PASS" if ok else "FAIL"
+    if per_vector:
+        extra = extra.replace("worst index", "per vector, worst vector")
     print(
         f"{name:{NAME_WIDTH}s} | {_fmt(expected):>18s} | {_fmt(actual):>18s} | "
         f"{_tol_text(rtol, atol):10s} | {verdict}{extra}"
