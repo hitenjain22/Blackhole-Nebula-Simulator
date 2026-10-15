@@ -1,8 +1,34 @@
-# How to use this plan (for Hiten)
+# Nebula–Black Hole simulation
+
+A gas cloud of 0.1 solar masses, like the real cloud G2, falls toward a black hole of 4.3 million solar masses, like Sagittarius A* at the centre of our galaxy. The hole's gravity stretches the cloud into a stream that whips around it, precesses by 24° per orbit, crashes into itself, heats up, and settles into a hot, glowing torus that drains into the hole. This repository holds:
+
+- a **simulator**: 3D smoothed-particle hydrodynamics (SPH) with relativistically accurate orbits (the Tejeda & Rosswog generalized-Newtonian description of a Schwarzschild black hole), shocks, radiative cooling and disk viscosity;
+- a **renderer**: a GPU ray tracer that bends light around the hole and renders the gas with true blackbody colour, Doppler beaming and gravitational redshift.
+
+Everything runs on a 2020 Intel MacBook Air, with long jobs overnight. Every physics result is checked against independently computed numbers (`reference/expected-values.md`). See `PLAN.md` for the full plan and `phases/` for the step-by-step specs. **Status:** Phase 0 (setup and platform checks) complete.
+
+## Quick start
+
+Needs [uv](https://docs.astral.sh/uv/) (Python 3.12 and every library version are pinned by it).
+
+```
+uv sync                  # create the environment from uv.lock
+uv run pytest -s         # run the tests and print the comparison table
+uv run pytest -s -m slow # also run the long tests
+uv run ruff check        # lint
+```
+
+Each test prints one row per check: `name | expected | actual | tolerance | PASS/FAIL`.
+
+Platform checks (results go to `outputs/checks/`): `scripts/platform_report.py`, `scripts/numba_bench.py`, `scripts/gpu_check.py`, `scripts/video_check.py`, each run with `uv run python <script>`.
+
+---
+
+## How to use this plan (for Hiten)
 
 This folder is the complete plan for the project: a physically accurate, cinematic simulation of a gas cloud being torn apart and swallowed by a black hole. Claude Code builds it; you steer, check and decide.
 
-## What's in here
+### What's in here
 
 | File | What it is |
 |---|---|
@@ -14,7 +40,7 @@ This folder is the complete plan for the project: a physically accurate, cinemat
 | `reference/references.md` | Papers and codes, with what each one is used for, marked as checked online or from memory. |
 | `reference/scripts/` | The 21 small scripts that computed the expected values, so anyone can re-check them. |
 
-## How to start
+### How to start
 
 1. Create a new empty GitHub repository (for example `nebula-blackhole`) and clone it to your Mac:
    ```
@@ -25,25 +51,25 @@ This folder is the complete plan for the project: a physically accurate, cinemat
    > Read CLAUDE.md, PLAN.md and phases/phase-00-setup.md. Then do Step 0.1 only, and stop when it's done.
 4. After each step, Claude Code tells you what to look at (a test result, a plot, an image). Check it, then say "looks good, commit and do the next step", or describe what's wrong.
 
-## Before each later phase
+### Before each later phase
 
 Phases 3–13 were written ahead of time. Before starting one, ask Claude Code:
 > Read phases/phase-NN-….md. Check it against what we've actually built so far. List anything that no longer fits, anything missing, and any risks. Then propose the step-by-step breakdown for this phase, and wait for my OK.
 
 That is where you "run it through Claude again", as you said. The plan is designed to be revised; what must never change without a written reason are the rules in `CLAUDE.md` and the expected values in the tests.
 
-## What your job is
+### What your job is
 
 - **Decide.** When Claude Code asks a question, it's because the answer changes the result. Ask it to explain options in plain words if needed.
 - **Look.** Every step ends with something to see. If a plot looks wrong to you, say so: you don't need to know why.
 - **Understand the physics.** You'll present this. Ask Claude Code "explain what this step does physically" whenever it's unclear.
 - **Keep the AI log.** `AI_LOG.md` (created in Phase 0) records what Claude got wrong and how tests caught it. This is your best evidence of using AI well.
 
-## A correction to the earlier notes
+### A correction to the earlier notes
 
 The earlier guide `guide/nebula-part2-setup-colour-spin.md` (in the project files, not in this folder) suggested a cloud "about the mass of a few Earths". When I worked through the radiation physics for this plan, that turned out to be inconsistent with the glowing blue-white torus we want: a cloud that light would feed the hole far too slowly, and the gas would stay too thin to glow like a blackbody. **The plan uses 0.1 solar masses instead** (details in PLAN.md §3). Everything else in the earlier notes still holds.
 
-## Things the planning calculations found
+### Things the planning calculations found
 
 - **The crash comes late.** The stretched cloud goes round the hole (about 194 days per orbit), and only on its second or third pass is its stream long enough for the outgoing gas to run into the incoming gas, about 70 AU (1,664 M) from the hole, almost head-on at 16,800 km/s. The simulation will tell us exactly when.
 - **The torus drains fast.** It's thick and hot, so it empties in days to weeks, not years. The "stage 6 (the drain) takes way longer" behaviour from your earlier notes belongs to thin, cool disks; the plan shows it with the 1D disk model (Phase 7).
