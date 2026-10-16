@@ -110,8 +110,11 @@ def main():
         ic = cloud_ic(cfg["n"], cfg["radius"])
         bcfg0 = block_config(cfg)
         st = blocks.initialise(ic.x, ic.v, ic.u, ic.mass, ic.h, bcfg0, t_stop=cfg["tend"])
+        save_snapshot(
+            folder, 0, st.t, x=st.x, p=st.p, u=st.u, h=st.h, rho=st.rho, ids=st.ids, level=st.level
+        )  # fmt: skip  (the exact starting state)
         state = {"config": cfg, "st": st, "led0": blocks.ledger(st, bcfg0), "next_t": 0.0,
-                 "snap": 0, "wall": 0.0, "com_vr_neg": False, "events": []}  # fmt: skip
+                 "snap": 1, "wall": 0.0, "com_vr_neg": False, "events": []}  # fmt: skip
         log(folder, f"started: N = {len(ic.x)}, radius {cfg['radius']}, recon {cfg['recon']}")
     bcfg = block_config(cfg)
     st = state["st"]
