@@ -28,6 +28,8 @@ A_RAD = 4.0 * SIGMA_SB / C  # J m^-3 K^-4, radiation constant
 # --- conventions (expected-values header; PLAN.md §3) ---
 MU = 0.6  # mean molecular weight, fully ionized solar-composition gas
 KAPPA_ES = 0.034  # m^2/kg, electron-scattering opacity, solar composition
+X_HYDROGEN = 0.70  # hydrogen mass fraction (solar); KAPPA_ES = 0.02 (1 + X) m^2/kg
+Z_METALS = 0.02  # metal mass fraction (solar)
 GAMMA_GAS = 5.0 / 3.0  # ideal monatomic gas
 
 # --- time and length for display ---

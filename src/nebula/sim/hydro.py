@@ -19,8 +19,18 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
+from nebula import units
 from nebula.physics import viscosity as visc
-from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed, isothermal_pressure
+from nebula.physics.eos import (
+    gasrad_state,
+    gasrad_u_si,
+    ideal_gas_pressure,
+    ideal_gas_sound_speed,
+    ideal_gas_u_si,
+    isothermal_pressure,
+    radiation_limit_pressure,
+    radiation_limit_sound_speed,
+)
 from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
@@ -37,6 +47,10 @@ from nebula.sim.sph import (
 class HydroConfig:
     gamma: float = 5.0 / 3.0
     isothermal_cs: float | None = None  # if set: P = c_s^2 rho, u not evolved
+    eos: str = (
+        "ideal"  # "ideal" (gamma), "gasrad" (gas + radiation, Phase 6), "radiation" (P = rho u/3)
+    )
+    gas_units: units.GasUnits = units.GasUnits()  # mass scale for "gasrad" (PLAN §3)
     kernel: str = DEFAULT_KERNEL
     eta: float = DEFAULT_ETA
     box: tuple | None = None  # periodic box lengths, or None (open)
@@ -84,12 +98,44 @@ class HydroState:
     neighbour_cache: object = field(default=None)  # sph.NeighbourCache, reused between steps
 
 
-def _eos(cfg: HydroConfig, rho, u):
+def eos_state(cfg: HydroConfig, rho, u):
+    """Pressure and sound speed (code units) from the configured equation of state."""
     if cfg.isothermal_cs is not None:
         return isothermal_pressure(rho, cfg.isothermal_cs), np.full_like(rho, cfg.isothermal_cs)
     if np.any(u <= 0):
         raise FloatingPointError(f"non-positive internal energy at {int(np.sum(u <= 0))} particles")
-    return ideal_gas_pressure(rho, u, cfg.gamma), ideal_gas_sound_speed(u, cfg.gamma)
+    if cfg.eos == "ideal":
+        return ideal_gas_pressure(rho, u, cfg.gamma), ideal_gas_sound_speed(u, cfg.gamma)
+    if cfg.eos == "gasrad":
+        p, cs, _, _ = gasrad_state(rho, u, cfg.gas_units)
+        return p, cs
+    if cfg.eos == "radiation":
+        return radiation_limit_pressure(rho, u), radiation_limit_sound_speed(u)
+    raise ValueError(f"unknown equation of state {cfg.eos!r}")
+
+
+_eos = eos_state  # (old name)
+
+
+def temperature(cfg: HydroConfig, rho, u):
+    """Gas temperature (K) from code rho and u with the configured equation of state."""
+    if cfg.eos == "gasrad":
+        return gasrad_state(rho, u, cfg.gas_units)[2]
+    if cfg.eos == "ideal":
+        u_si = units.specific_energy_to_si(np.asarray(u, float))
+        return u_si * (cfg.gamma - 1.0) * units.MU * units.M_P / units.K_B
+    raise ValueError(f"no temperature for equation of state {cfg.eos!r}")
+
+
+def floor_energy(cfg: HydroConfig, rho, t_floor: float):
+    """Code specific energy at temperature t_floor (the cooling floor), per particle."""
+    rho = np.asarray(rho, float)
+    if cfg.eos == "gasrad":
+        rho_si = cfg.gas_units.density_to_si(rho)
+        return units.specific_energy_from_si(gasrad_u_si(rho_si, t_floor))
+    if cfg.eos == "ideal":
+        return np.full_like(rho, units.specific_energy_from_si(ideal_gas_u_si(t_floor, cfg.gamma)))
+    raise ValueError(f"no temperature floor for equation of state {cfg.eos!r}")
 
 
 def evaluate(

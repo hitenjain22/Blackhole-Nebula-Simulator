@@ -2,6 +2,7 @@
 Left: lowest particle angular momentum (capture below 4). Right: hottest gas (u, c^2 units).
 Bottom: the cloud's leading edge near the hole just before the plunge (run C), coloured by u.
 Output: outputs/checks/plunge_runs.png"""
+
 from pathlib import Path
 
 import matplotlib
@@ -42,8 +43,11 @@ ax3.set_aspect("equal")
 ax3.set_xlim(-250, 250)
 ax3.set_ylim(-150, 150)
 fig.colorbar(sc, ax=ax3, label="log10 u (hotter = brighter)")
-ax3.set_title(f"Run C, t = {d['t'][i]:.0f}: gas near the hole (black dot). Blue circles: the "
-              "neighbour bubbles (2h) of particles at r < 60", fontsize=11)
+ax3.set_title(
+    f"Run C, t = {d['t'][i]:.0f}: gas near the hole (black dot). Blue circles: the "
+    "neighbour bubbles (2h) of particles at r < 60",
+    fontsize=11,
+)
 fig.tight_layout()
 fig.savefig(ROOT / "outputs" / "checks" / "plunge_runs.png", dpi=120)
 print("saved")

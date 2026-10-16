@@ -38,6 +38,7 @@ With every particle on one level and no limiter this reproduces coupled.step res
 result (tests/sim/test_blocks.py).
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -45,10 +46,11 @@ import numba
 import numpy as np
 
 from nebula.physics import viscosity as visc
-from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed
+from nebula.physics.cooling import beta_cool, cooling_time
 from nebula.physics.gravity import gn_angmom, gn_hamiltonian, gn_p_from_v, gn_v_from_p
 from nebula.sim.accretion import RemovedLedger, record_removal
 from nebula.sim.coupled import CoupledConfig
+from nebula.sim.hydro import eos_state, floor_energy
 from nebula.sim.integrator import glf_step_many
 from nebula.sim.neighbours import Neighbours, tighten
 from nebula.sim.sph import (
@@ -107,6 +109,8 @@ class BlockState:
     vr_neg: np.ndarray = field(default=None)  # radial velocity < 0 at the last active time
     passed_peri: np.ndarray = field(default=None)  # has turned outward near the hole
     removed: RemovedLedger = field(default_factory=RemovedLedger)
+    e_radiated: float = 0.0  # energy radiated so far (cooling)
+    luminosity: np.ndarray = field(default=None)  # per particle, over its last step (energy/time)
 
     @property
     def t(self) -> float:
@@ -185,8 +189,7 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
         raise FloatingPointError(f"non-positive internal energy at {int(np.sum(u <= 0))} particles")
     nb = _density_touched(st, hc, rows, box)
     h, rho, omega = st.h, st.rho, st.omega
-    p_gas = ideal_gas_pressure(rho, u, hc.gamma)
-    cs = ideal_gas_sound_speed(u, hc.gamma)
+    p_gas, cs = eos_state(hc, rho, u)
     alpha = st.alpha.copy()
     if hc.viscosity and hc.switch and np.any(dt_alpha > 0):
         g = gradients_numba(st.x, v, a_prev, st.mass, h, nb, hc.kernel, rows=rows)
@@ -356,6 +359,7 @@ def initialise(
     st.L0 = np.linalg.norm(gn_angmom(x, p) if cc.hole else np.cross(x, p), axis=1)
     st.vr_neg = np.sum(x * _velocity(cc, x, p), axis=1) < 0
     st.passed_peri = np.zeros(n, bool)
+    st.luminosity = np.zeros(n)
     rows = np.arange(n)
     nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p), st.u, 0.0, None)
     st.level[:] = 0
@@ -377,7 +381,22 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     rows = np.flatnonzero(st.n_end == n_next)
     lag = (s - half_len)[:, None]  # 0 at the midpoint of the step, +L/2 at its end
     p_pred = p_flow + lag * st.a_hydro
-    u_pred = st.u_half + (s - half_len) * st.dudt
+    if math.isfinite(cc.cooling_beta):
+        # cooling in the middle of each particle's step (Strang split, phase-06 6.2): the active
+        # particles cool over their whole step; inactive ones are predicted with the cooling of
+        # their elapsed time (exact law, so a step cut into pieces gives the same u)
+        r_mid = 0.5 * (np.linalg.norm(st.x_beg, axis=1) + np.linalg.norm(x, axis=1))
+        u_half_c = beta_cool(
+            st.u_half, floor_energy(cc.hydro, st.rho, cc.t_floor), s,
+            cooling_time(r_mid, cc.cooling_beta),
+        )  # fmt: skip
+        dm = st.mass[rows] * (st.u_half[rows] - u_half_c[rows])
+        st.e_radiated += float(np.sum(dm))
+        st.luminosity[rows] = dm / (2.0 * half_len[rows])
+        u_pred = u_half_c + (s - half_len) * st.dudt
+        st.u_half[rows] = u_half_c[rows]
+    else:
+        u_pred = st.u_half + (s - half_len) * st.dudt
     a_prev = st.a_hydro.copy()
     st.n = n_next
     st.x = x
@@ -465,7 +484,8 @@ def ledger(st: BlockState, cfg: BlockConfig) -> dict:
     am = gn_angmom(st.x, st.p) if cc.hole else np.cross(st.x, st.p)
     rm = st.removed
     return {
-        "energy": float(np.sum(st.mass * (h + st.u))) + rm.energy,
+        "energy": float(np.sum(st.mass * (h + st.u))) + rm.energy + st.e_radiated,
+        "e_radiated": st.e_radiated,
         "abs_h": float(np.sum(st.mass * np.abs(h))),
         "angmom": np.sum(st.mass[:, None] * am, axis=0) + rm.angmom,
         "momentum": np.sum(st.mass[:, None] * st.p, axis=0) + rm.momentum,

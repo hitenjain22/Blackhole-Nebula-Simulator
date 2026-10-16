@@ -20,14 +20,15 @@ Velocity-dependent terms (viscosity, conductivity) at the end of the step use th
 predicted with the start-of-step acceleration, as in sim/hydro.py.
 """
 
+import math
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from nebula.physics import viscosity as visc
-from nebula.physics.eos import ideal_gas_pressure, ideal_gas_sound_speed
+from nebula.physics.cooling import T_FLOOR, beta_cool, cooling_time
 from nebula.physics.gravity import gn_angmom, gn_hamiltonian, gn_p_from_v, gn_v_from_p
-from nebula.sim.hydro import HydroConfig
+from nebula.sim.hydro import HydroConfig, eos_state, floor_energy
 from nebula.sim.integrator import glf_step_many
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
@@ -45,6 +46,9 @@ class CoupledConfig:
     hole: bool = True
     eta_orb: float = 0.00125  # orbit step criterion dt <= eta r^(3/2) (DECISIONS, Step 1.4)
     wrong_coupling: bool = False  # kicks on v instead of p (report comparison only)
+    # beta-cooling toward the floor (physics/cooling.py, phase-06 6.2): beta = inf: no cooling
+    cooling_beta: float = math.inf
+    t_floor: float = T_FLOOR
 
 
 @dataclass
@@ -62,6 +66,7 @@ class GasState:
     c_s: np.ndarray = field(default=None)
     vsig_max: np.ndarray = field(default=None)
     neighbour_cache: object = field(default=None)
+    e_radiated: float = 0.0  # energy radiated so far (cooling), code units
 
 
 def velocity(cfg: CoupledConfig, x, p):
@@ -84,8 +89,7 @@ def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasS
         raise FloatingPointError(
             f"non-positive internal energy at {int(np.sum(st.u <= 0))} particles"
         )
-    p_gas = ideal_gas_pressure(d.rho, st.u, hc.gamma)
-    cs = ideal_gas_sound_speed(st.u, hc.gamma)
+    p_gas, cs = eos_state(hc, d.rho, st.u)
     nb = tighten(d.neighbours, st.x, d.h)
     alpha = st.alpha
     if hc.viscosity and hc.switch and dt_alpha > 0:
@@ -157,20 +161,31 @@ def step(st: GasState, cfg: CoupledConfig, dt: float) -> GasState:
         x1, p_flow = st.x + dt * p_half, p_half
     if cfg.hydro.box is not None:
         x1 = np.mod(x1, np.asarray(cfg.hydro.box, float))
+    e_rad = st.e_radiated
+    if math.isfinite(cfg.cooling_beta):  # in the middle of the step (Strang split, phase-06 6.2)
+        r_mid = 0.5 * (np.linalg.norm(st.x, axis=1) + np.linalg.norm(x1, axis=1))
+        u_cool = beta_cool(
+            u_half, floor_energy(cfg.hydro, st.rho, cfg.t_floor), dt,
+            cooling_time(r_mid, cfg.cooling_beta),
+        )  # fmt: skip
+        e_rad += float(np.sum(st.mass * (u_half - u_cool)))
+        u_half = u_cool
     p_pred = _kick(cfg, x1, p_flow, st.a_hydro, 0.5 * dt)  # predictor for velocity terms
     pred = replace(st, t=st.t + dt, x=x1, p=p_flow, u=u_half + 0.5 * dt * st.dudt)
     new = _hydro(pred, cfg, velocity(cfg, x1, p_pred), dt, st.a_hydro)
     return replace(
-        new, p=_kick(cfg, x1, p_flow, new.a_hydro, 0.5 * dt), u=u_half + 0.5 * dt * new.dudt
-    )
+        new, p=_kick(cfg, x1, p_flow, new.a_hydro, 0.5 * dt), u=u_half + 0.5 * dt * new.dudt,
+        e_radiated=e_rad,
+    )  # fmt: skip
 
 
 def ledger(st: GasState, cfg: CoupledConfig) -> dict:
-    """Conserved totals: E = sum m (H + u), angular momentum sum m (x cross p), and
-    sum m |H| (the scale for relative energy errors)."""
+    """Conserved totals: E = sum m (H + u) + E_radiated, angular momentum sum m (x cross p),
+    and sum m |H| (the scale for relative energy errors)."""
     h = hamiltonian(cfg, st.x, st.p)
     return {
-        "energy": float(np.sum(st.mass * (h + st.u))),
+        "energy": float(np.sum(st.mass * (h + st.u))) + st.e_radiated,
+        "e_radiated": st.e_radiated,
         "abs_h": float(np.sum(st.mass * np.abs(h))),
         "angmom": np.sum(
             st.mass[:, None] * (gn_angmom(st.x, st.p) if cfg.hole else np.cross(st.x, st.p)), axis=0
