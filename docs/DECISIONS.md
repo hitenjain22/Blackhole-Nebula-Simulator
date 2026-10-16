@@ -225,3 +225,18 @@ where v*_ab is the reconstructed jump (Frontiere Eqs. 48–53). Reason: q must c
 ## 2026-10-15: Gresho test baseline after D2 (Hiten approved the recommended option)
 
 With D2 the low-resolution Gresho ratio (switch / constant α = 1) came out at 0.713 against the 0.70 limit, although both errors fell: constant α = 1 from 0.255 to 0.174, the switch from 0.143 to 0.124 (review: 0.123). Reconstruction removes most of the viscosity in the vortex's smooth shear even at α = 1, so the comparison run improved most. That is expected from the sources: Frontiere et al. 2017 find their limited viscosity, without a switch, preserves the Gresho vortex best ("the dominant effect"), and Rosswog 2020 runs every test with α = 1 plus reconstruction. **Decision:** the yardstick stays the *standard* scheme (constant α = 1, no reconstruction), as in the plan's wording; the 0.70 limit is unchanged; and a new check requires that reconstruction does not make the vortex worse (switch + reconstruction ≤ switch alone). Cross-check of the implementation against open source: PySPH's MAGMA2 module has the same midpoint reconstruction, limiter, closeness factor and raw-velocity heating; the differences are its optional second-derivative term and its published gate (ours: min-mod, approved above with conditions).
+
+**Min-mod gate: both of Hiten's conditions met (2026-10-15).** (1) Full slow suite passes with tolerances unchanged (with the Gresho baseline decision above). (2) 10k radius-25 run with D2 and swallowing (`runs/cloud10k_r25_D2`, commit 06b238a, 1 h 43 min), compared with the review's run:
+
+| 10k, radius 25, with the fix | This run | Review | Match? |
+|---|---|---|---|
+| Swallowed by t = 400,000 | 0 of 9,992 | 0 | yes |
+| Lowest angular momentum at the end | 5.13 | 5.2 | yes |
+| Pairs across the hole | 0% (every snapshot) | 0% | yes |
+| 2h/r near the hole at closest approach | median 0.12, max 0.54 | about 0.1–0.3 | roughly (our max is higher) |
+| Typical u near the hole, t ≈ 396,9xx | 1.39 × 10⁻⁶ | 1.4 × 10⁻⁶ | yes |
+| Hottest 1% | 8.9 × 10⁻⁶ | 8.6 × 10⁻⁶ | yes |
+| Hottest | 4.9 × 10⁻⁴ | 4.6 × 10⁻⁴ | yes |
+| Angular-momentum spread at the end | 3.0% rms, worst 1% −8.4% | 3% rms, worst 1% −8% | yes |
+
+Also: centre of mass at pericentre at t = 396,236 (expected 396,224); energy ledger at most 3.3 × 10⁻⁵ during the passage (the gravity integrator's own pericentre error at η_orb = 0.00125 is up to 6.4 × 10⁻⁵), 1.8 × 10⁻⁵ at the end; angular momentum to 10⁻⁹. **Not visible in the review's table:** three hot outlier particles (u ≈ 10⁻³, ~300× the gravity-only ceiling, h ≈ 50 at r ≈ 200–330) had their angular momentum dip temporarily (lowest 1.18) and recover (5.6–8.0 at the end); none came near the hole. The gas temperatures at closest approach remain far above the gravity-only ceiling (typical ~70×), as the review expected at 10k; that is what the 50k run checks (D3).
