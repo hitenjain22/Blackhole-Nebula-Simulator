@@ -2,8 +2,9 @@
 used by Phase 4's speed-up test).
 
 A uniform sphere carved from the relaxed glass (random points would give density noise and
-spurious pressure kicks), radius 100, total mass 1, temperature 10^4 K (ideal gas), every
-particle moving with the cloud centre's apocentre velocity on the r_p = 25, r_a = 5,000 orbit.
+spurious pressure kicks), radius 100, total mass 1, temperature 10^4 K (for the run's equation of
+state), every particle moving with the cloud centre's apocentre velocity on the r_p = 25,
+r_a = 5,000 orbit.
 """
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ import numpy as np
 from nebula.physics.kernels import DEFAULT_ETA
 from nebula.physics.orbits import apocentre_state
 from nebula.sim.glass import load_glass, tile_glass
+from nebula.sim.hydro import floor_energy
 from nebula.units import gas_u_from_temperature
 
 CLOUD_RADIUS = 100.0
@@ -54,8 +56,13 @@ def glass_ball(n_target: int, radius: float, seed: int | None = None) -> np.ndar
 
 
 def cloud_ic(
-    n_target: int = 1000, radius: float = CLOUD_RADIUS, seed: int | None = None
+    n_target: int = 1000,
+    radius: float = CLOUD_RADIUS,
+    seed: int | None = None,
+    hydro=None,
 ) -> CloudIC:
+    """``hydro`` (a HydroConfig): with the gas + radiation EOS the cloud starts at 10^4 K for
+    that EOS (its u includes a T^4 / rho: ~4% more than ideal gas at radius 60)."""
     x0, v0, _ = apocentre_state(ORBIT_PERI, ORBIT_APO)
     pos = glass_ball(n_target, radius, seed)
     n = len(pos)
@@ -64,7 +71,9 @@ def cloud_ic(
     return CloudIC(
         x=pos + x0,
         v=np.tile(v0, (n, 1)),
-        u=np.full(n, gas_u_from_temperature(CLOUD_TEMPERATURE)),
+        u=np.full(n, gas_u_from_temperature(CLOUD_TEMPERATURE))
+        if hydro is None or hydro.eos == "ideal"
+        else np.full(n, float(floor_energy(hydro, rho, CLOUD_TEMPERATURE))),
         mass=mass,
         h=DEFAULT_ETA * (mass / rho) ** (1 / 3),
     )

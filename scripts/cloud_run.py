@@ -136,8 +136,8 @@ def main():
     else:
         cfg = make_config(opts)
         folder = new_run(name, cfg)
-        ic = cloud_ic(cfg["n"], cfg["radius"], cfg.get("seed"))
         bcfg0 = block_config(cfg)
+        ic = cloud_ic(cfg["n"], cfg["radius"], cfg.get("seed"), hydro=bcfg0.coupled.hydro)
         st = blocks.initialise(ic.x, ic.v, ic.u, ic.mass, ic.h, bcfg0, t_stop=cfg["tend"])
         save_snapshot(
             folder,

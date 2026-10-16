@@ -201,3 +201,20 @@ def test_resume_from_older_checkpoint(rng):
     check("old checkpoint resumed: positions identical", st.x, old.x, rtol=0.0, per_vector=True)
     check("old checkpoint resumed: u identical", st.u, old.u, rtol=0.0)
     check("old checkpoint resumed: e_radiated", 0.0, old.e_radiated, atol=0.0)
+
+
+def test_cloud_starts_at_1e4_kelvin_for_its_eos():
+    """The cloud starts at 10^4 K for the run's EOS: with gas + radiation its u includes the
+    radiation term (radius 60: ~4% more than ideal gas); the ideal-gas cloud is unchanged."""
+    from dataclasses import replace
+
+    from nebula.sim.cloud import cloud_ic
+    from nebula.sim.hydro import HydroConfig, temperature
+
+    hc = replace(HydroConfig(), eos="gasrad")
+    rho = 1.0 / (4 / 3 * np.pi * 60.0**3)
+    c = cloud_ic(500, 60.0, hydro=hc)
+    check("gas + radiation cloud: T at the mean density (K)", 1e4,
+          float(temperature(hc, np.array([rho]), c.u[:1])[0]), rtol=1e-10)  # fmt: skip
+    ideal = cloud_ic(500, 60.0, hydro=HydroConfig()).u
+    check("ideal-gas cloud unchanged", cloud_ic(500, 60.0).u, ideal, rtol=0.0)
