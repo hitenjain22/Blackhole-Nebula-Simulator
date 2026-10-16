@@ -42,3 +42,16 @@ def test_colliding_slabs(radiation):
     check(f"slabs gamma {label}: post-shock gas at rest (|v| / v)", 0.0, m.v_post, atol=0.05)
     check(f"slabs gamma {label}: shock speed", (g - 1) / 2, m.shock_speed, rtol=0.05)
     print(f"   max energy error over the run (usual step): {m.energy_error:.2e}")
+
+
+@pytest.mark.slow
+def test_colliding_slabs_energy():
+    """Test 5, energy: total energy sum m (v^2/2 + u) conserved to 1e-6 through the strong shock.
+    As for Phase 3's energy test, this bounds the kick-drift-kick time-step error, so it needs
+    small steps: 1/16 of the usual step (measured: the error falls ~5-10x per factor 4 in step;
+    1.5e-5 -> 1.4e-7 -> 2.6e-8 at t = 0.05). Run to t = 0.15, when the shocks are fully formed
+    and well into the slabs (DECISIONS, Phase 6.5)."""
+    prob = slabs_setup(t_end=0.15)
+    m = slabs_run(prob, courant_factor=1 / 16)
+    check("slabs gamma 5/3: max energy error over the run (1/16 step)", 0.0, m.energy_error,
+          atol=1e-6)  # fmt: skip
