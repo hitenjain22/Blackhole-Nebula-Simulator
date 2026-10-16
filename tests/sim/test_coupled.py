@@ -74,3 +74,18 @@ def test_hot_blob_ledger():
         True,
         bool(wrong_fine > 10 * fine_e),
     )
+
+
+@pytest.mark.slow
+def test_hot_blob_ledger_with_cooling_and_full_eos():
+    """Phase 6 test 8: the Phase 4 ledger test (as it now runs, D8: blob u = 4e-8, apocentre
+    through pericentre to t = 18,000) with beta = 10 cooling and the gas + radiation EOS:
+    max |delta(sum m (H + u) + E_rad)| / sum m |H| < 1e-5, falling 3-5x when eta_orb and
+    C_cour are halved; and energy is actually radiated."""
+    fine = cached_hot_blob(0.00125, 0.15, cooling_beta=10.0, eos="gasrad")
+    coarse = cached_hot_blob(0.0025, 0.3, cooling_beta=10.0, eos="gasrad")
+    fe, ce = fine["max_energy_error"], coarse["max_energy_error"]
+    check("test 8: max ledger error (with E_rad)", 0.0, fe, atol=1e-5)
+    check("test 8: error ratio coarse / fine", 4.0, ce / fe, atol=1.0)
+    check("test 8: angular momentum", 0.0, fine["max_angmom_error"], atol=1e-10)
+    print(f"   ledger {ce:.2e} -> {fe:.2e}")

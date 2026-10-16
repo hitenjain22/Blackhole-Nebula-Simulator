@@ -19,6 +19,7 @@ PHASE3_FILES = (
 PHASE4_FILES = PHASE3_FILES + (
     "physics/gravity.py", "physics/orbits.py", "sim/integrator.py", "sim/coupled.py",
     "sim/blocks.py", "sim/timesteps.py", "sim/blob.py", "sim/cloud.py", "units.py",
+    "physics/cooling.py", "sim/accretion.py",
 )  # fmt: skip
 
 

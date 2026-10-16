@@ -59,8 +59,9 @@ def _errors(led, led0):
 
 
 def hot_blob(
-    eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False, **hydro_kw
-):
+    eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False,
+    cooling_beta: float = float("inf"), **hydro_kw,
+):  # fmt: skip
     """Returns a dict: t, energy and angular-momentum error series, max of each, the largest u
     reached, the lowest particle angular momentum and largest h seen (the blob must stay a
     blob), and the number of steps (particle-steps for block steps)."""
@@ -68,6 +69,7 @@ def hot_blob(
         hydro=HydroConfig(courant=courant, conductivity_signal=coupled.COND_VELOCITY, **hydro_kw),
         eta_orb=eta_orb,
         wrong_coupling=wrong,
+        cooling_beta=cooling_beta,
     )
     x, v, u, m, h = _initial(cc)
     t_series, e_series, l_series = [0.0], [0.0], [0.0]
@@ -122,10 +124,18 @@ def hot_blob(
     }
 
 
-def cached_hot_blob(eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False):
-    """``hot_blob`` through the run cache (shared by the slow tests and scripts/plot_ledger.py)."""
+def cached_hot_blob(
+    eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False,
+    cooling_beta: float = float("inf"), eos: str = "ideal",
+):  # fmt: skip
+    """``hot_blob`` through the run cache (shared by the slow tests and scripts/plot_ledger.py).
+    cooling_beta / eos: Phase 6 test 8 (beta-cooling, gas + radiation EOS)."""
     from nebula.sim.runcache import cached
 
     name = f"hotblob_{eta_orb}_{courant}_{'wrong' if wrong else 'right'}"
     name += "_blocks" if block_steps else ""
-    return cached(name, lambda: hot_blob(eta_orb, courant, wrong, block_steps))
+    if cooling_beta != float("inf") or eos != "ideal":
+        name += f"_beta{cooling_beta:g}_{eos}"
+    return cached(
+        name, lambda: hot_blob(eta_orb, courant, wrong, block_steps, cooling_beta, eos=eos)
+    )
