@@ -17,3 +17,24 @@ One dated entry per meaningful result (phases/phase-05-cloud-infall.md, "Done wh
 - Gresho vortex error with the switch improves 12–13% (0.143 → 0.124 low, 0.091 → 0.080 high resolution).
 - Hot-blob energy ledger unchanged (4.7 × 10⁻⁶ shared step, 4.06 × 10⁻⁶ block steps, both falling 4.0× per halving); the block-step angular-momentum drift falls from 3.1 × 10⁻¹⁰ to 2.6 × 10⁻¹¹.
 - The "wrong coupling" comparison error falls from 1.5 × 10⁻³ to 8.5 × 10⁻⁵ (still flat with step size and 18× the right coupling's): the viscosity no longer does work on the smooth approach, so there is less force to misapply.
+
+## 2026-10-16: The cloud's first pass at 10k and 50k particles (radius 25, Phase 5)
+
+Both runs: t = 0 → 400,000 (cloud starts at r = 5,000; centre of mass closest to the hole at t = 396,235, r = 134), velocity reconstruction on, no cooling.
+
+| | 10k | 50k | review's gravity-only ceiling |
+|---|---|---|---|
+| particles swallowed | 0 | 0 | 0 |
+| energy ledger drift (end) | 1.8 × 10⁻⁵ | 1.6 × 10⁻⁵ | |
+| kernels reaching across the hole | 0% | 0% | |
+| typical heat u near the hole, at pericentre | 1.3 × 10⁻⁶ | 6.4 × 10⁻⁷ | ~2 × 10⁻⁸ (squeezing only, no shocks) |
+| hottest 1% at pericentre | 6.9 × 10⁻⁶ | 2.6 × 10⁻⁶ | 1–3 × 10⁻⁶ |
+| hottest particle at pericentre | 7.3 × 10⁻⁴ | 2.6 × 10⁻⁵ | ~5 × 10⁻⁶ |
+| spread of orbital energy at the end (middle 50%) | ±33% | ±14% | |
+| gas made unbound | 5.0% | 0.7% | |
+| wall time | 1.7 h | 13.6 h | |
+
+- With 5× more particles the pericentre heating halves, the hottest particle is 28× cooler, and the energy spread and unbound gas fall 2.3× and 7×: much of the 10k heating is numerical (resolution), as the review predicted. The 50k hottest 1% sits inside the review's ceiling; the hottest particle is still ~5× above it.
+- Not yet converged: the typical heat (6.4 × 10⁻⁷) is still falling with resolution. Literature (review §3) puts converged nozzle heating near 4 × 10⁻⁵ of the orbital energy, ~3 × 10⁻⁷ here.
+- This matters for Phase 6: the energy spread after the first pass sets when the returning stream crashes into itself. At 10k it is mostly numerical; Phase 6 runs at 10k (Hiten's decision) should be read with that in mind.
+- Pictures: `docs/figures/cloud50k_r25_D2_panels.png`, `_metrics.png`, `_edge_on.png`, `_preview.mp4`. (This run predates the viscous-heating snapshot field, so its "mass in shocks" is not available.)
