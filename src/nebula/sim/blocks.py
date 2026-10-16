@@ -122,6 +122,21 @@ class BlockState:
         return bool(np.all(self.n_beg == self.n))
 
 
+def upgrade_state(st: BlockState) -> BlockState:
+    """Fill fields added after a checkpoint was written (resuming an older run). Pickle
+    restores only the fields the old code had; the missing ones would read as the class
+    default None. None of these feeds back into the motion: e_radiated starts the cooling
+    ledger at 0 (the old code had no cooling), and the per-particle outputs are refreshed at
+    each particle's next active step."""
+    n = len(st.x)
+    if "e_radiated" not in st.__dict__:
+        st.e_radiated = 0.0
+    for name in ("luminosity", "visc_heating"):
+        if st.__dict__.get(name) is None:
+            setattr(st, name, np.zeros(n))
+    return st
+
+
 def _velocity(cc: CoupledConfig, x, p):
     return coupled.velocity(cc, x, p)
 

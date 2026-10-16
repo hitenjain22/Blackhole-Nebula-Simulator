@@ -112,6 +112,7 @@ def main():
     folder = RUNS / name
     if resume:
         state = load_checkpoint(folder)
+        blocks.upgrade_state(state["st"])  # a checkpoint from older code
         cfg = state["config"]
         update_manifest(folder, resumed=time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         log(folder, f"resumed at t = {state['st'].t:.1f}")

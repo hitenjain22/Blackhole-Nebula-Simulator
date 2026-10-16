@@ -181,3 +181,23 @@ def test_seeded_clouds():
         True,
         not np.allclose(c.x[:10], cloud_ic(2000, 25.0).x[:10]),
     )
+
+
+def test_resume_from_older_checkpoint(rng):
+    """A checkpoint written before e_radiated, luminosity and visc_heating existed (as for
+    runs/cloud10k_r25_D2) resumes after blocks.upgrade_state, bit-identically to the full state."""
+    x, v, u, m, h = warm_ball(rng)
+    cfg = BlockConfig(coupled=CoupledConfig(), dt_max=64.0, r_acc=4.0)
+    st = blocks.initialise(x, v, u, m, h, cfg, t_stop=64.0 * 8)
+    for _ in range(15):
+        blocks.advance(st, cfg)
+    old = copy.deepcopy(st)
+    for name in ("e_radiated", "luminosity", "visc_heating"):
+        del old.__dict__[name]
+    old = blocks.upgrade_state(pickle.loads(pickle.dumps(old)))
+    for _ in range(25):
+        blocks.advance(st, cfg)
+        blocks.advance(old, cfg)
+    check("old checkpoint resumed: positions identical", st.x, old.x, rtol=0.0, per_vector=True)
+    check("old checkpoint resumed: u identical", st.u, old.u, rtol=0.0)
+    check("old checkpoint resumed: e_radiated", 0.0, old.e_radiated, atol=0.0)

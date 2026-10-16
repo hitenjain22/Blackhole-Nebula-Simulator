@@ -76,7 +76,7 @@ def update_manifest(folder: Path, **fields) -> None:
     manifest = json.loads(path.read_text())
     for k, v in fields.items():
         if k == "resumed":
-            manifest["resumed"].append(v)
+            manifest["resumed"].append({"time": v, "git": _git()})  # code may be newer
         else:
             manifest[k] = _jsonable(v)
     path.write_text(json.dumps(manifest, indent=2))
