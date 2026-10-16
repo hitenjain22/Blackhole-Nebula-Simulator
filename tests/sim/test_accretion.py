@@ -124,3 +124,60 @@ def test_hole_resolution_flags_kernels_across_the_hole():
           (big.across_fraction > 0.3, big.warning))  # fmt: skip
     check("2h/r reported", 3.0, big.two_h_over_r_median, rtol=1e-12)
     assert gn_p_from_v is not None
+
+
+def _escape_run(eta):
+    x = np.array([[150.0, 0.0, 0.0], [150.0, 40.0, 0.0]])
+    v = np.array([[0.2, 0.0, 0.0], [0.0, 0.05, 0.0]])  # first: unbound, radially out
+    cfg = BlockConfig(coupled=CoupledConfig(eta_orb=eta), dt_max=64.0, hydro=False, r_escape=400.0)
+    st = blocks.initialise(x, v, np.full(2, 1e-6), np.ones(2), np.ones(2), cfg, t_stop=64.0 * 30)
+    led0 = blocks.ledger(st, cfg)
+    while st.n < st.n_stop:
+        blocks.advance(st, cfg)
+    led = blocks.ledger(st, cfg)
+    return st, led0, led
+
+
+def test_escape_radius_removes_and_ledgers():
+    """Phase 6 escape radius: an unbound particle flying out is removed as "escaped" once beyond
+    r_escape, a bound one is not; the ledger (present + removed) keeps the mass exactly, and its
+    energy error is the orbits' time-step error (falls >= 3x per halving of the step)."""
+    st, led0, led = _escape_run(0.00125)
+    _, led0f, ledf = _escape_run(0.000625)
+    check("escaped: particle 0 removed, reason 'escaped'", [(0, "escaped")],
+          [(e["id"], e["reason"]) for e in st.removed.log])  # fmt: skip
+    check("removed beyond r_escape", True, st.removed.log[0]["r"] > 400.0)
+    tot = st.removed.totals("escaped")
+    check("escaped totals: one particle, mass 1", (1, 1.0), (tot["count"], tot["mass"]))
+    check("ledger mass (present + escaped)", led0["mass"], led["mass"], rtol=1e-15)
+    de = abs(led["energy"] - led0["energy"]) / led0["abs_h"]
+    de_f = abs(ledf["energy"] - led0f["energy"]) / led0f["abs_h"]
+    print(f"   ledger energy error {de:.2e} -> {de_f:.2e} with half the step")
+    check("ledger energy error is time-step error (>= 3x per halving)", True, de / de_f >= 3.0)
+
+
+def test_seeded_clouds():
+    """R6.5 seeds: seeded clouds differ from each other and from the standard one; the standard
+    (seed None) is unchanged; a seeded ball is still a uniform ball of the same radius."""
+    from nebula.sim.cloud import cloud_ic, glass_ball
+
+    std = glass_ball(2000, 25.0)
+    a, b = glass_ball(2000, 25.0, seed=1), glass_ball(2000, 25.0, seed=2)
+    check(
+        "seed None: standard ball (deterministic)",
+        True,
+        np.array_equal(std, glass_ball(2000, 25.0)),
+    )
+    check("seeds 1 and 2 give different particles", True,
+          len(a) != len(b) or not np.allclose(a, b))  # fmt: skip
+    check("seeded ball: radius <= 25", True, bool(np.max(np.linalg.norm(a, axis=1)) <= 25.0))
+    check("seeded ball: particle count within 3% of the standard", len(std), len(a), rtol=0.03)
+    r = np.linalg.norm(a, axis=1)
+    check("seeded ball: uniform (half the particles inside 25 / 2^(1/3))", 0.5,
+          float(np.mean(r < 25.0 / 2 ** (1 / 3))), atol=0.03)  # fmt: skip
+    c = cloud_ic(2000, 25.0, seed=3)
+    check(
+        "cloud_ic passes the seed through",
+        True,
+        not np.allclose(c.x[:10], cloud_ic(2000, 25.0).x[:10]),
+    )

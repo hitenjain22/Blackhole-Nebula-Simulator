@@ -47,11 +47,10 @@ import numpy as np
 
 from nebula.physics import viscosity as visc
 from nebula.physics.cooling import beta_cool, cooling_time
-from nebula.physics.gravity import gn_angmom, gn_hamiltonian, gn_p_from_v, gn_v_from_p
+from nebula.sim import coupled
 from nebula.sim.accretion import RemovedLedger, record_removal
 from nebula.sim.coupled import CoupledConfig
 from nebula.sim.hydro import eos_state, floor_energy
-from nebula.sim.integrator import glf_step_many
 from nebula.sim.neighbours import Neighbours, tighten
 from nebula.sim.sph import (
     compute_density,
@@ -70,6 +69,7 @@ class BlockConfig:
     max_gap: int = 2  # neighbouring levels differ by at most this (factor 4)
     hydro: bool = True  # False: gravity only (plan test 1; no density or forces)
     r_acc: float | None = None  # swallowing radius (sim/accretion.py; Phase 5: 4.0)
+    r_escape: float | None = None  # escape radius (phase-06 6.4: 50,000); removed as "escaped"
 
 
 @dataclass
@@ -111,6 +111,7 @@ class BlockState:
     removed: RemovedLedger = field(default_factory=RemovedLedger)
     e_radiated: float = 0.0  # energy radiated so far (cooling)
     luminosity: np.ndarray = field(default=None)  # per particle, over its last step (energy/time)
+    visc_heating: np.ndarray = field(default=None)  # viscous part of du/dt (the shock marker)
 
     @property
     def t(self) -> float:
@@ -122,18 +123,12 @@ class BlockState:
 
 
 def _velocity(cc: CoupledConfig, x, p):
-    return gn_v_from_p(x, p) if cc.hole else p
+    return coupled.velocity(cc, x, p)
 
 
 def _flow(cc: CoupledConfig, x, p, s):
-    """Gravity-only flow over per-particle times s (GLF with the hole, straight drift without)."""
-    if cc.hole:
-        x1, p1, _ = glf_step_many(x, p, s)
-    else:
-        x1, p1 = x + s[:, None] * p, p.copy()
-    if cc.hydro.box is not None:
-        x1 = np.mod(x1, np.asarray(cc.hydro.box, float))
-    return x1, p1
+    """Gravity-only flow over per-particle times s (coupled.gravity_flow)."""
+    return coupled.gravity_flow(cc, x, p, s)
 
 
 @numba.njit(cache=True)
@@ -218,6 +213,7 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
     st.a_hydro[rows] = f.acc
     st.dudt[rows] = f.dudt
     st.vsig_max[rows] = f.vsig_max if hc.viscosity else cs[rows]
+    st.visc_heating[rows] = f.dudt_visc
     return nb
 
 
@@ -339,7 +335,7 @@ def initialise(
     hc = cc.hydro
     x = np.array(x, float)
     n = len(x)
-    p = gn_p_from_v(x, np.asarray(v, float)) if cc.hole else np.array(v, float)
+    p = coupled.p_from_v(cc, x, np.asarray(v, float))
     tick = cfg.dt_max / 2.0**K_MAX
     zeros3 = np.zeros((n, 3))
     st = BlockState(
@@ -356,10 +352,11 @@ def initialise(
     )  # fmt: skip
     st.ids = np.arange(n)
     st.r0 = np.linalg.norm(x, axis=1)
-    st.L0 = np.linalg.norm(gn_angmom(x, p) if cc.hole else np.cross(x, p), axis=1)
+    st.L0 = np.linalg.norm(coupled.angmom(cc, x, p), axis=1)
     st.vr_neg = np.sum(x * _velocity(cc, x, p), axis=1) < 0
     st.passed_peri = np.zeros(n, bool)
     st.luminosity = np.zeros(n)
+    st.visc_heating = np.zeros(n)
     rows = np.arange(n)
     nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p), st.u, 0.0, None)
     st.level[:] = 0
@@ -430,15 +427,22 @@ def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
     turned = st.vr_neg[rows] & (vr > 0) & (r < 0.5 * st.r0[rows])  # outward again, near the hole
     st.passed_peri[rows] |= turned
     st.vr_neg[rows] = vr < 0
-    if cfg.r_acc is None or not np.any(r < cfg.r_acc):
+    acc = r < cfg.r_acc if cfg.r_acc is not None else np.zeros(len(rows), bool)
+    esc = r > cfg.r_escape if cfg.r_escape is not None else np.zeros(len(rows), bool)
+    if not (np.any(acc) or np.any(esc)):
         return rows
-    gone = rows[r < cfg.r_acc]
-    xs, ps = st.x[gone], st.p[gone]
-    record_removal(
-        st.removed, st.t, st.ids[gone], st.mass[gone], gn_hamiltonian(xs, ps), st.u[gone],
-        gn_angmom(xs, ps), ps, np.linalg.norm(xs, axis=1), st.passed_peri[gone], st.L0[gone],
-        "accreted",
-    )  # fmt: skip
+    for mask, reason in ((acc, "accreted"), (esc, "escaped")):
+        g = rows[mask]
+        if len(g) == 0:
+            continue
+        xs, ps = st.x[g], st.p[g]
+        record_removal(
+            st.removed, st.t, st.ids[g], st.mass[g], coupled.hamiltonian(cc, xs, ps), st.u[g],
+            coupled.angmom(cc, xs, ps), ps, np.linalg.norm(xs, axis=1), st.passed_peri[g],
+            st.L0[g],
+            reason,
+        )  # fmt: skip
+    gone = rows[acc | esc]
     keep = np.ones(len(st.x), bool)
     keep[gone] = False
     _prune(st, keep)
@@ -480,8 +484,8 @@ def ledger(st: BlockState, cfg: BlockConfig) -> dict:
     """Totals as in coupled.ledger (true values when st.synced(), predicted otherwise),
     including the particles removed so far (sim/accretion.py)."""
     cc = cfg.coupled
-    h = gn_hamiltonian(st.x, st.p) if cc.hole else 0.5 * np.sum(st.p * st.p, axis=1)
-    am = gn_angmom(st.x, st.p) if cc.hole else np.cross(st.x, st.p)
+    h = coupled.hamiltonian(cc, st.x, st.p)
+    am = coupled.angmom(cc, st.x, st.p)
     rm = st.removed
     return {
         "energy": float(np.sum(st.mass * (h + st.u))) + rm.energy + st.e_radiated,

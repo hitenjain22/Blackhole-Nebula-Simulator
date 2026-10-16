@@ -136,3 +136,20 @@ def gn_mass_matrix_inv(x: np.ndarray) -> np.ndarray:
     a, c = _a_c(r)
     eye = np.eye(3)
     return a[..., None, None] * eye + c[..., None, None] * x[..., :, None] * x[..., None, :]
+
+
+# --------------------------------------------------------------------------- Newtonian control
+#
+# Phase 6 control run R6.4 (phase-06 6.4): a Newtonian point mass, no relativistic precession.
+# H = |p|^2 / 2 - 1/r (p = v), units G = M = 1. Separable, so a kick-drift-kick leapfrog is exact
+# symplectic (sim/integrator.py).
+
+
+def newton_hamiltonian(x: np.ndarray, p: np.ndarray) -> np.ndarray:
+    """H = |p|^2/2 - 1/r per unit mass (c^2). Returns shape (...,)."""
+    return (0.5 * _dot(p, p) - 1.0 / _radius(x))[..., 0]
+
+
+def newton_accel(x: np.ndarray) -> np.ndarray:
+    """a = -x / r^3 (Newtonian point mass, G = M = 1)."""
+    return -x / _radius(x) ** 3

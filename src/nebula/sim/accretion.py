@@ -30,6 +30,13 @@ class RemovedLedger:
     def count(self) -> int:
         return len(self.log)
 
+    def totals(self, reason: str) -> dict:
+        """Mass, energy m (H + u) and count of the particles removed for ``reason``
+        ("accreted" or "escaped"), from the log."""
+        sel = [e for e in self.log if e["reason"] == reason]
+        return {"count": len(sel), "mass": sum(e["m"] for e in sel),
+                "energy": sum(e["m"] * (e["H"] + e["u"]) for e in sel)}  # fmt: skip
+
     def first_pass(self) -> list:
         """Removals of particles that had not yet passed a pericentre (the plan's alarm)."""
         return [e for e in self.log if e["first_pass"]]
@@ -47,6 +54,7 @@ def record_removal(
         ledger.log.append(
             {
                 "t": float(t), "id": int(ids[k]), "reason": reason, "r": float(r[k]),
+                "m": float(mass[k]),
                 "H": float(hamiltonian[k]), "u": float(u[k]),
                 "L": float(np.linalg.norm(angmom[k])), "L0": float(L0[k]),
                 "first_pass": not bool(passed[k]),

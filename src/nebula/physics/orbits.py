@@ -138,3 +138,51 @@ def isco_radius(a: float = 0.0, prograde: bool = True) -> float:
     z2 = np.sqrt(3.0 * a * a + z1 * z1)
     root = np.sqrt((3.0 - z1) * (3.0 + z1 + 2.0 * z2))
     return float(3.0 + z2 - root if prograde else 3.0 + z2 + root)
+
+
+def turning_points(e_inf, ell):
+    """Turning points (r_peri, r_apo) and orbit class of Schwarzschild geodesics with energy at
+    infinity E and angular momentum L (per unit mass; phase-06 6.5 "per-particle orbit
+    elements"). With u = 1/r, the turning points are the roots of
+
+        E^2 = (1 - 2u)(1 + L^2 u^2)   <=>   2 L^2 u^3 - L^2 u^2 + 2u + (E^2 - 1) = 0,
+
+    whose roots sum to 1/2 (as in ``_turning_u``). Bound orbits (E < 1) with three real roots
+    u_a <= u_p <= u_3 move between r_apo = 1/u_a and r_peri = 1/u_p; with one real root there is
+    no pericentre barrier and the particle plunges. Returns (r_peri, r_apo, kind) with kind
+    0 = bound, 1 = unbound (E >= 1: r_apo = inf), 2 = plunging (r_peri = 0); arrays.
+    """
+    e_inf = np.atleast_1d(np.asarray(e_inf, float))
+    ell = np.atleast_1d(np.asarray(ell, float))
+    n = len(e_inf)
+    l2 = ell * ell
+    # monic cubic u^3 + a u^2 + b u + c = 0 (a = -1/2, b = 1/L^2, c = (E^2 - 1)/(2 L^2)).
+    # Its largest real root u_3 is found from the companion-matrix eigenvalues; the other two
+    # follow exactly from u_1 + u_2 = 1/2 - u_3 and u_1 u_2 = -c / u_3 (Vieta). This keeps
+    # near-circular orbits (u_1 ~ u_2, which an eigen-solver can return as a complex pair)
+    # bound: a discriminant that is negative only at round-off level is set to zero.
+    a, b, c = -0.5 * np.ones(n), 1.0 / l2, (e_inf**2 - 1.0) / (2.0 * l2)
+    comp = np.zeros((n, 3, 3))
+    comp[:, 0, :] = np.column_stack([-a, -b, -c])
+    comp[:, 1, 0] = 1.0
+    comp[:, 2, 1] = 1.0
+    roots = np.linalg.eigvals(comp)
+    real_part = np.where(np.abs(roots.imag) <= 1e-7 * np.abs(roots), roots.real, -np.inf)
+    u3 = real_part.max(axis=1)  # the largest real root (a real cubic always has one)
+    s12 = 0.5 - u3
+    p12 = -c / u3
+    disc = s12 * s12 - 4.0 * p12
+    disc = np.where(np.abs(disc) <= 1e-9 * s12 * s12, 0.0, disc)
+    ok = disc >= 0.0
+    root = np.sqrt(np.where(ok, disc, 0.0))
+    u_p, u_a = 0.5 * (s12 + root), 0.5 * (s12 - root)
+    unbound = e_inf >= 1.0
+    bound = ~unbound & ok & (u_a > 0.0)
+    kind = np.where(unbound, 1, np.where(bound, 0, 2)).astype(np.int64)
+    with np.errstate(divide="ignore"):
+        r_peri = np.where(ok & (u_p > 0.0), 1.0 / u_p, 0.0)
+        r_apo = np.where(
+            bound, 1.0 / np.where(u_a > 0, u_a, 1.0), np.where(unbound, np.inf, np.nan)
+        )
+    kind = np.where(unbound & ~(ok & (u_p > 0.0)), 2, kind)  # unbound but no barrier: plunges
+    return r_peri, r_apo, kind

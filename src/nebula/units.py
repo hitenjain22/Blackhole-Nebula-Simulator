@@ -24,6 +24,8 @@ M_P = 1.67262192369e-27  # kg
 H_PLANCK = 6.62607015e-34  # J s
 SIGMA_SB = 5.670374419e-8  # W m^-2 K^-4
 A_RAD = 4.0 * SIGMA_SB / C  # J m^-3 K^-4, radiation constant
+SIGMA_T = 6.6524587321e-29  # m^2, Thomson cross-section (CODATA 2018)
+YEAR_S = 365.25 * 86_400.0  # Julian year (s), for accretion rates in M_sun/yr
 
 # --- conventions (expected-values header; PLAN.md §3) ---
 MU = 0.6  # mean molecular weight, fully ionized solar-composition gas
@@ -155,3 +157,15 @@ def format_length(metres: float) -> str:
         km = metres / KM
         return f"{km:,.0f} km" if abs(km) >= 1e4 else f"{km:.4g} km"
     return f"{metres / AU:.4g} AU"
+
+
+def eddington_luminosity_w(mass_msun: float = SGR_A_MASS_MSUN) -> float:
+    """L_Edd = 4 pi G M m_p c / sigma_T (pure hydrogen, the convention for Eddington ratios;
+    expected-values §9: 1.257e31 W per M_sun, 5.41e37 W for 4.3e6 M_sun)."""
+    return 4.0 * np.pi * G * mass_msun * M_SUN * M_P * C / SIGMA_T
+
+
+def eddington_accretion_msun_per_yr(mass_msun: float = SGR_A_MASS_MSUN,
+                                    efficiency: float = 0.1) -> float:  # fmt: skip
+    """Mdot_Edd = L_Edd / (efficiency c^2) in M_sun/yr (expected-values §9: 0.0955 for 10%)."""
+    return eddington_luminosity_w(mass_msun) / (efficiency * C**2) / M_SUN * YEAR_S

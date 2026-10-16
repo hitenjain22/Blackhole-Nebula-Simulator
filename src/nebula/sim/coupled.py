@@ -27,9 +27,15 @@ import numpy as np
 
 from nebula.physics import viscosity as visc
 from nebula.physics.cooling import T_FLOOR, beta_cool, cooling_time
-from nebula.physics.gravity import gn_angmom, gn_hamiltonian, gn_p_from_v, gn_v_from_p
+from nebula.physics.gravity import (
+    gn_angmom,
+    gn_hamiltonian,
+    gn_p_from_v,
+    gn_v_from_p,
+    newton_hamiltonian,
+)
 from nebula.sim.hydro import HydroConfig, eos_state, floor_energy
-from nebula.sim.integrator import glf_step_many
+from nebula.sim.integrator import glf_step_many, kdk_newton_many
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
     COND_VELOCITY,
@@ -46,6 +52,7 @@ class CoupledConfig:
     hole: bool = True
     eta_orb: float = 0.00125  # orbit step criterion dt <= eta r^(3/2) (DECISIONS, Step 1.4)
     wrong_coupling: bool = False  # kicks on v instead of p (report comparison only)
+    gravity: str = "gn"  # "gn" (generalized Newtonian, the default) or "newton" (control R6.4)
     # beta-cooling toward the floor (physics/cooling.py, phase-06 6.2): beta = inf: no cooling
     cooling_beta: float = math.inf
     t_floor: float = T_FLOOR
@@ -67,15 +74,51 @@ class GasState:
     vsig_max: np.ndarray = field(default=None)
     neighbour_cache: object = field(default=None)
     e_radiated: float = 0.0  # energy radiated so far (cooling), code units
+    visc_heating: np.ndarray = field(default=None)  # viscous part of du/dt (the shock marker)
+
+
+def _gn(cfg: CoupledConfig) -> bool:
+    if cfg.gravity not in ("gn", "newton"):
+        raise ValueError(f"unknown gravity {cfg.gravity!r}")
+    return cfg.hole and cfg.gravity == "gn"
 
 
 def velocity(cfg: CoupledConfig, x, p):
-    """v = dH/dp: GN (Phase 1) with the hole, p itself without."""
-    return gn_v_from_p(x, p) if cfg.hole else p
+    """v = dH/dp: GN (Phase 1) with the hole; p itself without it or with Newtonian gravity."""
+    return gn_v_from_p(x, p) if _gn(cfg) else p
+
+
+def p_from_v(cfg: CoupledConfig, x, v):
+    """Canonical momentum from velocity (inverse of ``velocity``)."""
+    return gn_p_from_v(x, v) if _gn(cfg) else np.array(v, float)
 
 
 def hamiltonian(cfg: CoupledConfig, x, p):
-    return gn_hamiltonian(x, p) if cfg.hole else 0.5 * np.sum(p * p, axis=1)
+    """Specific orbital energy H: GN, Newtonian point mass, or |p|^2/2 without the hole."""
+    if _gn(cfg):
+        return gn_hamiltonian(x, p)
+    if cfg.hole:
+        return newton_hamiltonian(x, p)
+    return 0.5 * np.sum(p * p, axis=1)
+
+
+def angmom(cfg: CoupledConfig, x, p):
+    """Specific angular momentum x cross p per particle (gn_angmom is the same quantity)."""
+    return gn_angmom(x, p) if _gn(cfg) else np.cross(x, p)
+
+
+def gravity_flow(cfg: CoupledConfig, x, p, dt):
+    """The gravity-only flow over dt (scalar or per particle): GN generalized leapfrog,
+    Newtonian kick-drift-kick, or a straight drift without the hole."""
+    if _gn(cfg):
+        x1, p1, _ = glf_step_many(x, p, dt)
+    elif cfg.hole:
+        x1, p1 = kdk_newton_many(x, p, dt)
+    else:
+        x1, p1 = x + np.reshape(dt, (-1, 1)) * p, np.array(p, float)
+    if cfg.hydro.box is not None:
+        x1 = np.mod(x1, np.asarray(cfg.hydro.box, float))
+    return x1, p1
 
 
 def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasState:
@@ -112,6 +155,7 @@ def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasS
     return replace(
         st, h=d.h, alpha=alpha, a_hydro=f.acc, dudt=f.dudt, rho=d.rho, c_s=cs,
         vsig_max=f.vsig_max if hc.viscosity else cs, neighbour_cache=d.cache,
+        visc_heating=f.dudt_visc,
     )  # fmt: skip
 
 
@@ -120,7 +164,7 @@ def initialise(x, v, u, mass, h_guess, cfg: CoupledConfig, t: float = 0.0) -> Ga
     x = np.array(x, float)
     n = len(x)
     v = np.array(v, float)
-    p = gn_p_from_v(x, v) if cfg.hole else v.copy()
+    p = p_from_v(cfg, x, v)
     hc = cfg.hydro
     st = GasState(
         t, x, p, np.array(u, float) * np.ones(n), np.array(mass, float) * np.ones(n),
@@ -147,6 +191,8 @@ def stable_dt(st: GasState, cfg: CoupledConfig) -> float:
 def _kick(cfg: CoupledConfig, x, p, a, dt_half):
     if not cfg.wrong_coupling or not cfg.hole:
         return p + dt_half * a
+    if not _gn(cfg):
+        raise ValueError("the wrong-coupling comparison is defined for GN gravity only")
     v = gn_v_from_p(x, p) + dt_half * a  # wrong: the hydro acceleration added to v
     return gn_p_from_v(x, v)
 
@@ -155,12 +201,7 @@ def step(st: GasState, cfg: CoupledConfig, dt: float) -> GasState:
     """One Strang-split step (module docstring)."""
     p_half = _kick(cfg, st.x, st.p, st.a_hydro, 0.5 * dt)
     u_half = st.u + 0.5 * dt * st.dudt
-    if cfg.hole:
-        x1, p_flow, _ = glf_step_many(st.x, p_half, dt)
-    else:
-        x1, p_flow = st.x + dt * p_half, p_half
-    if cfg.hydro.box is not None:
-        x1 = np.mod(x1, np.asarray(cfg.hydro.box, float))
+    x1, p_flow = gravity_flow(cfg, st.x, p_half, dt)
     e_rad = st.e_radiated
     if math.isfinite(cfg.cooling_beta):  # in the middle of the step (Strang split, phase-06 6.2)
         r_mid = 0.5 * (np.linalg.norm(st.x, axis=1) + np.linalg.norm(x1, axis=1))
@@ -187,7 +228,5 @@ def ledger(st: GasState, cfg: CoupledConfig) -> dict:
         "energy": float(np.sum(st.mass * (h + st.u))) + st.e_radiated,
         "e_radiated": st.e_radiated,
         "abs_h": float(np.sum(st.mass * np.abs(h))),
-        "angmom": np.sum(
-            st.mass[:, None] * (gn_angmom(st.x, st.p) if cfg.hole else np.cross(st.x, st.p)), axis=0
-        ),
+        "angmom": np.sum(st.mass[:, None] * angmom(cfg, st.x, st.p), axis=0),
     }

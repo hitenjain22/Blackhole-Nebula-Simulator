@@ -196,3 +196,40 @@ def test_opposite_gradients_give_plain_viscosity(rng):
     check("A < 0 for every pair: acceleration = plain", plain.acc, recon.acc, rtol=1e-14,
           per_vector=True)  # fmt: skip
     check("A < 0 for every pair: du/dt = plain", plain.dudt, recon.dudt, rtol=1e-13)
+
+
+def test_viscous_heating_marker(rng):
+    """The shock marker (Hiten, 2026-10-15): the viscous part of du/dt, returned separately.
+    Numba = reference; with reconstruction (no closeness factor) it is zero in a smooth
+    squeeze; in a head-on collision it is positive at the interface."""
+    pos, vel, mass, d, p, u, cs, alpha = _setup(rng)
+    gv = velocity_gradients_numba(pos, vel, mass, d.h, d.neighbours)
+    args = (pos, vel, mass, d.h, d.rho, d.omega, p, d.neighbours)
+    ref = forces_reference(*args, u=u, c_s=cs, alpha=alpha, shock=RECON, grad_v=gv)
+    fast = forces_numba(*args, u=u, c_s=cs, alpha=alpha, shock=RECON, grad_v=gv)
+    scale = np.abs(ref.dudt_visc).max()
+    check("viscous heating: Numba vs reference (/max)", ref.dudt_visc / scale,
+          fast.dudt_visc / scale, atol=1e-12)  # fmt: skip
+    check("viscous heating is never negative (min-mod gate)", True, bool(fast.dudt_visc.min() >= 0))
+    pos = glass_sphere(0.45, 2000)
+    n = len(pos)
+    m = np.full(n, 1 / 4096)
+    d = compute_density(pos, m, np.full(n, 1.6 * 4096 ** (-1 / 3)))
+    u = np.full(n, 1e-4)
+    p = (2 / 3) * d.rho * u
+    cs = np.sqrt(10 / 9 * u)
+    inner = np.linalg.norm(pos, axis=1) < 0.45 - 4 * np.median(d.h)
+    for label, vel, expect_zero in (("smooth squeeze", -1.0 * pos, True),
+                                    ("head-on collision", None, False)):  # fmt: skip
+        if vel is None:
+            vel = np.zeros((n, 3))
+            vel[:, 0] = np.where(pos[:, 0] < 0, 1.0, -1.0)
+        gv = velocity_gradients_numba(pos, vel, m, d.h, d.neighbours)
+        f = forces_numba(pos, vel, m, d.h, d.rho, d.omega, p, d.neighbours, c_s=cs,
+                         alpha=np.ones(n), shock=RECON_NO_CLOSENESS, grad_v=gv)  # fmt: skip
+        if expect_zero:
+            check(f"{label}: viscous heating (interior) ~ 0", 0.0,
+                  float(np.abs(f.dudt_visc[inner]).max()), atol=1e-15)  # fmt: skip
+        else:
+            check(f"{label}: viscous heating at the interface > 0", True,
+                  bool(f.dudt_visc[np.abs(pos[:, 0]) < 0.02].mean() > 0))  # fmt: skip

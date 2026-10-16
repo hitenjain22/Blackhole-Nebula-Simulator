@@ -303,3 +303,47 @@ def _raise_on_failure(iters: np.ndarray) -> None:
     if np.any(bad):
         first = int(np.argmax(bad))
         raise GLFConvergenceError(f"particle {first}: {_MESSAGES[int(iters[first])]}")
+
+
+# --------------------------------------------------------------------------- Newtonian control
+#
+# Kick-drift-kick leapfrog for H = |p|^2/2 - 1/r (physics.gravity.newton_hamiltonian): exact
+# symplectic and time-reversible, second order (Phase 6 control run R6.4).
+
+
+def kdk_newton_step(x: np.ndarray, p: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """Readable reference: p += dt/2 a(x); x += dt p; p += dt/2 a(x) (one particle or many)."""
+    from nebula.physics.gravity import newton_accel
+
+    p_half = p + 0.5 * dt * newton_accel(x)
+    x1 = x + dt * p_half
+    return x1, p_half + 0.5 * dt * newton_accel(x1)
+
+
+@numba.njit(parallel=True, cache=True)
+def _kdk_newton_kernel(x, p, dt, x_out, p_out):
+    for i in numba.prange(x.shape[0]):  # writes only to row i
+        # mirrors physics.gravity.newton_accel: a = -x / r^3
+        r3 = (x[i, 0] ** 2 + x[i, 1] ** 2 + x[i, 2] ** 2) ** 1.5
+        h = 0.5 * dt[i]
+        q0 = p[i, 0] - h * x[i, 0] / r3
+        q1 = p[i, 1] - h * x[i, 1] / r3
+        q2 = p[i, 2] - h * x[i, 2] / r3
+        y0 = x[i, 0] + dt[i] * q0
+        y1 = x[i, 1] + dt[i] * q1
+        y2 = x[i, 2] + dt[i] * q2
+        s3 = (y0 * y0 + y1 * y1 + y2 * y2) ** 1.5
+        x_out[i, 0], x_out[i, 1], x_out[i, 2] = y0, y1, y2
+        p_out[i, 0] = q0 - h * y0 / s3
+        p_out[i, 1] = q1 - h * y1 / s3
+        p_out[i, 2] = q2 - h * y2 / s3
+
+
+def kdk_newton_many(x: np.ndarray, p: np.ndarray, dt) -> tuple[np.ndarray, np.ndarray]:
+    """``kdk_newton_step`` for N particles (Numba, parallel); dt scalar or (N,)."""
+    x = np.ascontiguousarray(x, dtype=np.float64)
+    p = np.ascontiguousarray(p, dtype=np.float64)
+    dt = np.ascontiguousarray(np.broadcast_to(np.asarray(dt, dtype=np.float64), (len(x),)))
+    x_out, p_out = np.empty_like(x), np.empty_like(p)
+    _kdk_newton_kernel(x, p, dt, x_out, p_out)
+    return x_out, p_out

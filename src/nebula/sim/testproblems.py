@@ -32,10 +32,11 @@ class Problem:
 # --------------------------------------------------------------------------- Sod
 
 
-def sod_setup(resolution: str = "quick") -> Problem:
+def sod_setup(resolution: str = "quick", radiation: bool = False) -> Problem:
     """quick: tube length 1, cross-section 1/4, left spacing 1/64 (9,216 particles), t = 0.1.
     full (the plan's test): length 2, cross-section 1/8, left spacing 1/128 (36,864
-    particles), t = 0.2."""
+    particles), t = 0.2. radiation=True: the gas is forced into the radiation limit
+    P = rho u / 3, an exact gamma = 4/3 gas (Phase 6 test 4)."""
     if resolution == "full":
         length, width, t_end = 2.0, 0.125, 0.2
     else:
@@ -49,11 +50,13 @@ def sod_setup(resolution: str = "quick") -> Problem:
     mass = 1.0 * (length / 2) * width**2 / n_l  # equal masses: right side has 1/8 the particles
     rho = np.where(np.arange(len(x)) < n_l, 1.0, 0.125)
     p = np.where(np.arange(len(x)) < n_l, 1.0, 0.1)
-    u = p / ((SOD_GAMMA - 1.0) * rho)
-    cfg = HydroConfig(gamma=SOD_GAMMA, box=(length, width, width))
+    gamma = 4.0 / 3.0 if radiation else SOD_GAMMA
+    u = p / ((gamma - 1.0) * rho)  # (= 3 P / rho in the radiation limit)
+    cfg = HydroConfig(gamma=gamma, box=(length, width, width),
+                      eos="radiation" if radiation else "ideal")  # fmt: skip
     h0 = cfg.eta * (mass / rho) ** (1 / 3)
     st = initialise(x, np.zeros_like(x), u, mass, h0, cfg)
-    return Problem(st, cfg, t_end, length / 2, {"length": length, "width": width})
+    return Problem(st, cfg, t_end, length / 2, {"length": length, "width": width, "gamma": gamma})
 
 
 @dataclass
@@ -69,7 +72,7 @@ class SodMeasurement:
 
 
 def sod_measure(prob: Problem, st: HydroState) -> SodMeasurement:
-    sol = solve_riemann(1.0, 0.0, 1.0, 0.125, 0.0, 0.1, SOD_GAMMA)
+    sol = solve_riemann(1.0, 0.0, 1.0, 0.125, 0.0, 0.1, prob.extra.get("gamma", SOD_GAMMA))
     t, x0 = st.t, prob.x0
     x = st.x[:, 0]
     tail, contact, shock = x0 + sol.s_l_tail * t, x0 + sol.u_star * t, x0 + sol.s_r_head * t
@@ -114,7 +117,7 @@ def _bin(x, y, edges):
 
 
 def sod_exact(prob: Problem, x, t):
-    sol = solve_riemann(1.0, 0.0, 1.0, 0.125, 0.0, 0.1, SOD_GAMMA)
+    sol = solve_riemann(1.0, 0.0, 1.0, 0.125, 0.0, 0.1, prob.extra.get("gamma", SOD_GAMMA))
     return sample(sol, x, t, prob.x0)
 
 
@@ -367,3 +370,96 @@ def cached(name: str, compute):
     tmp.write_bytes(pickle.dumps(result))
     tmp.rename(path)  # atomic: a crash never leaves a half-written cache entry
     return result
+
+
+# --------------------------------------------------------------------------- colliding slabs
+#
+# Phase 6 test 5 (phase-06 6.3): two cold uniform slabs collide head-on at +-v, the
+# self-intersection of the stream in miniature. Strong-shock jump conditions (Rankine-Hugoniot,
+# upstream pressure ~0): the shocked gas is at rest with u = v^2/2, compression
+# (gamma + 1)/(gamma - 1) (4 for gamma = 5/3, 7 for 4/3), and each shock moves outward at
+# v (gamma - 1)/2 (v/3, v/6). Tube periodic in y and z (and x: the slabs' outer ends move apart,
+# opening a gap far from the collision).
+
+
+def slabs_setup(radiation: bool = False, v: float = 1.0, t_end: float = 0.6) -> Problem:
+    """Tube length 2, cross-section 1/4, uniform glass (spacing 1/64, 4,096 x 8 particles),
+    rho = 1, v_x = +v left of x = 1 and -v right of it, cold (u = 1e-6 v^2). Each slab is 1
+    long, so the shocks (moving out at v/3 at most) meet the slabs' receding outer ends only at
+    t = 0.75: t_end = 0.6 leaves a margin."""
+    length, width = 2.0, 0.25
+    x = tile_glass(load_glass(4096), (8, 1, 1), (length, width, width))
+    n = len(x)
+    mass = length * width * width / n
+    vel = np.zeros_like(x)
+    vel[:, 0] = np.where(x[:, 0] < length / 2, v, -v)
+    gamma = 4.0 / 3.0 if radiation else 5.0 / 3.0
+    cfg = HydroConfig(gamma=gamma, box=(length, width, width),
+                      eos="radiation" if radiation else "ideal")  # fmt: skip
+    st = initialise(x, vel, np.full(n, 1e-6 * v * v), mass, np.full(n, cfg.eta * mass ** (1 / 3)),
+                    cfg)  # fmt: skip
+    return Problem(st, cfg, t_end, length / 2, {"gamma": gamma, "v": v})
+
+
+@dataclass
+class SlabMeasurement:
+    rho_post: float  # mean density between the shocks (away from them)
+    u_post: float  # mean internal energy there
+    v_post: float  # mean |v_x| there
+    shock_speed: float  # outward speed of the shocks between t_end/2 and t_end (start-up excluded)
+    energy_error: float  # max |E(t) - E(0)| / E(0) over the run, E = sum m (v^2/2 + u)
+
+
+def _slab_shock_position(prob: Problem, st: HydroState) -> float:
+    """Mean distance of the two shocks from the collision plane: where the binned density
+    crosses midway between the upstream (1) and post-shock ((g+1)/(g-1)) values."""
+    x = st.x[:, 0] - prob.x0
+    edges = np.linspace(-0.5, 0.5, 201)
+    centres, rho_bin = _bin(x, st.rho, edges)
+    g = prob.extra["gamma"]
+    mid = 0.5 * (1.0 + (g + 1) / (g - 1))
+    shocks = []
+    for side in (1, -1):
+        sel = centres * side > 0
+        c, r = centres[sel] * side, rho_bin[sel]
+        order = np.argsort(c)
+        c, r = c[order], r[order]
+        k = np.flatnonzero(r > mid)[-1]  # outermost bin above the midpoint
+        shocks.append(c[k] + (r[k] - mid) / (r[k] - r[k + 1]) * (c[k + 1] - c[k]))
+    return float(np.mean(shocks))
+
+
+def slabs_run(prob: Problem, courant_factor: float = 1.0) -> SlabMeasurement:
+    """Run to t_end with steps courant_factor x the stable step, recording the shock position at
+    t_end/2 and t_end and the largest energy error on the way."""
+    st = prob.state
+
+    def energy(s):
+        return float(np.sum(s.mass * (0.5 * np.sum(s.v**2, axis=1) + s.u)))
+
+    e0 = energy(st)
+    worst = [0.0]
+
+    def cb(s):
+        worst[0] = max(worst[0], abs(energy(s) - e0) / e0)
+
+    half = _run_scaled(st, prob.cfg, prob.t_end / 2, courant_factor, cb)
+    x1 = _slab_shock_position(prob, half)
+    end = _run_scaled(half, prob.cfg, prob.t_end, courant_factor, cb)
+    x2 = _slab_shock_position(prob, end)
+    x = end.x[:, 0] - prob.x0
+    inner = np.abs(x) < 0.6 * x2
+    return SlabMeasurement(
+        float(np.mean(end.rho[inner])), float(np.mean(end.u[inner])),
+        float(np.mean(np.abs(end.v[inner, 0]))), (x2 - x1) / (end.t - half.t), worst[0],
+    )  # fmt: skip
+
+
+def _run_scaled(st, cfg, t_end, factor, callback):
+    """Steps of factor x the stable step (factor 1: the usual step), landing on t_end."""
+    from nebula.sim.hydro import stable_dt, step
+
+    while st.t < t_end * (1 - 1e-14):
+        st = step(st, cfg, min(factor * stable_dt(st, cfg), t_end - st.t))
+        callback(st)
+    return st
