@@ -10,6 +10,7 @@ outputs/checks/<RUN>_metrics.png  dM/d(eps) at the start, just before and after 
 Reads the float32 snapshots; particles all have mass 1/N (N at the start).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     run = sys.argv[1]
+    eos = json.loads((ROOT / "runs" / run / "manifest.json").read_text())["config"].get(
+        "eos", "ideal"
+    )
     files = sorted((ROOT / "runs" / run / "snapshots").glob("snap_*.npz"))
     snaps = [{k: v for k, v in np.load(f).items()} for f in files]
     n0 = len(snaps[0]["x"])
@@ -41,7 +45,7 @@ def main():
         m = np.full(len(x), 1.0 / n0)
         e = energy_distribution(x, p, m)
         ax = principal_axes(x, m)
-        th = thermal_summary(s["u"].astype(float), s["rho"].astype(float), m)
+        th = thermal_summary(s["u"].astype(float), s["rho"].astype(float), m, eos)
         com = np.sum(m[:, None] * x, axis=0) / np.sum(m)
         rows.append({"t": float(s["t"]), "n": len(x), "eps_mean": e.mean, "unbound": e.unbound,
                      "eps_p05": e.p05, "eps_p25": e.p25, "eps_p75": e.p75, "eps_p95": e.p95,

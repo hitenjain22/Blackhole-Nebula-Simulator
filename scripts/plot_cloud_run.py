@@ -9,6 +9,7 @@ outputs/checks/<RUN>_edge_on.png  the x-z view at pericentre (the vertical squee
 Each panel is framed on the gas (1st-99th percentile of positions); the black dot is the hole.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -18,9 +19,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from nebula.units import gas_temperature_from_u  # noqa: E402
+from nebula.analysis.cloud_metrics import snapshot_temperature  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def run_eos(run: str) -> str:
+    """The run's equation of state (manifest config; Phase 5 runs are ideal gas)."""
+    cfg = json.loads((ROOT / "runs" / run / "manifest.json").read_text())["config"]
+    return cfg.get("eos", "ideal")
 
 
 def load(run):
@@ -65,12 +72,13 @@ def frame(ax, x2, y2, c, title, show_hole=True):
 
 def main():
     run = sys.argv[1]
+    eos = run_eos(run)
     snaps = load(run)
     out = ROOT / "outputs" / "checks"
     fig, axes = plt.subplots(2, 3, figsize=(15, 9.5))
     for ax, (i, label) in zip(axes.ravel(), pick(snaps), strict=True):
         s = snaps[i]
-        logt = np.log10(gas_temperature_from_u(s["u"].astype(float)))
+        logt = np.log10(snapshot_temperature(eos, s["rho"], s["u"]))
         r_com = np.linalg.norm(np.mean(s["x"], axis=0))
         sc = frame(ax, s["x"][:, 0], s["x"][:, 1], logt,
                    f"{label}\nt = {float(s['t']):,.0f}, centre at r = {r_com:,.0f}")  # fmt: skip
@@ -81,7 +89,7 @@ def main():
 
     i_peri = pick(snaps)[3][0]
     s = snaps[i_peri]
-    logt = np.log10(gas_temperature_from_u(s["u"].astype(float)))
+    logt = np.log10(snapshot_temperature(eos, s["rho"], s["u"]))
     fig, ax = plt.subplots(figsize=(12, 5))
     near = np.linalg.norm(s["x"], axis=1) < 600
     sc = ax.scatter(s["x"][near, 0], s["x"][near, 2], c=logt[near], s=1.5, cmap="inferno",

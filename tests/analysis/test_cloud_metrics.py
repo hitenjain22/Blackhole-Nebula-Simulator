@@ -110,3 +110,20 @@ def test_offset_counts_from_the_first_snapshot():
     off = centre_of_mass_offset(first.x[-1][None], first.p[-1][None], np.ones(1), times, centres,
                                 t0=256.0)  # fmt: skip
     check("offset from the first snapshot's time", np.zeros(2), off, atol=1e-9)
+
+
+def test_snapshot_temperature_uses_the_runs_eos():
+    """Pictures and summaries use the run's EOS: ideal gas as before (Phase 5); with gas +
+    radiation, the EOS's own T (hot thin gas is radiation-dominated, so far below ideal gas)."""
+    from nebula.analysis.cloud_metrics import snapshot_temperature
+    from nebula.sim.hydro import HydroConfig, temperature
+    from nebula.units import gas_temperature_from_u
+
+    rho, u = np.array([1e-7, 1e-5, 1e-3]), np.array([4.5e-6, 1e-7, 2.3e-9])
+    t_id = snapshot_temperature("ideal", rho, u)
+    check("ideal: unchanged formula", gas_temperature_from_u(u), t_id, rtol=0.0)
+    t_gr = snapshot_temperature("gasrad", rho, u)
+    check("gasrad: the EOS's temperature", temperature(HydroConfig(eos="gasrad"), rho, u), t_gr,
+          rtol=0.0)  # fmt: skip
+    check("hot thin gas: radiation makes T far below ideal gas", True,
+          bool(t_gr[0] < 0.1 * gas_temperature_from_u(u)[0]))  # fmt: skip

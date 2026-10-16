@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from nebula.physics.gravity import gn_hamiltonian
+from nebula.sim.hydro import HydroConfig, temperature
 from nebula.sim.integrator import integrate_orbit
 from nebula.units import gas_temperature_from_u
 
@@ -108,9 +109,20 @@ class ThermalSummary:
     mass_above_1e6: float
 
 
-def thermal_summary(u: np.ndarray, rho: np.ndarray, mass: np.ndarray) -> ThermalSummary:
-    """Maximum density and temperature (ideal gas, Phase 5), mass fractions above 10^5, 10^6 K."""
-    temp = gas_temperature_from_u(np.asarray(u, float))
+def snapshot_temperature(eos: str, rho: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Temperature (K) of each particle for the run's equation of state (manifest "eos"; "ideal"
+    for Phase 5 runs). With gas + radiation, T is far below the ideal-gas value once radiation
+    holds most of the energy, so pictures must not use the ideal-gas formula for those runs."""
+    if eos == "ideal":
+        return gas_temperature_from_u(np.asarray(u, float))
+    return temperature(HydroConfig(eos=eos), np.asarray(rho, float), np.asarray(u, float))
+
+
+def thermal_summary(
+    u: np.ndarray, rho: np.ndarray, mass: np.ndarray, eos: str = "ideal"
+) -> ThermalSummary:
+    """Maximum density and temperature (for the run's EOS), mass fractions above 10^5, 10^6 K."""
+    temp = snapshot_temperature(eos, rho, u)
     m = np.asarray(mass, float)
     total = np.sum(m)
     return ThermalSummary(float(np.max(rho)), float(np.max(temp)),

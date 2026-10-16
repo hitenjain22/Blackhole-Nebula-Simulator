@@ -9,6 +9,7 @@ interpolation would cut the corners of the curved paths, showing motion that nev
 The view follows the gas (smoothed), particles coloured by temperature, the hole as a dot.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -19,21 +20,28 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 from nebula import units  # noqa: E402
+from nebula.analysis.cloud_metrics import snapshot_temperature  # noqa: E402
 from nebula.render.video import write_video  # noqa: E402
-from nebula.units import gas_temperature_from_u  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def run_eos(run: str) -> str:
+    """The run's equation of state (manifest config; Phase 5 runs are ideal gas)."""
+    cfg = json.loads((ROOT / "runs" / run / "manifest.json").read_text())["config"]
+    return cfg.get("eos", "ideal")
+
+
 def frames(run: str, hold: int):
     files = sorted((ROOT / "runs" / run / "snapshots").glob("snap_*.npz"))
+    eos = run_eos(run)
     day = units.DAY / units.BlackHoleUnits().time_s  # code time units per day
     centre = half = None
     fig = plt.figure(figsize=(12.8, 7.2), dpi=100)
     for f in files:
         d = np.load(f)
         x, t = d["x"].astype(float), float(d["t"])
-        logt = np.log10(gas_temperature_from_u(d["u"].astype(float)))
+        logt = np.log10(snapshot_temperature(eos, d["rho"], d["u"]))
         lo, hi = np.percentile(x[:, :2], 1, axis=0), np.percentile(x[:, :2], 99, axis=0)
         c_new = 0.5 * (lo + hi)
         h_new = max(0.65 * float(np.max(hi - lo)), 15.0)
