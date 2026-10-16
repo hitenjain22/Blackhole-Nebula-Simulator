@@ -305,4 +305,14 @@ Your Claude Code spotted something I missed when recommending D4. Phase 6's firs
 | 75 | passage 3, barely | t ≈ 2.0 million | 3% |
 | 100 | passage 3 | t ≈ 2.0 million (about 1.3 years) | 24% |
 
-Phase 6 plans to run to t = 3 million. So radius 25 gets a clean first pass at 10k but pushes the crash to about twice the planned run length. Radius 100 crashes on time, but needs roughly 100k–300k particles near the hole (D3). Radius 50–60 might do both, and a radius-50 test at 10k with the fix is running now. Nothing changes for the 10k radius-25 run: it is still the check that the real D2 matches the prototype. Decide the Phase 6 cloud size once the radius-50 result is in.
+Phase 6 plans to run to t = 3 million. So radius 25 gets a clean first pass at 10k but pushes the crash to about twice the planned run length. Radius 100 crashes on time, but needs roughly 100k–300k particles near the hole (D3). Radius 50–60 might do both, so I ran radii 50, 60 and 75 at 10k with the fix (and swallowing at r_acc = 4) through the first close pass. "Below the line" means L < 4, so the bit will be swallowed on a later pass.
+
+| Cloud radius | Swallowed | Still below the line | Total lost | Checked to |
+|---|---|---|---|---|
+| 25 (from §2d) | 0 | 0 | 0 | t = 400,000 |
+| 50 | 4 | 0 at t ≈ 402,000 (stopped before the late wave seen at radius 60) | 4+ | t ≈ 402,000, stopped |
+| 60 | 3 | 10 (peak 16 at t ≈ 402,900, falling at the end) | about 13 of 10,000 | t = 404,000, full pass |
+| 75 | 2 | 44, still rising (101 below L = 5) | 46+ | t ≈ 399,000, stopped |
+| 100 (from §2d) | 17 by 398,575, rising | not counted | 17+ | stopped early |
+
+Radius 60 loses about 13 bits (0.13%) to the same numerical flaw as before. Most of that came in a second, late wave (t ≈ 401,500–403,000), when the back of the cloud went round the hole, after a quiet stretch with only 1 below the line. The radius-50 run was stopped before that point, so its 4 is a lower bound. Radius 75 is clearly worse: 46 and rising before its late wave even started. **Recommendation: radius 60 for Phase 6.** It is the smallest cloud whose first stream crash lands inside Phase 6 (passage 4, t ≈ 2.8 million, with 10% of the stream still incoming), and its loss is small. Record the roughly 13 lost bits in DECISIONS.md as a known numerical effect, and check in the 50k run that the loss shrinks. The other choice, radius 25 with Phase 6 run to about t = 6 million, loses nothing but needs about twice the computer time. Nothing changes for the 10k radius-25 run: it is still the check that the real D2 matches the prototype. These runs used `scripts/run_cloud_acc.py`, which now also logs the count below the line and can save and resume (`ckpt=`).

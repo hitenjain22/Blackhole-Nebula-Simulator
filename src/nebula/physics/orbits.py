@@ -18,6 +18,12 @@ The right-hand side is the cubic 2 (u - u_a)(u_p - u)(u_3 - u) with u_3 = 1/2 - 
 import numpy as np
 from scipy.integrate import quad
 
+# Capture ("below the line") angular momentum of a marginally bound (E = 1, parabolic) orbit:
+# the potential barrier of (du/dphi)^2 = 2u/L^2 - u^2 + 2u^3 vanishes when L = 4 (GM/c), at
+# r = 4 (MTW 1973 §25.5; Shapiro & Teukolsky 1983 Eq. 12.4.27). The cloud's gas has
+# E = 0.9998, so gas with L < 4 is swallowed at its next pericentre (review §2d, §7).
+L_CAPTURE_PARABOLIC = 4.0
+
 
 def schwarzschild_EL_from_turning_points(r_peri: float, r_apo: float) -> tuple[float, float]:  # noqa: N802
     """Energy at infinity E and angular momentum L (per unit mass) of the bound orbit with

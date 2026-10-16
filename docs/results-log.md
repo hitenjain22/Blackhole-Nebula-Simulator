@@ -27,7 +27,7 @@ Both runs: t = 0 → 400,000 (cloud starts at r = 5,000; centre of mass closest 
 | particles swallowed | 0 | 0 | 0 |
 | energy ledger drift (end) | 1.8 × 10⁻⁵ | 1.6 × 10⁻⁵ | |
 | kernels reaching across the hole | 0% | 0% | |
-| typical heat u near the hole, at pericentre | 1.3 × 10⁻⁶ | 6.4 × 10⁻⁷ | ~2 × 10⁻⁸ (squeezing only, no shocks) |
+| typical heat u near the hole, at pericentre | 1.3 × 10⁻⁶ | 6.4 × 10⁻⁷ | ~2 × 10⁻⁸ (the most heat possible if all the squeezing motion became heat; review §2d) |
 | hottest 1% at pericentre | 6.9 × 10⁻⁶ | 2.6 × 10⁻⁶ | 1–3 × 10⁻⁶ |
 | hottest particle at pericentre | 7.3 × 10⁻⁴ | 2.6 × 10⁻⁵ | ~5 × 10⁻⁶ |
 | spread of orbital energy at the end (middle 50%) | ±33% | ±14% | |
@@ -35,6 +35,6 @@ Both runs: t = 0 → 400,000 (cloud starts at r = 5,000; centre of mass closest 
 | wall time | 1.7 h | 13.6 h | |
 
 - With 5× more particles the pericentre heating halves, the hottest particle is 28× cooler, and the energy spread and unbound gas fall 2.3× and 7×: much of the 10k heating is numerical (resolution), as the review predicted. The 50k hottest 1% sits inside the review's ceiling; the hottest particle is still ~5× above it.
-- Not yet converged: the typical heat (6.4 × 10⁻⁷) is still falling with resolution. Literature (review §3) puts converged nozzle heating near 4 × 10⁻⁵ of the orbital energy, ~3 × 10⁻⁷ here.
+- Not yet converged, and still far too warm: typical gas at 50k is ~30× above the gravity-only ceiling (10k: ~65×), so the typical temperatures at closest approach are still numerical. (Corrected 2026-10-16: this line first compared with a literature figure for the radius-100 cloud, ~3 × 10⁻⁷; for radius 25 the ceiling is ~2 × 10⁻⁸, review §2d.) The heat is still far too small to change the orbits, but the energy spread it causes is not (next point).
 - This matters for Phase 6: the energy spread after the first pass sets when the returning stream crashes into itself. At 10k it is mostly numerical; Phase 6 runs at 10k (Hiten's decision) should be read with that in mind.
 - Pictures: `docs/figures/cloud50k_r25_D2_panels.png`, `_metrics.png`, `_edge_on.png`, `_preview.mp4`. (This run predates the viscous-heating snapshot field, so its "mass in shocks" is not available.)

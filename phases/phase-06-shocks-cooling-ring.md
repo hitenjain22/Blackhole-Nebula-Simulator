@@ -2,7 +2,7 @@
 
 **Goal:** follow stages 4 and 5. The stretched cloud keeps orbiting; its relativistic precession makes the outgoing stream crash into the incoming one; the crash shocks and heats the gas; the gas loses orbital energy, circularizes and settles into a hot torus near r ≈ 51; radiative cooling decides whether that torus is thick and puffy or a thin ring.
 
-**Updated 2026-10-15** (Hiten's decisions after the plunge review, `docs/DECISIONS.md`): all science runs use 10k (1k is a smoke test only, D1); the viscosity uses velocity reconstruction (D2); swallowing at r_acc = 4 is built (D6). The Phase 6 cloud size is not chosen yet: everything marked *(pending: cloud size)* waits for it (review §7 gives the first crash for radii 25–100).
+**Updated 2026-10-15** (Hiten's decisions after the plunge review, `docs/DECISIONS.md`): all science runs use 10k (1k is a smoke test only, D1); the viscosity uses velocity reconstruction (D2); swallowing at r_acc = 4 is built (D6). **Updated 2026-10-16:** Hiten chose **cloud radius 60** for Phase 6 and later (DECISIONS, D4 update; review §7): the smallest cloud whose first stream crash falls inside the planned run, with a known numerical loss of ~0.13% of the gas at 10k. The radius-dependent numbers below are for radius 60 (expected-values §2c); the radius-100 values are kept for comparison.
 
 **Ends with:** 10k runs from the start to a formed torus, with the gas + radiation equation of state and cooling on; a four-panel thin-vs-thick comparison (β scan); a Newtonian control run showing why relativity matters; the first light curve; flat ledgers throughout.
 
@@ -12,8 +12,6 @@
 
 ## 6.1 The physical picture, with numbers to expect
 
-*(pending: cloud size)* The crash timing below (table and "probably passage 2 or 3") is for a radius-100 cloud. For other radii see review §7: radius 25 crashes only at passage 8 (t ≈ 5.9 million), radius 100 at passage 3.
-
 All numbers here are in `reference/expected-values.md` §2b and §9 with how they were computed. They are **predictions to compare against**, not test tolerances: when the run disagrees, find out why and write it up (it may be the hydrodynamics doing something the test-particle estimate can't).
 
 **Where the streams cross.** Gas that has just passed pericentre heads back out on an orbit rotated by 24.04°. The gas still falling in is on the un-rotated orbit. The two branches cross where both are 180° from pericentre on the exact orbit shape:
@@ -22,15 +20,18 @@ All numbers here are in `reference/expected-values.md` §2b and §9 with how the
 - time from pericentre to r_SI: **36,970** (9.1 days);
 - the streams meet almost **head-on**: both have speed 0.0283, radial components ∓0.02798, tangential 0.0044, so their velocities are 162° apart and the relative speed is **0.056 c ≈ 16,800 km/s**.
 
-**When the crash starts.** Crossing needs gas on both branches at once: the incoming gas must still be passing r_SI when the outgoing gas arrives, so the spread of pericentre times must exceed about 2 × 36,970 ≈ 74,000. A test-particle model of the cloud (400 particles, pressure ignored) gives:
+**When the crash starts.** Crossing needs gas on both branches at once: the incoming gas must still be passing r_SI when the outgoing gas arrives, so the spread of pericentre times must exceed about 2 × 36,970 ≈ 74,000. A test-particle model of the radius-60 cloud (300 particles, pressure ignored; expected-values §2c) gives:
 
 | Pericentre passage | Mean time | Spread of pericentre times | Streams cross? |
 |---|---|---|---|
-| 1 | 395,900 (97 days) | 21,800 | no |
-| 2 | 1,187,700 (291 days) | 65,100 | no (just short) |
-| 3 | 1,979,500 (485 days) | 108,700 | **yes**: ~25% of the stream is still incoming when the outgoing gas arrives |
+| 1 | 396,000 (97 days) | 13,100 | no |
+| 2 | 1,188,000 (291 days) | 39,100 | no |
+| 3 | 1,980,100 (485 days) | 65,200 | no, but **only just**: the first outgoing gas reaches r_SI 8,700 after the last incoming gas has passed |
+| 4 | 2,772,100 (679 days) | 91,400 | **yes**: first contact at **t = 2,765,139** (1.86 years), with 10% of the stream still incoming |
 
-The spread grows each orbit because the energy spread (±1.9%) makes the return times differ by ±2.8% per orbit. Pressure and the nozzle shock at each pericentre add energy spread, so **the real crash probably starts at passage 2 or 3**. When it starts is one of this phase's results.
+(For the old radius-100 cloud, expected-values §2b: spreads 21,800, 65,100, 108,700; crossing at passage 3, first contact t = 1,964,230, 25% incoming.)
+
+The spread grows each orbit because the energy spread (±1.1% at radius 60) makes the return times differ by ±1.7% per orbit. Pressure and the nozzle shock at each pericentre add energy spread (Phase 5 measured ±14% at 50k and ±33% at 10k for the middle half of the gas after the first pass, radius 25, much of it numerical), so **the real crash probably starts earlier, at passage 3 (t ≈ 2.0 million) or even 2**. When it starts is one of this phase's results.
 
 **How hot.** Turning the radial kinetic energy ½v_r² = 3.9 × 10⁻⁴ c² per unit mass into heat would make gas alone 1.7 × 10⁹ K. With radiation in equilibrium the temperature is far lower: 1.5 × 10⁵ K at ρ = 10⁻⁸ kg/m³ and 4.6 × 10⁵ K at 10⁻⁶ kg/m³, radiation-pressure dominated (Γ₁ → 4/3). This is why the radiation equation of state is essential.
 
@@ -55,7 +56,7 @@ c_s = √(Γ₁ P / ρ)
 ```
 - Solve for T from (ρ, u) with Newton's method on **log T**, with bisection fallback on [1 K, 10¹³ K]; tolerance 10⁻¹² relative. Never solve the quartic in closed form (cancellation).
 - Work in physical units inside the function; `units.py` converts code ρ (via the cloud mass scale) and code u (× c²). This is the only place the cloud mass enters the dynamics.
-- The cloud itself at 10⁴ K and ρ ≈ 1.9 × 10⁻⁷ kg/m³ already has P_rad/P_gas ≈ 0.1, so **production runs use this EOS from t = 0**. *(pending: cloud size: these numbers are for radius 100; a smaller, denser cloud has a much smaller radiation fraction, ~0.002 at radius 25; using the full EOS from t = 0 is fine either way.)* (Phase 5 runs with ideal gas remain valid as development runs.)
+- The cloud itself at 10⁴ K and ρ ≈ 1.9 × 10⁻⁷ kg/m³ already has P_rad/P_gas ≈ 0.1, so **production runs use this EOS from t = 0**. (These numbers are for radius 100. The radius-60 cloud is 4.6× denser, ρ ≈ 8.6 × 10⁻⁷ kg/m³, so P_rad/P_gas ≈ 0.02 at 10⁴ K; radius 25: ~0.002. Using the full EOS from t = 0 is right either way.) (Phase 5 runs with ideal gas remain valid as development runs.)
 - **Assumption to state in the report: local thermodynamic equilibrium (LTE)**, i.e. gas and radiation share one temperature. What makes radiation thermalize is **absorption**, not electron scattering (scattering only bounces photons around; it doesn't create or destroy them). The right measure is the effective optical depth τ_eff = κ_eff ρ L with κ_eff = √(κ_abs(κ_abs + κ_es)) (Phase 9 uses the same κ_eff). Rough plan-time estimates with a free–free (Kramers-type) κ_abs, coefficient from memory (check it in Frank, King & Raine before quoting): the 10⁴ K cloud has τ_eff ~ 10³ (thick: LTE fine; at 10⁴ K hydrogen's bound–free absorption makes it even thicker), but the 10⁶ K torus has τ_eff of only **a few to ~15** (free–free absorption falls as T^(−7/2); metal bound–free absorption adds up to ~20×). So **LTE in the hot torus is an approximation, not a given**: the gas could be hotter than the radiation in its thin outer layers. Say so in the report.
 - Diagnostics (per particle, physical units, every snapshot): τ_es,h = κ_es ρ h and τ_eff,h = κ_eff ρ h, with κ_abs and κ_eff from `physics/opacity.py` (written here, with tests against hand-computed values from the textbook coefficient, and reused by Phase 9). Report the mass fractions with τ_eff,h < 1 and with τ_eff over the torus thickness < 1. If most of the torus mass has τ_eff < 1, stop and discuss with Hiten (cut-list option: the diffusion-cooling scheme below).
 
@@ -95,12 +96,12 @@ E_radiated += m (u − u_new)
 
 ## 6.4 Runs
 
-All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x × p; built, D6); escape radius 50,000 (removed as "escaped", ledgered; **to build**: the same removed-particle ledger with a second reason); gas + radiation EOS; T_floor = 10⁴ K; the Phase 5 initial conditions *(pending: cloud size)*; the hole-resolution check (D5) in every snapshot.
+All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x × p; built, D6); escape radius 50,000 (removed as "escaped", ledgered; **to build**: the same removed-particle ledger with a second reason); gas + radiation EOS; T_floor = 10⁴ K; the Phase 5 initial conditions with **radius 60** (Hiten, 2026-10-16); the hole-resolution check (D5) in every snapshot.
 
 | Run | Particles | Gravity | β | End | Purpose |
 |---|---|---|---|---|---|
 | R6.0 | 1k | GN | 230 | short | smoke test only (D1): does it run, are the ledgers flat |
-| R6.1 | **10k** | GN | 230 | t = 3.0 × 10⁶ (~2 years) or torus formed + 10 ring orbits *(pending: cloud size; at radius 25 the first crash would come only near t ≈ 5.9 × 10⁶)* | first full circularization |
+| R6.1 | **10k** | GN | 230 | t = **3.8 × 10⁶** (~2.6 years; was 3.0 × 10⁶ for radius 100: Hiten, 2026-10-16, DECISIONS) or torus formed + 10 ring orbits | first full circularization |
 | R6.2 | 10k | GN | 230 | same | the everyday-resolution result (with R6.1 now also 10k: merge or use for a second configuration) |
 | R6.3a–d | **10k** | GN | 1, 10, 100, ∞ | same | thin ring vs thick torus |
 | R6.4 | **10k** | **Newtonian** point mass | 230 | same | control: no precession, so no early crossing |
@@ -108,7 +109,7 @@ All runs: r_acc = 4 (removed particles go into the ledger with their m, H, u, x 
 
 All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
 
-**Run length budget.** Most of the 3 × 10⁶ is cheap (gas far out takes huge steps). Cost concentrates at pericentre passages, crashes and in the torus. The old estimate (R6.1 in tens of minutes, R6.2 in a few hours) assumed 1k runs and predates the measured speed (~30,000 particle-updates/s, Step 3.8), D2's extra gradient pass (~20–30%) and 10k for every run: **remeasure** on the first 10k run (Phase 5) and extrapolate before launching the Phase 6 set. *(pending: cloud size: a later crash lengthens every run.)* Checkpoint every 15 minutes (simple version here; Phase 10 makes it robust).
+**Run length budget.** Most of the 3.8 × 10⁶ is cheap (gas far out takes huge steps). Cost concentrates at pericentre passages, crashes and in the torus. The old estimate (R6.1 in tens of minutes, R6.2 in a few hours) assumed 1k runs and predates the measured speed (~30,000 particle-updates/s, Step 3.8), D2's extra gradient pass (~20–30%) and 10k for every run: **remeasure** on the first 10k run (Phase 5) and extrapolate before launching the Phase 6 set. Measured in Phase 5 (radius 25, D2): 10k to t = 400,000 in 1.7 h, 50k in 13.6 h; the pericentre passage dominates. Checkpoint every 15 minutes (simple version here; Phase 10 makes it robust).
 
 **Stop condition for "torus formed".** Define with the diagnostics below: ≥ 50% of the remaining bound mass has orbital eccentricity < 0.3 and r < 200. Record that time as t_circ.
 
@@ -127,6 +128,7 @@ All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
 - Accretion rate Ṁ(t) at r_acc (binned; in M☉/yr and Eddington units, Ṁ_Edd = 0.0955 M☉/yr for 10% efficiency).
 - Temperature distribution (mass-weighted histogram of log T); mass fractions with τ_eff,h < 1 and τ_es,h < 1.
 - Unbound mass fraction.
+- **Lost gas (D4 update):** particles below the capture line L < 4 plus those swallowed, as a share of the cloud; logged with every diagnostics line and flagged above 1%. Known numerical effect at 10k, radius 60: ~0.13% after the first pass (review §7).
 - Time-step level histogram; wall time per 10⁵ time units.
 
 ---
@@ -157,15 +159,15 @@ All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
 | Optically thin gas treated as thick | unphysical radiation pressure in thin edges; LTE temperature too low in thin layers | report the τ_eff,h < 1 mass fraction; mention in the report; diffusion cooling (option) helps |
 | Light curve noise | spiky L(t) | bin in time; report binned values; never smooth before computing totals |
 | Results differ wildly between seeds | R6.5 scatter large | it's real stochasticity at low resolution; report mean and spread |
-| Circularization slower than budget | t_circ beyond 3 × 10⁶ | extend in steps with checkpoints; don't raise η or C_cour to "speed up" (CLAUDE.md rule) |
+| Circularization slower than budget | t_circ beyond 3.8 × 10⁶ | extend in steps with checkpoints; don't raise η or C_cour to "speed up" (CLAUDE.md rule) |
 
-*(pending: cloud size — this knob now interacts with D4: a larger cloud crashes earlier but needs more particles near the hole; review §7.)* **Scenario knob (only with Hiten's agreement, logged in DECISIONS.md):** if the crash starts too late for a good story, a larger cloud (R = 150–200) doubles the energy spread and makes it start earlier. Don't change the scenario quietly.
+**Scenario knob (only with Hiten's agreement, logged in DECISIONS.md):** if the crash starts too late for a good story, a larger cloud makes it start earlier (radius 100: passage 3; review §7). But at 10k a larger cloud loses more gas to the hole numerically (radius 75: 46+ of 10,000 against ~13 at radius 60), so it would need more particles (D3). Don't change the scenario quietly.
 
 ---
 
 ## 6.8 Physics questions this phase answers (for the report)
 
-1. At which passage does the first crash happen, and how does that compare with the test-particle prediction (passage 3)? What made it earlier, if it was?
+1. At which passage does the first crash happen, and how does that compare with the test-particle prediction (radius 60: passage 4, first contact t ≈ 2.77 million; passage 3 misses by only 8,700)? What made it earlier, if it was?
 2. How much orbital energy is dissipated per crash, and where does it go (radiated, heat, unbinding gas)?
 3. What is t_circ, in days and in ring orbits?
 4. Thin ring or thick torus at β = 230? How does the outcome change with β (Bonnerot et al. 2016 comparison)?
@@ -179,5 +181,6 @@ All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
 - [ ] Tests 1–9 pass with expected/actual printed.
 - [ ] R6.1, R6.2, R6.3a–d, R6.4 complete with flat ledgers (|ΔE|/Σm|H| < 10⁻⁴ over the whole run including crashes).
 - [ ] The numerical-circularization check (6.7) is done and written up.
+- [ ] Resolution check of the lost gas (D4 update): a 50k radius-60 run through the first pass loses a smaller share than R6.1 (10k), both at the peak and after the pass (`scripts/loss_check.py R6.1_RUN 50K_RUN t=...`).
 - [ ] Pictures and preview reviewed by Hiten.
 - [ ] `docs/results-log.md` has dated entries answering 6.8's questions; committed.

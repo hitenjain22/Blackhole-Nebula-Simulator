@@ -80,6 +80,23 @@ Test-particle model: uniform sphere R = 100 at (5,000, 0, 0), all with the apoce
 | Cloud tidal radius R (M/M_cloud)^(1/3) | ≈ 35,000 |
 | Jeans mass at 10⁴ K and that density | ≈ 19 M☉ |
 
+## §2c The cloud and the stream for the radii in use (added 2026-10-16; estimates)
+
+Hiten's decision (DECISIONS, D4 update 2026-10-16): **Phase 6 and later use cloud radius 60**; Phase 5's check runs use radius 25. Same test-particle model as §2b (uniform sphere at (5,000, 0, 0), apocentre velocity, GN, DOP853, pressure ignored); §2b's radius-100 values are unchanged. Scripts: `23_cloud_spread_by_radius R` (script 11 with R as an argument; 400 particles, seed 1; R = 100 reproduces script 11's output exactly) and `24_crash_by_radius R K N` (the review's generalisation of script 12; seed 2; R = 100, N = 300 reproduces §2b: 395,891 / 21,792, 1,187,690 / 65,142, 1,979,490 / 108,731, cross at passage 3 with 25% incoming).
+
+| Quantity | Radius 25 (Phase 5) | Radius 60 (Phase 6) |
+|---|---|---|
+| Orbital energy spread, half-range (`23`, 400 particles) | 9.28 × 10⁻⁷ = ±0.47% of \|ε\| (estimate R/r_a² = 1.0 × 10⁻⁶) | 2.23 × 10⁻⁶ = ±1.12% (estimate 2.4 × 10⁻⁶) |
+| Passage 1 pericentre times (`23`) | mean 396,150; full spread 5,631; std 1,359 | mean 396,060; full spread 13,517; std 3,261 |
+| Passage 1 (`24`, N = 300) | | mean 396,009; spread 13,078 |
+| Passage 2 (`24`) | | mean 1,188,039; spread 39,095 |
+| Passage 3 (`24`) | crash only at passage 8, t ≈ 5.9 million (review §7) | mean 1,980,068; spread 65,245; streams do not cross |
+| Passage 4 (`24`) | | mean **2,772,097**; spread 91,407; **streams cross: 10% of the stream still incoming at first contact** |
+| First outgoing gas at r_SI vs last incoming gas there (`24`) | | passage 3: 1,985,703 vs 1,977,007 (**misses by only 8,700**); passage 4: 2,765,139 vs 2,782,604 (cross) |
+| **First contact** (first outgoing gas reaches r_SI on the crossing passage) | | **2,765,139** (≈ 1.86 years); radius 100 for comparison: 1,964,230 (passage 3) |
+
+Notes. (1) N = 200 gives the same passage 4 (2,771,718; spread 91,407; 10%), so the result does not depend on the sample. (2) The half-range from 400 random points is ~7% below R/r_a² because the sample rarely reaches the sphere's edge; a dense particle cloud gives the estimate almost exactly (Phase 5 10k and 50k radius-25 runs: 9.93 and 9.97 × 10⁻⁷). (3) Real pressure and nozzle-shock heating add energy spread (Phase 5: ±14% at 50k, ±33% at 10k, middle 50%), which may bring the crash earlier than this test-particle estimate: at radius 60 passage 3 misses by only 8,700, so a little extra spread moves the first crash to passage 3 (t ≈ 1.98 million).
+
 ---
 
 ## §3 Light rays, Schwarzschild (Phase 2, 8)
@@ -310,3 +327,5 @@ Plan-time checks, not project code (SciPy/NumPy; `17` needs `colour-science`). R
 | 20_kerr_efficiency_scenario | ISCO efficiencies, torus precession, Eddington and energy numbers |
 | 21_precision_and_review_checks | extra-digit EOS, ray and orbit values; hot-blob ledger orbit; colour-LUT interpolation error; band fractions; Doppler test ring |
 | 22_sedov_constant | Sedov–Taylor constant ξ₀ from the self-similar ODEs (added in Phase 3) |
+| 23_cloud_spread_by_radius | script 11 for any cloud radius (added 2026-10-16, §2c) |
+| 24_crash_by_radius | stream crossing by passage for any radius (from the external review, added 2026-10-16, §2c) |

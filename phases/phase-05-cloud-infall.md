@@ -4,7 +4,7 @@
 
 **Ends with:** a 10k-particle run from the start to well past the first pericentre (the 1k cloud is a smoke test only: D1), a 50k run for the gas temperatures at closest approach (D3), with plots of the stream at key moments, the energy distribution of the gas, the ledgers, and a quick preview animation.
 
-**Updated 2026-10-15** after the plunge review (`docs/review-2026-10-15-plunge.md`) and Hiten's decisions D1–D11 (`docs/DECISIONS.md`): velocity reconstruction in the viscosity (D2), cloud radius 25 for Phase 5 (D4), the hole-resolution check (D5), swallowing at r_acc = 4 with ledger entries (D6), Phase 10.2a's snapshot rule. Items that depend on the cloud radius are marked *(pending: cloud size)* and wait for Hiten's choice of the Phase 6 cloud size (review §7).
+**Updated 2026-10-15** after the plunge review (`docs/review-2026-10-15-plunge.md`) and Hiten's decisions D1–D11 (`docs/DECISIONS.md`): velocity reconstruction in the viscosity (D2), cloud radius 25 for Phase 5 (D4), the hole-resolution check (D5), swallowing at r_acc = 4 with ledger entries (D6), Phase 10.2a's snapshot rule. **Updated 2026-10-16:** Hiten chose radius 60 for Phase 6 and later (DECISIONS, D4 update); Phase 5's runs stay at radius 25 (the check of D2 against the review). The radius-dependent numbers below are now for radius 25, from expected-values §2c.
 
 **Primary sources:** Gillessen et al. 2012, Burkert et al. 2012, Schartmann et al. 2012 (G2 cloud: initial conditions and tidal stretching), Bonnerot & Stone 2021 (review: nozzle shock and stream physics), Stone, Sari & Loeb 2013 (energy spread of disrupted material).
 
@@ -24,11 +24,11 @@
 | Self-gravity | off (justified: cloud tidal radius R (M/M_cloud)^(1/3) ≥ 8,750 ≫ 5,000 for any radius from 25 to 100; Jeans mass ≥ 2.4 M☉ ≫ 0.1 M☉ (19 M☉ at radius 100, scaling as R^(3/2))) | write the justification into DECISIONS.md |
 | Viscosity | Phantom's, with velocity reconstruction (D2) | without it, the cold gas squeezed on its way in is heated and stirred by the viscosity (review §2c) |
 
-**Expected numbers to check against** (from expected-values §2 and §9). *(pending: cloud size)*: the first, second and fourth items below were computed for radius 100; they scale with the radius and are not changed here until Hiten picks the cloud size.
-- Each particle's orbital energy is fixed from the start (no self-gravity, negligible pressure). The spread across the cloud is about ±R/r_a² = ±4 × 10⁻⁶ around ε = −1.989 × 10⁻⁴: ±2%. So the return times of the stream's ends will differ by about ±3% of the radial period (±24,000 time units ≈ ±6 days) on the next return. This is the "tidal energy spread" result; measure it.
-- The cloud expands slightly from its own pressure before pericentre: by roughly c_s × t ≈ 5 × 10⁻⁵ × 4 × 10⁵ ≈ 20 (20% of its radius).
+**Expected numbers to check against** (from expected-values §2, §2c and §9; radius 25. The radius-100 values of §2b are kept there unchanged.)
+- Each particle's orbital energy is fixed from the start (no self-gravity, negligible pressure). The spread across the cloud is about ±R/r_a² = ±1.0 × 10⁻⁶ around ε = −1.989 × 10⁻⁴: ±0.5% (radius 100: ±2%). So the return times of the stream's ends will differ by about ±0.75% of the radial period (±6,000 time units ≈ ±1.5 days) on the next return. This is the "tidal energy spread" result; measure it.
+- The cloud expands slightly from its own pressure before pericentre: at most c_s × t ≈ 5 × 10⁻⁵ × 4 × 10⁵ ≈ 20 (an upper bound, independent of the radius). Measured at radius 25: the rms height grew only 11.18 → 11.75 (5%) before the tidal squeeze took over.
 - Centre of mass reaches pericentre near t = 396,224 (the cloud's size shifts individual particles by a few percent).
-- Pericentre arrival times across the cloud span about 21,800 (standard deviation ≈ 5,500; test-particle estimate in expected-values §2b). They are set almost entirely by each particle's starting x offset (its orbital energy), not by its y or z offset.
+- Pericentre arrival times across the cloud span about 5,600 (standard deviation ≈ 1,360; test-particle estimate in expected-values §2c; radius 100: 21,800). They are set almost entirely by each particle's starting x offset (its orbital energy), not by its y or z offset.
 - **No stream crossing is expected in this phase:** the incoming gas has fully passed the crossing radius r_SI ≈ 1,664 before the outgoing gas reaches it (Phase 6 §6.1). A crash before t = 500,000 means a bug, or a pressure effect worth investigating.
 
 ---
@@ -44,7 +44,7 @@
 - Maximum density and temperature; mass above 10⁵ K, 10⁶ K.
 - dM/dε histogram (specific orbital energy of every particle), at the start, just before pericentre and just after. Before: the tidal spread above. After: the nozzle shock adds a spread; quantify it.
 - Time-step level histogram (from Phase 4).
-- **Hole resolution (D5, built: `sim/diagnostics.py`):** for particles at r < 60, the median and largest 2h/r and the share of neighbour pairs more than 90° apart around the hole, with a warning above 1%; the typical (median) and hottest-1% u of the gas near the hole (r < 300), compared with the gravity-only ceiling of review §2d *(pending: cloud size — the ceiling depends on it)*.
+- **Hole resolution (D5, built: `sim/diagnostics.py`):** for particles at r < 60, the median and largest 2h/r and the share of neighbour pairs more than 90° apart around the hole, with a warning above 1%; the typical (median) and hottest-1% u of the gas near the hole (r < 300), compared with the gravity-only ceiling of review §2d for radius 25 (typical ~2 × 10⁻⁸, hottest 1% 1–3 × 10⁻⁶, hottest ~5 × 10⁻⁶). Also reported: the gas below the capture line L < 4 and the lost share (swallowed + below), flagged above 1% (DECISIONS, D4 update).
 - Swallowed particles (D6): time, angular momentum at the start and at removal, u; any on their first approach listed separately (the alarm in 5.3).
 - Shock marker: the viscous heating rate after reconstruction (Hiten, 2026-10-15; the switch's α is ~1 for all the cold gas and no longer marks shocks).
 
@@ -84,5 +84,5 @@
 
 - [ ] 10k (and the 50k) runs complete to t = 500,000 with flat ledgers; the 1k smoke test runs cleanly.
 - [ ] Plots and preview animation reviewed by Hiten.
-- [ ] Measured tidal energy spread agrees with the ±R/r_a² estimate (within ~30%; it's an estimate). *(pending: cloud size)*
+- [x] Measured tidal energy spread agrees with the ±R/r_a² estimate (within ~30%; it's an estimate): radius 25, half-range 9.93 × 10⁻⁷ (10k) and 9.97 × 10⁻⁷ (50k) against 1.0 × 10⁻⁶ (ratio 0.993 and 0.997).
 - [ ] Results noted in `docs/results-log.md` (start this file now: one dated entry per meaningful result).

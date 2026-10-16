@@ -26,7 +26,8 @@ from dataclasses import replace
 
 import numpy as np
 
-from nebula.sim import blocks
+from nebula.physics.orbits import L_CAPTURE_PARABOLIC as L_CAPTURE
+from nebula.sim import blocks, coupled
 from nebula.sim.blocks import BlockConfig
 from nebula.sim.cloud import cloud_ic
 from nebula.sim.coupled import CoupledConfig
@@ -41,6 +42,7 @@ from nebula.sim.runio import (
 )
 
 CHECKPOINT_EVERY = 15 * 60  # s (CLAUDE.md: at least every 15 minutes)
+LOST_FLAG = 0.01  # lost share that is flagged for Hiten (DECISIONS, D4 update; our choice)
 
 
 def parse(argv):
@@ -96,6 +98,12 @@ def diagnostics_row(st, bcfg, led0):
     hr = hole_resolution(st.x, st.h, st.u)
     de = abs(led["energy"] - led0["energy"]) / led0["abs_h"]
     dl = np.linalg.norm(led["angmom"] - led0["angmom"]) / np.linalg.norm(led0["angmom"])
+    # D4 update: gas below the capture line L < 4 will be swallowed on a later pass; with the
+    # swallowed gas it is the "lost" share (a known numerical effect, flagged above 1%)
+    below = int(
+        np.sum(np.linalg.norm(coupled.angmom(bcfg.coupled, st.x, st.p), axis=1) < L_CAPTURE)
+    )
+    lost = (below + st.removed.totals("accreted")["count"]) / (len(st.x) + st.removed.count)
     return {
         "t": st.t, "n_present": len(st.x), "removed": st.removed.count,
         "removed_first_pass": len(st.removed.first_pass()), "energy_err": de, "angmom_err": dl,
@@ -104,6 +112,7 @@ def diagnostics_row(st, bcfg, led0):
         "n_gas300": hr.n_gas, "u_median": hr.u_median, "u_p99": hr.u_p99, "u_max": hr.u_max,
         "level_min": int(st.level.min()), "level_max": int(st.level.max()),
         "particle_steps": st.particle_steps,
+        "below_capture": below, "lost_fraction": lost,
     }, hr  # fmt: skip
 
 
@@ -171,8 +180,10 @@ def main():
         if st.t >= state["next_t"] or st.n >= st.n_stop or event:
             row, hr = diagnostics_row(st, bcfg, state["led0"])
             new_file = not csv_path.exists()
+            # a run started by older code keeps its columns (newer ones are dropped)
+            fields = list(row) if new_file else csv_path.read_text().split("\n", 1)[0].split(",")
             with open(csv_path, "a", newline="") as f:
-                w = csv.DictWriter(f, fieldnames=list(row))
+                w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
                 if new_file:
                     w.writeheader()
                 w.writerow(row)
@@ -182,10 +193,13 @@ def main():
             state["snap"] += 1
             dt_snap = snapshot_interval(st.x)
             state["next_t"] = st.t + dt_snap
-            if state["snap"] % 20 == 0 or event:
+            flag = "  FLAG: lost > 1%" if row["lost_fraction"] > LOST_FLAG else ""
+            if state["snap"] % 20 == 0 or event or flag:
                 log(folder, f"t = {st.t:9.1f}  N = {len(st.x)}  removed {st.removed.count}  "
                             f"dE {row['energy_err']:.1e}  dL {row['angmom_err']:.1e}  "
-                            f"wall {time.perf_counter() - w0:.0f} s | {hr.line()}")  # fmt: skip
+                            f"wall {time.perf_counter() - w0:.0f} s | {hr.line()} | below L<4 "
+                            f"{row['below_capture']}, lost {100 * row['lost_fraction']:.2f}%"
+                            f"{flag}")  # fmt: skip
         if time.perf_counter() - last_ckpt > CHECKPOINT_EVERY:
             state["wall"] = time.perf_counter() - w0
             save_checkpoint(folder, state)
