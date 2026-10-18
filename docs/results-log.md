@@ -38,3 +38,20 @@ Both runs: t = 0 → 400,000 (cloud starts at r = 5,000; centre of mass closest 
 - Not yet converged, and still far too warm: typical gas at 50k is ~30× above the gravity-only ceiling (10k: ~65×), so the typical temperatures at closest approach are still numerical. (Corrected 2026-10-16: this line first compared with a literature figure for the radius-100 cloud, ~3 × 10⁻⁷; for radius 25 the ceiling is ~2 × 10⁻⁸, review §2d.) The heat is still far too small to change the orbits, but the energy spread it causes is not (next point).
 - This matters for Phase 6: the energy spread after the first pass sets when the returning stream crashes into itself. At 10k it is mostly numerical; Phase 6 runs at 10k (Hiten's decision) should be read with that in mind.
 - Pictures: `docs/figures/cloud50k_r25_D2_panels.png`, `_metrics.png`, `_edge_on.png`, `_preview.mp4`. (This run predates the viscous-heating snapshot field, so its "mass in shocks" is not available.)
+
+## 2026-10-17: Radius 60, first pass at 10k vs 50k (resolution check before Phase 6)
+
+Same settings (radius 60, gas + radiation EOS, β = 230, swallowing at r_acc = 4); R6.1 (10k) paused at t = 403,901, `R6.1_r60_50k` stopped at t = 404,962. Compared at the same times:
+
+| | 10k at 396,284 | 50k at 396,262 | 10k at 402,955 | 50k at 402,929 |
+|---|---|---|---|---|
+| gas flung out (unbound) | 4.3% | 0.32% | **10.9%** | **0.75%** |
+| orbital-energy spread, middle 50% | ±10% | ±2.8% | **±43%** | **±13%** |
+| typical heat near the hole (u, r < 300) | 4.5 × 10⁻⁶ | 8.9 × 10⁻⁷ | 3.1 × 10⁻⁵ | 2.7 × 10⁻⁶ |
+| lost (swallowed + below L < 4), peak during the pass | | | 0.13% | 0.016% |
+| compute time to the end of the pass | | | 5.0 h | 29 h |
+
+- **Resolution check of the lost gas (D4 update): PASS** (peak 0.016% < 0.13%; at t = 403,901: 0.004% < 0.080%; `scripts/loss_check.py`).
+- Flung-out gas falls 15×, the energy spread 3×, the heating ~10×: at 10k most of the post-pass spread and outflow is numerical, so a 10k Phase 6 would mostly measure numerical error (the crash would come at passage 2 for that reason). The hot bands of the 10k run are gone at 50k (one small hot spot remains).
+- 50k is not converged either: its spread grows from ±2.8% to ±13% after the pass (tidal estimate ±1.1%). Consistent with the literature: SPH over-heats the stream at pericentre at low resolution and the effect shrinks with resolution (Price et al. 2024; SPH-EXA, arXiv:2510.26663).
+- Pictures: `docs/figures/R6.1_10k_vs_50k.png`, `docs/figures/loss_R6.1_r60_vs_R6.1_r60_50k.png`.
