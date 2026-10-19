@@ -1,0 +1,14 @@
+#!/bin/bash
+# Copy a run from the Google Cloud machine to this Mac, incrementally (only new or changed
+# files; the large checkpoint is skipped: it stays on the VM for resuming).
+#     scripts/sync_cloud_run.sh RUN_NAME        e.g. R6.1_50k
+# Needs: ~/google-cloud-sdk (gcloud compute config-ssh run once) and the VM running.
+set -euo pipefail
+RUN="$1"
+HOST="nebula-sim.us-central1-b.project-f6231423-0846-4084-823"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$ROOT/runs/$RUN"
+rsync -az --exclude checkpoint.pkl --exclude checkpoint.tmp "$HOST:nebula/runs/$RUN/" "$ROOT/runs/$RUN/"
+ssh "$HOST" "tail -c 2000 nebula/outputs/recon/$RUN.out" > "$ROOT/runs/$RUN/run_output_tail.txt" 2>/dev/null || true
+echo "synced $RUN: $(ls "$ROOT/runs/$RUN/snapshots" | wc -l | tr -d ' ') snapshots; last log line:"
+tail -1 "$ROOT/runs/$RUN/log.txt" | cut -c1-200

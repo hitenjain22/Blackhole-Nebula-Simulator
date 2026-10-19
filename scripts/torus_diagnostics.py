@@ -44,8 +44,17 @@ def main():
     files = sorted((folder / "snapshots").glob("snap_*.npz"))
     n0 = len(np.load(files[0])["x"])
     l_edd = units.eddington_luminosity_w()
+    # per-snapshot results are cached (keyed by file name, size and time), so a progress check
+    # of a long run only analyses the snapshots that are new since the last one
+    cache_path = ROOT / "outputs" / "cache" / f"{run}_torus_rows.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     rows, ecc_maps = [], []
     for f in files:
+        key = f"{f.name}:{f.stat().st_size}:{f.stat().st_mtime_ns}"
+        if key in cache:
+            rows.append(cache[key]["row"])
+            ecc_maps.append(np.array(cache[key]["hist"]))
+            continue
         d = np.load(f)
         x, p = d["x"].astype(float), d["p"].astype(float)
         u, rho, h = d["u"].astype(float), d["rho"].astype(float), d["h"].astype(float)
@@ -66,6 +75,9 @@ def main():
                      "ring_r10": rm.r10, "ring_r90": rm.r90, "shocks": shock_frac,
                      "lum_w": l_w, "lum_edd": l_w / l_edd, "tau_es_thin": f_es,
                      "tau_eff_thin": f_eff})  # fmt: skip
+        cache[key] = {"row": rows[-1], "hist": [float(v) for v in hist]}
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(cache))
     lines = [f"{run}: {n0} particles; eos {hc.eos}; mass fractions of the starting cloud", "",
              "t  bound  unbound  plunging  ring(e<0.3,r<200 of bound)  ring_r  H/r  r10-r90  "
              "shocks  L(W)  L/L_Edd  tau_es,h<1  tau_eff,h<1"]  # fmt: skip
