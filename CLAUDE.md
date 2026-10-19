@@ -1,5 +1,7 @@
 # Rules for Claude Code: Nebula–Black Hole simulation
 
+**Start every session by reading `docs/HANDOFF.md`** (current state, pending decisions, cloud setup, how Hiten works) **and keep it updated as you work** (Hiten switches between Claude accounts; that file is the shared memory).
+
 PLAN.md is the master plan and the current `phases/phase-NN-*.md` file is the spec for the work in progress. Read both before writing code. `reference/expected-values.md` holds the numbers tests must match. `reference/scripts/` holds the planning-time scripts that computed them: you may run them to double-check a value, but never import them into project code.
 
 ## Who you're working with
