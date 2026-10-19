@@ -7,6 +7,8 @@ set -euo pipefail
 RUN="$1"
 HOST="nebula-sim.us-central1-b.project-f6231423-0846-4084-823"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# the VM gets a new external IP each time it starts: refresh the SSH config first
+"$HOME/google-cloud-sdk/bin/gcloud" compute config-ssh --quiet >/dev/null 2>&1
 mkdir -p "$ROOT/runs/$RUN"
 rsync -az --exclude checkpoint.pkl --exclude checkpoint.tmp "$HOST:nebula/runs/$RUN/" "$ROOT/runs/$RUN/"
 ssh "$HOST" "tail -c 2000 nebula/outputs/recon/$RUN.out" > "$ROOT/runs/$RUN/run_output_tail.txt" 2>/dev/null || true
