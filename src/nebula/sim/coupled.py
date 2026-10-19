@@ -46,10 +46,21 @@ from nebula.sim.sph import (
     velocity_gradients_numba,
 )
 
+# Smoothing-length cap for runs with the hole (DECISIONS 2026-10-19; a numerical choice, not
+# physics): over-heated gas sprayed into near-vacuum grew h to 2,000-2,800 and neighboured the
+# whole cloud, holding it to tiny steps through the level limiter. 200 is above 99.9% of the
+# stream's h (max 233 at t = 437,000, radius 60, 50k); a 10k first pass with the cap matched the
+# uncapped run digit for digit. Capped particles keep fewer neighbours (they are in near-vacuum).
+H_MAX_HOLE = 200.0
+
 
 @dataclass(frozen=True)
 class CoupledConfig:
-    hydro: HydroConfig = HydroConfig(conductivity_signal=COND_VELOCITY)
+    # with the hole: velocity-based conductivity signal (Phantom Eq. 44), MAGMA2's conductivity
+    # strength, and a cap on h for near-vacuum halo gas (DECISIONS 2026-10-19)
+    hydro: HydroConfig = HydroConfig(
+        conductivity_signal=COND_VELOCITY, alpha_u=visc.ALPHA_U_MAGMA2, h_max=H_MAX_HOLE
+    )
     hole: bool = True
     eta_orb: float = 0.00125  # orbit step criterion dt <= eta r^(3/2) (DECISIONS, Step 1.4)
     wrong_coupling: bool = False  # kicks on v instead of p (report comparison only)

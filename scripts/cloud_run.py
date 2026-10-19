@@ -66,13 +66,11 @@ def make_config(opts):
         "r_escape": float(opts["r_escape"]) if "r_escape" in opts else None,  # 50000 in Phase 6
         "gravity": opts.get("gravity", "gn"),  # "newton": the control run R6.4
         "seed": int(opts["seed"]) if "seed" in opts else None,  # random glass carving (R6.5)
-        # conductivity (investigation, DECISIONS 2026-10-19): signal "velocity" (default with
-        # the hole), "pressure" or "off"; strength alpha_u (default 1, Phantom)
+        # conductivity (DECISIONS 2026-10-19): signal "velocity" (default with the hole),
+        # "pressure" or "off"; strength alpha_u and the h cap default to CoupledConfig's
         "cond": opts.get("cond", "velocity"),
-        "alpha_u": float(opts.get("alpha_u", 1.0)),
-        # cap on the smoothing length (default none): bounds the neighbourhoods of near-vacuum
-        # halo particles (DECISIONS 2026-10-19)
-        "h_max": float(opts.get("h_max", "inf")),
+        "alpha_u": float(opts.get("alpha_u", CoupledConfig().hydro.alpha_u)),
+        "h_max": float(opts.get("h_max", CoupledConfig().hydro.h_max)),
     }
     return cfg
 
@@ -84,7 +82,9 @@ def block_config(cfg):
     if cond not in ("velocity", "pressure", "off"):
         raise ValueError(f"cond must be velocity, pressure or off, not {cond!r}")
     signal = COND_PRESSURE if cond == "pressure" else COND_VELOCITY
-    hc = replace(hc, conductivity=cond != "off", alpha_u=cfg.get("alpha_u", hc.alpha_u),
+    # runs started before 2026-10-19 have no alpha_u / h_max in their config: they ran with
+    # Phantom's alpha_u = 1 and no cap, and resume with exactly that
+    hc = replace(hc, conductivity=cond != "off", alpha_u=cfg.get("alpha_u", 1.0),
                  conductivity_signal=signal, h_max=cfg.get("h_max", float("inf")))  # fmt: skip
     cc = replace(cc, hydro=hc, cooling_beta=cfg.get("beta", float("inf")),
                  gravity=cfg.get("gravity", "gn"))  # fmt: skip

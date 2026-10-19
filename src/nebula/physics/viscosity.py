@@ -52,7 +52,14 @@ import numpy as np
 
 BETA_AV = 2.0
 ALPHA_MAX = 1.0
-ALPHA_U = 1.0
+ALPHA_U = 1.0  # Phantom's conductivity strength (Price et al. 2018); the test problems use it
+# Conductivity strength for runs with the black hole (DECISIONS 2026-10-19, Hiten's decision):
+# MAGMA2's "conservative" default, Rosswog 2020 (MNRAS 498, 4230) §2.2.2, Eqs. 24-26: "we choose
+# a low value of alpha_u = 0.05" (checked in the paper 2026-10-19; also PySPH magma2.py's default).
+# Only the coefficient is adopted; MAGMA2 also reconstructs the u difference to the pair midpoint.
+# With alpha_u = 1 the conductivity pumped the heat of a few over-heated particles into the
+# whole stream at pericentre (heat budget, runs/heat10k_r60); 0.05 halves the unbound gas.
+ALPHA_U_MAGMA2 = 0.05
 SIGMA_DECAY = 0.1
 
 
