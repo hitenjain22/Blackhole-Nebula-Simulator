@@ -59,10 +59,15 @@ class NeighbourCache:
     """Neighbour lists kept between steps ("Verlet lists"): built at positions x_ref with search
     smoothing lengths h_search, so they hold every pair with r < 2 max(hs_i, hs_j) then.
 
-    Validity (exact): if no particle has moved more than d_max since, any pair that now has
-    r < 2 max(h_i, h_j) had r_build < 2 max(h_i + d_max, h_j + d_max); so the lists are
-    complete for every particle with h_i <= hs_i - d_max. That bound is passed to the density
-    solver as its search limit; a particle that needs more is flagged and the lists rebuilt.
+    Validity (exact; ``_reuse_limits``): a pair missing from the lists had r_build >=
+    2 max(hs_i, hs_j), so now r >= 2 max(hs_i, hs_j) - d_i - d_j (d: each particle's move since
+    the build). If every particle outside a small "fast" set F moved at most d_rest, the lists
+    hold every pair now interacting (r < 2 max(h_i, h_j)) between particles outside F, and
+    every gather pair r < 2 h_i, provided each particle has h_i <= hs_i - (d_i + d_rest)/2; the
+    rows of the F particles are checked directly against the current positions. That bound is
+    passed to the density solver as its search limit; a particle that needs more is flagged and
+    the lists rebuilt. (Until 2026-10-17 the bound was hs_i - max_j d_j for all: one fast
+    particle near the hole then forced a full rebuild every ~30 steps, a third of a 50k run.)
     """
 
     neighbours: Neighbours
@@ -70,6 +75,71 @@ class NeighbourCache:
     h_search: np.ndarray
     builds: int = 1
     reuses: int = 0
+
+
+@numba.njit(cache=True)
+def _fast_rows_complete(pos, fast, h_lim, box, offset, index):
+    """True if, for every j in ``fast``, every particle k with r_jk <= 2 max(h_lim_j, h_lim_k)
+    at the current positions is in j's (sorted) list; brute force over all k."""
+    n = pos.shape[0]
+    for q in range(fast.shape[0]):
+        j = fast[q]
+        lo, hi = offset[j], offset[j + 1]
+        for k in range(n):
+            d2 = 0.0
+            for c in range(3):
+                dx = pos[k, c] - pos[j, c]
+                if box[c] > 0.0:
+                    dx -= box[c] * np.round(dx / box[c])
+                d2 += dx * dx
+            rr = 2.0 * max(h_lim[j], h_lim[k])
+            if d2 <= rr * rr:
+                a, b = lo, hi
+                while a < b:
+                    m = (a + b) // 2
+                    if index[m] < k:
+                        a = m + 1
+                    else:
+                        b = m
+                if a >= hi or index[a] != k:
+                    return False
+    return True
+
+
+FAST_SET_SIZES = (0, 1, 2, 4, 8, 16, 32, 64)
+
+
+def _reuse_limits(cache, pos, h_guess, rows, others, box_arr):
+    """Per-particle search limits h_eff with which the cached lists are provably complete
+    (NeighbourCache), or None if they must be rebuilt. Tries growing fast sets F (the particles
+    that moved most): h_eff = hs - (d + d_rest)/2 with d_rest the largest move outside F; rows
+    need h_eff > h_guess / 2, the others (whose h is fixed) h_guess <= h_eff; the F rows are
+    then checked directly with h_lim = h_eff (rows, an upper bound of the solved h) or h_guess."""
+    d = minimum_image(np.asarray(pos, float) - cache.x_ref, box_arr)
+    disp = np.sqrt(np.sum(d * d, axis=1))
+    n = len(disp)
+    # only the largest max(FAST_SET_SIZES) + 1 moves are needed, in descending order
+    top = min(n, FAST_SET_SIZES[-1] + 1)
+    order = np.argpartition(-disp, top - 1)[:top] if top < n else np.arange(n)
+    order = order[np.argsort(-disp[order], kind="stable")]
+    boxv = np.zeros(3) if box_arr is None else np.asarray(box_arr, float)
+    for nf in FAST_SET_SIZES:
+        if nf >= len(order):
+            break
+        h_eff = cache.h_search - 0.5 * (disp + disp[order[nf]])
+        if not (
+            np.all(h_eff[rows] > 0.5 * h_guess[rows]) and np.all(h_guess[others] <= h_eff[others])
+        ):
+            continue
+        if nf == 0:
+            return h_eff
+        h_lim = h_eff.copy()
+        h_lim[others] = h_guess[others]
+        nb = cache.neighbours
+        if _fast_rows_complete(np.ascontiguousarray(pos, float), order[:nf].astype(np.int64),
+                               h_lim, boxv, nb.offset, nb.index):  # fmt: skip
+            return h_eff
+    return None
 
 
 # --------------------------------------------------------------------------- reference
@@ -279,11 +349,9 @@ def compute_density(
     others[rows] = False
     box_arr = None if box is None else np.broadcast_to(np.asarray(box, float), (3,))
     cap = h_max if box_arr is None else min(h_max, 0.2499 * float(np.min(box_arr)))
-    if cache is not None and len(cache.x_ref) == len(pos):
-        d = minimum_image(np.asarray(pos, float) - cache.x_ref, box_arr)
-        d_max = float(np.sqrt(np.max(np.sum(d * d, axis=1)))) if len(pos) else 0.0
-        h_eff = cache.h_search - d_max
-        if np.all(h_eff[rows] > 0.5 * h_guess[rows]) and np.all(h_guess[others] <= h_eff[others]):
+    if cache is not None and len(cache.x_ref) == len(pos) and len(pos):
+        h_eff = _reuse_limits(cache, pos, h_guess, rows, others, box_arr)
+        if h_eff is not None:
             res = density_numba(
                 pos, mass, h_guess, cache.neighbours, h_eff, kernel_name, eta, tol, h_max, rows
             )

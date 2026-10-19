@@ -199,7 +199,12 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
         raise FloatingPointError(f"non-positive internal energy at {int(np.sum(u <= 0))} particles")
     nb = _density_touched(st, hc, rows, box)
     h, rho, omega = st.h, st.rho, st.omega
-    p_gas, cs = eos_state(hc, rho, u)
+    # pressure and sound speed only where the forces read them: the rows and their interacting
+    # neighbours (the gas + radiation EOS solves for T per particle, so evaluating all N every
+    # system step cost ~60% of a 50k run). NaN elsewhere, so a stray read would show at once.
+    touched = _with_neighbours(nb, rows, len(st.x))
+    p_gas, cs = np.full(len(st.x), np.nan), np.full(len(st.x), np.nan)
+    p_gas[touched], cs[touched] = eos_state(hc, rho[touched], u[touched])
     alpha = st.alpha.copy()
     if hc.viscosity and hc.switch and np.any(dt_alpha > 0):
         g = gradients_numba(st.x, v, a_prev, st.mass, h, nb, hc.kernel, rows=rows)
@@ -215,7 +220,6 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
         # gradients of the rows and of all their neighbours at the current time (like their
         # densities: stale neighbour gradients would make the pair's reconstruction differ
         # between a's and b's steps); full lists from the (valid) neighbour cache
-        touched = _with_neighbours(nb, rows, len(st.x))
         grad_v = velocity_gradients_numba(
             st.x, v, st.mass, h, st.neighbour_cache.neighbours, hc.kernel, rows=touched
         )
