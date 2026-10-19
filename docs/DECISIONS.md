@@ -332,3 +332,19 @@ Measured on the 50k radius-60 state at the end of its first pass (150 system ste
 - **Benchmark (R6.1 state, 15 min each on the VM):** without a cap 174 time units/hour; with h_max = 50/100/200 the cloud returns to level 2, but progress stayed ~100/hour because one capped straggler next to the hole forced a full neighbour rebuild every step. **Bug fixed:** the search radius now keeps its skin margin above h_max (bit-identical results; test reproduces the old behaviour).
 - **Heat budget of the 10k first pass (`runs/heat10k_r60`):** the median particle's extra heat near the hole comes ~90% from artificial **conductivity**, which pumps heat from ~30 over-heated front-edge particles (heated by artificial viscosity to u ~10⁻²) into the stream. Our conductivity (Phantom: α_u = 1, signal |v_ab·r̂| with external forces) is ~20× stronger than MAGMA2's (α_u = 0.05, pressure signal, reconstructed u difference; Rosswog 2020, PySPH `magma2.py`) and is switched on hardest by the large velocity differences at the bend around the hole.
 - **Next (investigation, then Hiten decides the method):** 10k first-pass experiments with conductivity variants and the h cap; R6.1 restarts from t = 0 once the method is agreed.
+
+## 2026-10-19: Conductivity experiments (10k, radius 60, first pass; `scripts/investigations/compare_cond_runs.py`)
+
+Runs cond_x1–x4 on the VM, R6.1's settings with h_max = 200, to t = 420,000; baseline `heat10k_r60` (no cap). At t ≈ 404,000:
+
+| run | u_med near hole | spread (mid 50% / mid 90%) | unbound | halo (h > 100) |
+|---|---|---|---|---|
+| baseline (velocity signal, α_u = 1, no cap) | 4.7 × 10⁻⁵ | ±43% / ±174% | 11.1% | 92 |
+| x1 = baseline + h_max 200 | identical to the baseline through t = 403,000 (digit for digit) | | | |
+| x2 velocity signal, α_u = 0.05 (MAGMA2 value) | 1.3 × 10⁻⁵ | ±42% / ±120% | 5.8% | 84 |
+| x3 pressure signal, α_u = 1 | 0.9 × 10⁻⁵ | ±42% / ±113% | 5.2% | 95 |
+| x4 no conductivity | 0.6 × 10⁻⁵ | ±43% / ±117% | 5.0% | 83 |
+
+- **The cap does not change the physics** (x1 = baseline) and removes the stall.
+- **Weaker conductivity halves the unbound gas** and cuts the pre-pericentre heating of typical gas ~10× (2.7 × 10⁻⁶ → 3 × 10⁻⁷ at t = 393,745), but **the middle-50% energy spread (±42%) does not depend on conductivity**: it comes from viscosity and pressure during the pass and falls with resolution (±13% at 50k).
+- **Open for Hiten:** conductivity setting for runs with the hole, and the cap. Claude's recommendation: α_u = 0.05 with the velocity signal (MAGMA2's coefficient; the velocity form is kept because the pressure form conducts in pressure-supported gas such as the torus), h_max = 200; R6.1 restarted at 50k.
