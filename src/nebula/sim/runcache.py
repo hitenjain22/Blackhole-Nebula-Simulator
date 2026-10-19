@@ -14,7 +14,7 @@ ROOT = SRC.parents[1]
 
 PHASE3_FILES = (
     "physics/kernels.py", "physics/eos.py", "physics/viscosity.py", "sim/sph.py", "sim/hydro.py",
-    "sim/neighbours.py", "sim/kernels_nb.py", "sim/glass.py",
+    "sim/neighbours.py", "sim/kernels_nb.py", "sim/glass.py", "sim/fastphys.py",
 )  # fmt: skip
 PHASE4_FILES = PHASE3_FILES + (
     "physics/gravity.py", "physics/orbits.py", "sim/integrator.py", "sim/coupled.py",

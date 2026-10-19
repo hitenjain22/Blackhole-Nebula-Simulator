@@ -334,7 +334,7 @@ def sedov_run(prob: Problem, radii=SEDOV_RADII, callback=None) -> list[dict]:
 FINGERPRINT_FILES = (
     "physics/kernels.py", "physics/eos.py", "physics/viscosity.py", "physics/riemann.py",
     "physics/sedov.py", "sim/sph.py", "sim/hydro.py", "sim/neighbours.py", "sim/kernels_nb.py",
-    "sim/glass.py", "sim/ic.py", "sim/testproblems.py", "units.py",
+    "sim/glass.py", "sim/ic.py", "sim/testproblems.py", "units.py", "sim/fastphys.py",
 )  # fmt: skip
 
 

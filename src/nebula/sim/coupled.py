@@ -34,6 +34,7 @@ from nebula.physics.gravity import (
     gn_v_from_p,
     newton_hamiltonian,
 )
+from nebula.sim.fastphys import gn_v_from_p_nb
 from nebula.sim.hydro import HydroConfig, eos_state, floor_energy
 from nebula.sim.integrator import glf_step_many, kdk_newton_many
 from nebula.sim.neighbours import tighten
@@ -85,7 +86,10 @@ def _gn(cfg: CoupledConfig) -> bool:
 
 def velocity(cfg: CoupledConfig, x, p):
     """v = dH/dp: GN (Phase 1) with the hole; p itself without it or with Newtonian gravity."""
-    return gn_v_from_p(x, p) if _gn(cfg) else p
+    if not _gn(cfg):
+        return p
+    # Numba copy for particle arrays (sim/fastphys.py, tested against physics.gravity)
+    return gn_v_from_p_nb(x, p) if np.ndim(x) == 2 else gn_v_from_p(x, p)
 
 
 def p_from_v(cfg: CoupledConfig, x, v):

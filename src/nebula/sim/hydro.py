@@ -32,6 +32,7 @@ from nebula.physics.eos import (
     radiation_limit_sound_speed,
 )
 from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
+from nebula.sim.fastphys import gasrad_state_nb
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
     COND_PRESSURE,
@@ -106,8 +107,8 @@ def eos_state(cfg: HydroConfig, rho, u):
         raise FloatingPointError(f"non-positive internal energy at {int(np.sum(u <= 0))} particles")
     if cfg.eos == "ideal":
         return ideal_gas_pressure(rho, u, cfg.gamma), ideal_gas_sound_speed(u, cfg.gamma)
-    if cfg.eos == "gasrad":
-        p, cs, _, _ = gasrad_state(rho, u, cfg.gas_units)
+    if cfg.eos == "gasrad":  # Numba copy of physics.eos.gasrad_state (sim/fastphys.py)
+        p, cs, _, _ = gasrad_state_nb(rho, u, cfg.gas_units)
         return p, cs
     if cfg.eos == "radiation":
         return radiation_limit_pressure(rho, u), radiation_limit_sound_speed(u)
