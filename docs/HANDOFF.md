@@ -205,3 +205,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
 - 2026-10-19: R6.1 stalled after the pass (halo + limiter), paused at t ≈ 446,000; h_max skin bug
   fixed; heat budget shows conductivity pumps the excess heat; experiments cond_x1–x4 done; awaiting
   Hiten's decision (§4). VM stopped. Hiten switching Claude accounts; this file written.
+- 2026-10-19: continued on Hiten's second Claude account (same conversation carried over); nothing changed since the handover; recommendation (§4) re-stated, awaiting his answer.
