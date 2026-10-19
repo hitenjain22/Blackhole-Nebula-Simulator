@@ -112,6 +112,15 @@ class BlockState:
     e_radiated: float = 0.0  # energy radiated so far (cooling)
     luminosity: np.ndarray = field(default=None)  # per particle, over its last step (energy/time)
     visc_heating: np.ndarray = field(default=None)  # viscous part of du/dt (the shock marker)
+    cond_heating: np.ndarray = field(default=None)  # conductivity part of du/dt
+    # heat budget per particle since the start (code u): what each part of du/dt and the cooling
+    # have added, booked exactly as the kicks apply du/dt, including the opening half-kick of
+    # the current step (so u_half - u_0 = visc + cond + pdv - cool); "pdv" is the rest of du/dt,
+    # the reversible P dV work
+    heat_visc: np.ndarray = field(default=None)
+    heat_cond: np.ndarray = field(default=None)
+    heat_pdv: np.ndarray = field(default=None)
+    heat_cool: np.ndarray = field(default=None)
 
     @property
     def t(self) -> float:
@@ -131,8 +140,9 @@ def upgrade_state(st: BlockState) -> BlockState:
     n = len(st.x)
     if "e_radiated" not in st.__dict__:
         st.e_radiated = 0.0
-    for name in ("luminosity", "visc_heating"):
-        if st.__dict__.get(name) is None:
+    for name in ("luminosity", "visc_heating", "cond_heating", "heat_visc", "heat_cond",
+                 "heat_pdv", "heat_cool"):  # fmt: skip
+        if st.__dict__.get(name) is None:  # (budgets of an older run then start at the resume)
             setattr(st, name, np.zeros(n))
     return st
 
@@ -233,6 +243,7 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
     st.dudt[rows] = f.dudt
     st.vsig_max[rows] = f.vsig_max if hc.viscosity else cs[rows]
     st.visc_heating[rows] = f.dudt_visc
+    st.cond_heating[rows] = f.dudt_cond
     return nb
 
 
@@ -331,8 +342,17 @@ def _wake(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
     d_len = (end_new - st.n_end[j]) * st.tick  # negative: the step is shortened
     st.p_half[j] += 0.5 * d_len[:, None] * st.a_hydro[j]
     st.u_half[j] += 0.5 * d_len * st.dudt[j]
+    _add_heat(st, j, 0.5 * d_len)
     st.n_end[j] = end_new
     st.woken += len(j)
+
+
+def _add_heat(st: BlockState, rows, dt) -> None:
+    """Heat budget: the kick u += dt du/dt of ``rows``, split into its parts (dt per row)."""
+    visc, cond = st.visc_heating[rows], st.cond_heating[rows]
+    st.heat_visc[rows] += dt * visc
+    st.heat_cond[rows] += dt * cond
+    st.heat_pdv[rows] += dt * (st.dudt[rows] - visc - cond)
 
 
 def _open(st: BlockState, rows) -> None:
@@ -343,6 +363,7 @@ def _open(st: BlockState, rows) -> None:
     st.x_beg[rows] = st.x[rows]
     st.p_half[rows] = st.p[rows] + 0.5 * length[:, None] * st.a_hydro[rows]
     st.u_half[rows] = st.u[rows] + 0.5 * length * st.dudt[rows]
+    _add_heat(st, rows, 0.5 * length)
 
 
 def initialise(
@@ -376,6 +397,8 @@ def initialise(
     st.passed_peri = np.zeros(n, bool)
     st.luminosity = np.zeros(n)
     st.visc_heating = np.zeros(n)
+    st.cond_heating = np.zeros(n)
+    st.heat_visc, st.heat_cond, st.heat_pdv, st.heat_cool = (np.zeros(n) for _ in range(4))
     rows = np.arange(n)
     nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p), st.u, 0.0, None)
     st.level[:] = 0
@@ -410,6 +433,7 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
         st.e_radiated += float(np.sum(dm))
         st.luminosity[rows] = dm / (2.0 * half_len[rows])
         u_pred = u_half_c + (s - half_len) * st.dudt
+        st.heat_cool[rows] += st.u_half[rows] - u_half_c[rows]
         st.u_half[rows] = u_half_c[rows]
     else:
         u_pred = st.u_half + (s - half_len) * st.dudt
@@ -421,6 +445,7 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     t2 = time.perf_counter()
     p_pred[rows] = p_flow[rows] + half_len[rows, None] * st.a_hydro[rows]
     st.u[rows] = st.u_half[rows] + half_len[rows] * st.dudt[rows]
+    _add_heat(st, rows, half_len[rows])
     st.p = p_pred
     _choose_levels(st, cfg, rows, nb)
     _open(st, rows)

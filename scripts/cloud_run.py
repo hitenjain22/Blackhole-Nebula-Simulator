@@ -211,7 +211,10 @@ def main():
                 w.writerow(row)
             save_snapshot(folder, state["snap"], st.t, x=st.x, p=st.p, u=st.u, h=st.h,
                           rho=st.rho, ids=st.ids, level=st.level,
-                          visc_heating=st.visc_heating, luminosity=st.luminosity)  # fmt: skip
+                          visc_heating=st.visc_heating, luminosity=st.luminosity,
+                          cond_heating=st.cond_heating, heat_visc=st.heat_visc,
+                          heat_cond=st.heat_cond, heat_pdv=st.heat_pdv,
+                          heat_cool=st.heat_cool)  # fmt: skip
             state["snap"] += 1
             dt_snap = snapshot_interval(st.x)
             state["next_t"] = st.t + dt_snap

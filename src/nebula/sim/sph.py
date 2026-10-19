@@ -430,6 +430,7 @@ class ForceResult:
     dudt: np.ndarray  # (N,)
     vsig_max: np.ndarray  # (N,) largest signal speed with any neighbour (Courant condition)
     dudt_visc: np.ndarray = None  # (N,) the viscous (shock) heating part of dudt: shock marker
+    dudt_cond: np.ndarray = None  # (N,) the conductivity part of dudt (the rest is P dV work)
 
 
 def forces_reference(
@@ -445,7 +446,7 @@ def forces_reference(
     kernel = get_kernel(kernel_name)
     n = len(pos)
     acc, dudt, vsig_max = np.zeros((n, 3)), np.zeros(n), np.zeros(n)
-    dudt_visc = np.zeros(n)
+    dudt_visc, dudt_cond = np.zeros(n), np.zeros(n)
     use_visc = alpha is not None and c_s is not None
     use_cond = use_visc and u is not None
     if use_visc and shock.reconstruction and (grad_v is None or np.shape(grad_v) != (n, 3, 3)):
@@ -493,16 +494,18 @@ def forces_reference(
                     vu = visc.conductivity_signal_speed(pressure[a], pressure[b], rho[a], rho[b])
                 else:
                     vu = np.abs(vdotr)
-                heat += np.sum(
+                cond = np.sum(
                     mass[b] * shock.alpha_u * vu * (u[a] - u[b])
                     * 0.5 * (fa / (omega[a] * rho[a]) + fb / (omega[b] * rho[b]))
                 )  # fmt: skip
+                heat += cond
+                dudt_cond[a] = cond
         pair = mass[b] * (
             num_a / (omega[a] * rho[a] ** 2) * fa + num_b / (omega[b] * rho[b] ** 2) * fb
         )
         acc[a] = -np.sum(pair[:, None] * rhat, axis=0)
         dudt[a] = heat
-    return ForceResult(acc, dudt, vsig_max, dudt_visc)
+    return ForceResult(acc, dudt, vsig_max, dudt_visc, dudt_cond)
 
 
 @numba.njit(cache=True)
@@ -515,7 +518,7 @@ def _dwdr(r, h, kid, cnorm):
 def _forces_kernel(
     pos, vel, mass, h, rho, omega, pressure, u, c_s, alpha, offset, index, box, kid, cnorm,
     use_visc, use_cond, beta, alpha_u, cond_signal, rows, use_recon, closeness, eta_crit,
-    eta_fold, gate, gv, acc, dudt, vsig_max, vheat,
+    eta_fold, gate, gv, acc, dudt, vsig_max, vheat, cheat,
 ):  # fmt: skip
     for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
         a = rows[q]
@@ -526,6 +529,7 @@ def _forces_kernel(
         work = 0.0
         heat = 0.0
         visc_heat = 0.0
+        cond_heat = 0.0  # separate sum: heat (and so dudt) is accumulated exactly as before
         vmax = c_s[a] if use_visc else 0.0
         for k in range(offset[a], offset[a + 1]):
             b = index[k]
@@ -613,7 +617,7 @@ def _forces_kernel(
                     vu = np.sqrt(abs(pressure[a] - pressure[b]) / (0.5 * (rho[a] + rho[b])))
                 else:
                     vu = abs(vdotr)
-                heat += (
+                dc = (
                     mass[b]
                     * alpha_u
                     * vu
@@ -621,6 +625,8 @@ def _forces_kernel(
                     * 0.5
                     * (fa * inv_or_a + fb / (omega[b] * rho[b]))
                 )
+                heat += dc
+                cond_heat += dc
             f = mass[b] * (
                 num_a / (omega[a] * rho[a] * rho[a]) * fa
                 + num_b / (omega[b] * rho[b] * rho[b]) * fb
@@ -635,6 +641,7 @@ def _forces_kernel(
         dudt[q] = pressure[a] * inv_or_a / rho[a] * work + heat
         vsig_max[q] = vmax
         vheat[q] = visc_heat
+        cheat[q] = cond_heat
 
 
 def forces_numba(
@@ -647,7 +654,7 @@ def forces_numba(
     n = len(pos)
     rows = _rows(rows, n)
     acc, dudt, vsig_max = np.empty((len(rows), 3)), np.empty(len(rows)), np.empty(len(rows))
-    vheat = np.empty(len(rows))
+    vheat, cheat = np.empty(len(rows)), np.empty(len(rows))
     box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
     kid = KERNEL_IDS[kernel_name]
     use_visc = alpha is not None and c_s is not None
@@ -670,9 +677,9 @@ def forces_numba(
         float(shock.beta), float(shock.alpha_u), int(shock.conductivity_signal), rows,
         use_recon, bool(shock.closeness), float(shock.eta_crit), float(shock.eta_fold),
         int(shock.recon_gate), gv,
-        acc, dudt, vsig_max, vheat,
+        acc, dudt, vsig_max, vheat, cheat,
     )  # fmt: skip
-    return ForceResult(acc, dudt, vsig_max, vheat)
+    return ForceResult(acc, dudt, vsig_max, vheat, cheat)
 
 
 # --------------------------------------------------------------------------- gradients
