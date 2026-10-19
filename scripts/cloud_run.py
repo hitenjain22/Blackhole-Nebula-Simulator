@@ -86,6 +86,27 @@ def snapshot_interval(x: np.ndarray) -> float:
     return float(np.clip(2.0 * np.pi * r_med**1.5 / 40.0, 10.0, 1.0e4))
 
 
+def trim_after_checkpoint(folder, state) -> None:
+    """After a crash or a stop the last checkpoint can be older than the newest records: drop
+    diagnostics rows and snapshots written after it, so the resumed run (which recomputes them)
+    does not count them twice."""
+    t, snap = state["st"].t, state["snap"]
+    rows_dropped = 0
+    csv_path = folder / "diagnostics.csv"
+    if csv_path.exists():
+        lines = csv_path.read_text().splitlines(keepends=True)
+        keep = lines[:1] + [ln for ln in lines[1:] if float(ln.split(",", 1)[0]) <= t + 1e-6]
+        rows_dropped = len(lines) - len(keep)
+        if rows_dropped:
+            csv_path.write_text("".join(keep))
+    late = [f for f in (folder / "snapshots").glob("snap_*.npz") if int(f.stem[5:]) >= snap]
+    for f in late:
+        f.unlink()
+    if rows_dropped or late:
+        log(folder, f"resume: removed {rows_dropped} diagnostics rows and {len(late)} snapshots"
+                    f" written after the checkpoint (t = {t:.1f})")  # fmt: skip
+
+
 def log(folder, text):
     line = f"[{time.strftime('%H:%M:%S')}] {text}"
     print(line, flush=True)
@@ -122,6 +143,7 @@ def main():
     if resume:
         state = load_checkpoint(folder)
         blocks.upgrade_state(state["st"])  # a checkpoint from older code
+        trim_after_checkpoint(folder, state)
         cfg = state["config"]
         update_manifest(folder, resumed=time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         log(folder, f"resumed at t = {state['st'].t:.1f}")
