@@ -40,6 +40,7 @@ from nebula.sim.runio import (
     save_snapshot,
     update_manifest,
 )
+from nebula.sim.sph import COND_PRESSURE, COND_VELOCITY
 
 CHECKPOINT_EVERY = 15 * 60  # s (CLAUDE.md: at least every 15 minutes)
 LOST_FLAG = 0.01  # lost share that is flagged for Hiten (DECISIONS, D4 update; our choice)
@@ -65,6 +66,10 @@ def make_config(opts):
         "r_escape": float(opts["r_escape"]) if "r_escape" in opts else None,  # 50000 in Phase 6
         "gravity": opts.get("gravity", "gn"),  # "newton": the control run R6.4
         "seed": int(opts["seed"]) if "seed" in opts else None,  # random glass carving (R6.5)
+        # conductivity (investigation, DECISIONS 2026-10-19): signal "velocity" (default with
+        # the hole), "pressure" or "off"; strength alpha_u (default 1, Phantom)
+        "cond": opts.get("cond", "velocity"),
+        "alpha_u": float(opts.get("alpha_u", 1.0)),
     }
     return cfg
 
@@ -72,6 +77,12 @@ def make_config(opts):
 def block_config(cfg):
     cc = CoupledConfig()
     hc = replace(cc.hydro, reconstruction=cfg["recon"], eos=cfg.get("eos", "ideal"))
+    cond = cfg.get("cond", "velocity")
+    if cond not in ("velocity", "pressure", "off"):
+        raise ValueError(f"cond must be velocity, pressure or off, not {cond!r}")
+    signal = COND_PRESSURE if cond == "pressure" else COND_VELOCITY
+    hc = replace(hc, conductivity=cond != "off", alpha_u=cfg.get("alpha_u", hc.alpha_u),
+                 conductivity_signal=signal)  # fmt: skip
     cc = replace(cc, hydro=hc, cooling_beta=cfg.get("beta", float("inf")),
                  gravity=cfg.get("gravity", "gn"))  # fmt: skip
     return BlockConfig(coupled=cc, dt_max=cfg["dt_max"], r_acc=cfg["r_acc"],
