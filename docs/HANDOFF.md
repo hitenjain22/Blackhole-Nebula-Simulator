@@ -13,7 +13,7 @@ written for Claude, not for Hiten.
    not only at the end: the session can end abruptly when usage runs out. Commit and push it.
    The next session (possibly the original account, after its usage resets) relies on it.
 
-Last updated: 2026-10-19 (evening, Pacific), commit after 50e792f.
+Last updated: 2026-10-19 (night, Pacific).
 
 ---
 
@@ -87,20 +87,10 @@ swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phase
 
 ## 4. Waiting on Hiten (ask him / remind him)
 
-**Decision pending (asked 2026-10-19):** Claude recommended, for runs with the black hole:
-1. Conductivity strength **α_u: 1 → 0.05** (MAGMA2's value), keeping the **velocity** signal
-   (the pressure signal conducts spuriously in pressure-supported gas such as the torus; the
-   experiments showed x2 ≈ x3 ≈ x4 anyway).
-2. Smoothing-length cap **h_max = 200** (above 99.9% of the real stream's h; shown neutral).
-3. **Restart R6.1 from t = 0 at 50k** on the cloud with both (estimate 2–3 days; first pass ~2–4 h).
-4. **Skip option C** (removing escaping gas at r > 5,000): the cap removes the speed problem, and a
-   radius-only cut could remove bound gas that returns. Keep r_escape = 50,000 (plan).
-
-If he approves: put α_u = 0.05 in `CoupledConfig` (runs with the hole only; Phase 3 test problems
-keep HydroConfig's α_u = 1 pressure-signal form) or pass `alpha_u=0.05 h_max=200` to cloud_run
-(decide which; a CoupledConfig default is cleaner for later phases but changes cached Phase 4 test
-results, so run the slow suite either way); record in DECISIONS; run fast + slow suites with
-unchanged tolerances; then relaunch R6.1 on the VM (§6).
+Nothing pending right now. **Decided 2026-10-19 (Hiten approved):** runs with the hole use
+conductivity α_u = 0.05 (MAGMA2) with the velocity signal and h_max = 200 (`CoupledConfig`,
+`physics.viscosity.ALPHA_U_MAGMA2`, `coupled.H_MAX_HOLE`); option C not adopted; R6.1 restarts
+from t = 0 at 50k as `runs/R6.1_50k_v2`. Older runs resume with their own settings (tested).
 
 ## 5. Key decisions to remember (details in docs/DECISIONS.md)
 
@@ -206,3 +196,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
   fixed; heat budget shows conductivity pumps the excess heat; experiments cond_x1–x4 done; awaiting
   Hiten's decision (§4). VM stopped. Hiten switching Claude accounts; this file written.
 - 2026-10-19: continued on Hiten's second Claude account (same conversation carried over); nothing changed since the handover; recommendation (§4) re-stated, awaiting his answer.
+- 2026-10-19: Hiten approved α_u 0.05 + h_max 200 + R6.1 restart. Implemented (commit 3d51dd9; 184 fast tests pass; MAGMA2's 0.05 confirmed in the paper text). Slow suite running on the VM before launching R6.1_50k_v2.
