@@ -70,6 +70,9 @@ def make_config(opts):
         # the hole), "pressure" or "off"; strength alpha_u (default 1, Phantom)
         "cond": opts.get("cond", "velocity"),
         "alpha_u": float(opts.get("alpha_u", 1.0)),
+        # cap on the smoothing length (default none): bounds the neighbourhoods of near-vacuum
+        # halo particles (DECISIONS 2026-10-19)
+        "h_max": float(opts.get("h_max", "inf")),
     }
     return cfg
 
@@ -82,7 +85,7 @@ def block_config(cfg):
         raise ValueError(f"cond must be velocity, pressure or off, not {cond!r}")
     signal = COND_PRESSURE if cond == "pressure" else COND_VELOCITY
     hc = replace(hc, conductivity=cond != "off", alpha_u=cfg.get("alpha_u", hc.alpha_u),
-                 conductivity_signal=signal)  # fmt: skip
+                 conductivity_signal=signal, h_max=cfg.get("h_max", float("inf")))  # fmt: skip
     cc = replace(cc, hydro=hc, cooling_beta=cfg.get("beta", float("inf")),
                  gravity=cfg.get("gravity", "gn"))  # fmt: skip
     return BlockConfig(coupled=cc, dt_max=cfg["dt_max"], r_acc=cfg["r_acc"],
