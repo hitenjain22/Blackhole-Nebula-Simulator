@@ -348,7 +348,10 @@ def compute_density(
     others = np.ones(n_all, bool)
     others[rows] = False
     box_arr = None if box is None else np.broadcast_to(np.asarray(box, float), (3,))
-    cap = h_max if box_arr is None else min(h_max, 0.2499 * float(np.min(box_arr)))
+    # search radii: the skin margin applies on top of the h cap too (until 2026-10-19 a particle
+    # at h_max searched exactly h_max, so any move of it forced a full list rebuild); a periodic
+    # box limits the search itself
+    box_cap = np.inf if box_arr is None else 0.2499 * float(np.min(box_arr))
     if cache is not None and len(cache.x_ref) == len(pos) and len(pos):
         h_eff = _reuse_limits(cache, pos, h_guess, rows, others, box_arr)
         if h_eff is not None:
@@ -362,7 +365,7 @@ def compute_density(
             h_guess = h_guess.copy()
             h_guess[rows] = np.maximum(h_guess[rows], res.h)
     builds = 0 if cache is None else cache.builds
-    h_search = np.minimum(h_guess * skin, cap)
+    h_search = np.minimum(np.minimum(h_guess, h_max) * skin, box_cap)
     for _ in range(12):
         nb = find_neighbours_numba(pos, h_search, box=box_arr)
         builds += 1
@@ -373,7 +376,7 @@ def compute_density(
             res.cache = NeighbourCache(nb, np.array(pos, float), h_search.copy(), builds, reuses)
             return res
         h_search = h_search.copy()
-        h_search[rows[grow]] = np.minimum(h_search[rows[grow]] * 2.0, cap)
+        h_search[rows[grow]] = np.minimum(h_search[rows[grow]] * 2.0, box_cap)
         h_guess = h_guess.copy()
         h_guess[rows] = res.h
     raise RuntimeError("smoothing lengths kept outgrowing the neighbour search")

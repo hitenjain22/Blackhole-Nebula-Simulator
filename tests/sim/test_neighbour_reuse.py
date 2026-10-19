@@ -75,3 +75,23 @@ def test_one_far_mover_no_longer_forces_a_rebuild(rng):
     check("new rule reuses", True, h_eff is not None)
     if h_eff is not None:
         check("and the lists are complete", 0, _missing_pairs(cache.neighbours, pos, h_eff))
+
+
+def test_particle_at_the_h_cap_keeps_its_list(rng):
+    """An isolated particle whose h sits at h_max: a small move must not force a rebuild (the
+    search keeps its skin margin above the cap), and the density equals a fresh build's."""
+    from nebula.sim.sph import compute_density
+
+    pos = rng.normal(0.0, 1.0, (600, 3))
+    pos[0] = [30.0, 0.0, 0.0]  # far from the rest: wants h >> h_max
+    mass = np.full(len(pos), 1.0 / len(pos))
+    h0 = np.full(len(pos), 0.3)
+    first = compute_density(pos, mass, h0, h_max=2.0)
+    check("isolated particle sits at the cap", 2.0, float(first.h[0]), rtol=0.0)
+    moved = pos.copy()
+    moved[0] += [0.05, 0.0, 0.0]
+    again = compute_density(moved, mass, first.h, h_max=2.0, cache=first.cache, rows=np.array([0]))
+    fresh = compute_density(moved, mass, first.h, h_max=2.0, rows=np.array([0]))
+    check("small move of the capped particle: lists reused, no rebuild", first.cache.builds,
+          again.cache.builds)  # fmt: skip
+    check("its density equals a fresh build's", float(fresh.rho[0]), float(again.rho[0]), rtol=0.0)
