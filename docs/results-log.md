@@ -55,3 +55,25 @@ Same settings (radius 60, gas + radiation EOS, β = 230, swallowing at r_acc = 4
 - Flung-out gas falls 15×, the energy spread 3×, the heating ~10×: at 10k most of the post-pass spread and outflow is numerical, so a 10k Phase 6 would mostly measure numerical error (the crash would come at passage 2 for that reason). The hot bands of the 10k run are gone at 50k (one small hot spot remains).
 - 50k is not converged either: its spread grows from ±2.8% to ±13% after the pass (tidal estimate ±1.1%). Consistent with the literature: SPH over-heats the stream at pericentre at low resolution and the effect shrinks with resolution (Price et al. 2024; SPH-EXA, arXiv:2510.26663).
 - Pictures: `docs/figures/R6.1_10k_vs_50k.png`, `docs/figures/loss_R6.1_r60_vs_R6.1_r60_50k.png`.
+
+## 2026-10-19: Where the excess heat came from, and the fix (overheating investigation)
+
+**The problem.** After its first close pass the stream was far too hot, its orbits spread out (±43% at 10k, ±13% at 50k against ±1% from the cloud's size alone), several percent of the gas was flung onto escape orbits, and a thin halo of sprayed gas grew whose particles' smoothing lengths reached 2,000–2,800. That halo stalled the 50k main run (R6.1) after the pass: each halo particle neighboured the whole cloud, and the time-step limiter then held ~49,000 particles to tiny steps.
+
+**How it was traced.** Every particle now carries a heat budget: the heat added by artificial viscosity, by artificial conductivity, by compression (P dV) and removed by cooling, booked exactly as the integrator applies it (closes to 10⁻¹⁵). A 10k first pass with this bookkeeping (`runs/heat10k_r60`) showed:
+- ~30 particles on the cloud's thin front edge are over-heated by artificial viscosity as the stream bends around the hole (to u ~ 10⁻², thousands of times the stream's heat): their kernels reach across the bend, where neighbours move in nearly opposite directions;
+- **artificial conductivity then pumps that heat into the cold stream**: for the typical particle ~90% of its excess heat arrives this way. The code used Phantom's strength α_u = 1 with a velocity-based signal speed, which is largest exactly at the bend; MAGMA2 (Rosswog 2020) uses α_u = 0.05.
+
+**The test.** Four 10k first passes on the cloud machine, identical except for conductivity (`scripts/investigations/compare_cond_runs.py`):
+
+| at t ≈ 404,000 | typical heat near the hole | orbit spread (middle half) | unbound gas |
+|---|---|---|---|
+| α_u = 1 (Phantom), no cap | 4.7 × 10⁻⁵ | ±43% | 11.1% |
+| same with h cap 200 | identical (digit for digit) | | |
+| α_u = 0.05 (MAGMA2) | 1.3 × 10⁻⁵ | ±42% | 5.8% |
+| pressure-based signal | 0.9 × 10⁻⁵ | ±42% | 5.2% |
+| no conductivity | 0.6 × 10⁻⁵ | ±43% | 5.0% |
+
+Weaker conductivity halves the unbound gas and cuts the heating of the typical gas before the pass ~10×; the orbit spread does not depend on it (it comes from the pass itself and shrinks with resolution). The h cap changes nothing physically but removes the stall.
+
+**The fix (Hiten's decision).** Runs with the hole use α_u = 0.05 (MAGMA2's value, confirmed in the paper's text) and a smoothing-length cap of 200; the test problems keep Phantom's settings. A bug found on the way (the neighbour search had no safety margin above the cap, forcing a rebuild every step) is fixed. R6.1 restarted at 50k (`R6.1_50k_v2`): just before closest approach its typical gas near the hole is 8.6× cooler than the first attempt's (5.8 × 10⁻⁸ against 5.0 × 10⁻⁷).
