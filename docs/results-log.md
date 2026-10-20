@@ -77,3 +77,14 @@ Same settings (radius 60, gas + radiation EOS, β = 230, swallowing at r_acc = 4
 Weaker conductivity halves the unbound gas and cuts the heating of the typical gas before the pass ~10×; the orbit spread does not depend on it (it comes from the pass itself and shrinks with resolution). The h cap changes nothing physically but removes the stall.
 
 **The fix (Hiten's decision).** Runs with the hole use α_u = 0.05 (MAGMA2's value, confirmed in the paper's text) and a smoothing-length cap of 200; the test problems keep Phantom's settings. A bug found on the way (the neighbour search had no safety margin above the cap, forcing a rebuild every step) is fixed. R6.1 restarted at 50k (`R6.1_50k_v2`): just before closest approach its typical gas near the hole is 8.6× cooler than the first attempt's (5.8 × 10⁻⁸ against 5.0 × 10⁻⁷).
+
+**Gravity-only heating ceiling for radius 60 (2026-10-19).** The review's method (§2d: 50k cloud with gravity only, `ballistic.py`, then `vz_budget.py` and `conv_budget.py`: the most heat the squeeze could give if all of it became heat), validated by re-running radius 25 (typical 2.2 × 10⁻⁸, hottest 1% 1–5 × 10⁻⁶; review: ~2 × 10⁻⁸, 1–3 × 10⁻⁶). Radius 60: typical ~1 × 10⁻⁷ (each particle's largest ½ v_z²: median 2.1 × 10⁻⁷), hottest 1% ~5 × 10⁻⁶, largest ~1 × 10⁻⁵. Against it, gas within r = 300:
+
+| | first attempt (α_u = 1) | R6.1 v2 (α_u = 0.05) | ceiling |
+|---|---|---|---|
+| typical, t ≈ 393,750 (approach) | 5.0 × 10⁻⁷ | **5.8 × 10⁻⁸** | ~1 × 10⁻⁷ |
+| typical, t ≈ 396,260 (closest approach) | 8.9 × 10⁻⁷ | **3.2 × 10⁻⁷** | ~0.9–2 × 10⁻⁷ |
+| hottest 1% | 2.8 × 10⁻⁶ | 3.6 × 10⁻⁶ | ~5 × 10⁻⁶ |
+| hottest particle | 1.0 × 10⁻³ | 1.5 × 10⁻³ | ~1 × 10⁻⁵ |
+
+The typical gas is now below the ceiling on the approach and within ~1.5–3.5× of it at closest approach (the ceiling assumes all the squeeze becomes heat, so some excess remains); the hottest 1% is within it. A handful of front-edge particles are still over-heated ~100× by viscosity at the bend (resolution); with the h cap they no longer stall the run.
