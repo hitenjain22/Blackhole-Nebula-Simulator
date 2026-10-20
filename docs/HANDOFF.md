@@ -65,8 +65,10 @@ swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phase
   misses by only 8,700, so hydro may crash at passage 3, t ≈ 2.0 × 10⁶). expected-values §2c.
 - **Resolution:** 10k runs are dominated by numerical overheating at pericentre (unbound 11%,
   energy spread ±43%); 50k is much better (0.75%, ±13%). **Phase 6 main run R6.1 must be 50k.**
-- **R6.1 at 50k on Google Cloud (`runs/R6.1_50k`) is PAUSED at t ≈ 446,000** (stalled; checkpoint
-  on the VM). It will be **restarted from t = 0** with the fixes below once Hiten approves.
+- **R6.1 v2 at 50k is RUNNING on Google Cloud (`runs/R6.1_50k_v2`, started 2026-10-19 17:27 Pacific / 00:27 UTC,
+  commit ffcd410, α_u = 0.05, h_max = 200, t_end 3.8 × 10⁶).** Helpers armed: `~/resume_if_needed.sh` and
+  `~/shutdown_when_done.sh` (both for R6.1_50k_v2, in crontab @reboot; the watcher is running). The old
+  stalled `R6.1_50k` (α_u = 1, no cap) is kept on the VM as a record (paused at t ≈ 446,000).
 - **Why it stalled (fully diagnosed, DECISIONS 2026-10-19):** over-heated gas sprays into a
   near-vacuum halo; halo particles' h grows to 2,000–2,800, neighbouring the whole cloud; the level
   limiter then held ~49,000 particles at tiny steps. Capping h (h_max) fixes it and does **not**
@@ -113,17 +115,16 @@ L < 4) reported per run, flagged above 1%; resolution check 10k vs 50k at radius
   `project-f6231423-0846-4084-823`). VM **`nebula-sim`**, zone **`us-central1-b`**,
   c4d-highcpu-8 (AMD EPYC 9B45 Turin, 4 cores / 8 threads, 15 GB), Ubuntu 24.04, 60 GB disk,
   standard (not spot), live-migrates during maintenance, auto-restart on.
-  **Currently STOPPED** (start it: `gcloud compute instances start nebula-sim --zone=us-central1-b`).
+  **Currently RUNNING R6.1_50k_v2** (it powers itself off ~10 min after the run ends).
 - On the VM: repo at `~/nebula` (updated by `git bundle`: `git bundle create /tmp/nebula.bundle
   HEAD main` on the Mac, `gcloud compute scp` it, `git pull -q ~/nebula.bundle main` there), uv at
   `~/.local/bin` (`export PATH=$HOME/.local/bin:$PATH`). Same lock as the Mac (Python 3.12,
   NumPy 2.3.5, Numba 0.62.1). 168 non-GPU tests pass there; GPU/render tests cannot (no GPU).
   Benchmark: 32,304 particle-steps/s (8 threads) vs 6,640 on the Mac.
-- Helpers on the VM: `~/resume_if_needed.sh` (resume R6.1_50k after a reboot unless finished or
-  errored) and `~/shutdown_when_done.sh` (power off ~10 min after the run process ends). **Both are
-  currently removed from crontab.** For the R6.1 restart: edit them for the new run name, add
-  `@reboot` lines back (`@reboot sleep 60 && $HOME/resume_if_needed.sh`,
-  `@reboot sleep 120 && $HOME/shutdown_when_done.sh`), start the watcher with setsid nohup.
+- Helpers on the VM (run name set at the top of each, now R6.1_50k_v2): `~/resume_if_needed.sh`
+  (resume after a reboot unless finished or errored) and `~/shutdown_when_done.sh` (waits 5 min, then
+  powers off ~10 min after the run process ends). Both are in crontab @reboot and the watcher is running.
+  To work on the VM while it is idle, first stop the watcher by PID (`ps -eo pid,args | grep "[s]hutdown_when"`).
 - Launch a run so it survives SSH: `cd ~/nebula; setsid nohup uv run python scripts/cloud_run.py
   NAME ... > outputs/recon/NAME.out 2>&1 < /dev/null &`. Repo must be clean (manifest records the
   commit; remove stray files first).
@@ -146,7 +147,8 @@ L < 4) reported per run, flagged above 1%; resolution check 10k vs 50k at radius
 | cloud50k_r25_D2 | Mac | Phase 5, 50k, radius 25 | to t = 400,000; 0 swallowed |
 | R6.1_r60 | Mac | 10k radius 60, Phase 6 settings | paused t = 403,901 (superseded) |
 | R6.1_r60_50k | Mac | 50k radius 60 first pass (resolution check) | to t = 404,962 |
-| R6.1_50k | VM (snapshots to ~437k synced) | **R6.1 main run**, 50k, old settings | paused t ≈ 446,000, stalled; to be restarted |
+| R6.1_50k | VM (snapshots to ~437k synced) | R6.1 first attempt, 50k, α_u = 1, no cap | paused t ≈ 446,000 (stalled; superseded) |
+| **R6.1_50k_v2** | VM | **R6.1 main run**, 50k, α_u = 0.05, h_max 200 | running since 2026-10-19 00:27 UTC |
 | heat10k_r60 | Mac | 10k radius 60 with per-particle heat budgets | to t = 404,000 |
 | cond_x1..x4 | VM + synced | conductivity experiments (DECISIONS 2026-10-19) | x2–x4 to 420,000; x1 stopped ~403,000 |
 
@@ -197,3 +199,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
   Hiten's decision (§4). VM stopped. Hiten switching Claude accounts; this file written.
 - 2026-10-19: continued on Hiten's second Claude account (same conversation carried over); nothing changed since the handover; recommendation (§4) re-stated, awaiting his answer.
 - 2026-10-19: Hiten approved α_u 0.05 + h_max 200 + R6.1 restart. Implemented (commit 3d51dd9; 184 fast tests pass; MAGMA2's 0.05 confirmed in the paper text). Slow suite running on the VM before launching R6.1_50k_v2.
+- 2026-10-19: full suite passes (184 fast; 19 slow sim tests on the VM + 2 GPU slow tests on the Mac). R6.1_50k_v2 launched on the VM 00:27 UTC with helpers armed. Next: check after the first pass (~2–4 h) against the old R6.1 numbers.
