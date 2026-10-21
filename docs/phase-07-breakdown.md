@@ -1,4 +1,4 @@
-# Phase 7 breakdown (DRAFT for Hiten's approval; nothing here has been started)
+# Phase 7 breakdown (APPROVED by Hiten 2026-10-21, with Claude's recommended answers)
 
 Drafted 2026-10-21 while R6.1 v2 runs (CLAUDE.md workflow 5: re-read the phase file, check it
 against the code and against what Phase 6 taught us, propose steps, wait for approval).
@@ -33,3 +33,9 @@ Steps 7.1–7.2 need no simulation runs and could proceed on the Mac while the c
 2. Science runs at 50k (cloud) instead of 10k/1k, with a reduced α scan (which values)?
 3. Start R7.1 from an R6.1 v2 checkpoint (once a torus exists) instead of from the cloud?
 4. Add `mpmath` as a test dependency?
+
+## Answers (Hiten approved 2026-10-21: "I agree with the phase 7 plans")
+1. Step order approved; steps 7.1–7.2 (no simulation runs) start on the Mac while R6.1 v2 finishes on the cloud.
+2. Science runs at 50k; α scan reduced to α = 0.03 and 0.3 besides R7.1's 0.1 (each ~3 days on the trial machine); r_acc check (R7.4) at 50k if affordable, else at 10k with the caveat.
+3. R7.1 starts from an R6.1 v2 checkpoint once a torus exists.
+4. `mpmath` added as a test dependency.

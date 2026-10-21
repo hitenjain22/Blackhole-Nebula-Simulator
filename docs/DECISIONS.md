@@ -385,3 +385,9 @@ Runs cond_x1–x4 on the VM, R6.1's settings with h_max = 200, to t = 420,000; b
 - **Measured pace after the crash started:** ~13,000 time units per hour (t = 1,266,000 → 1,290,000 in 1.9 h): reaching t = 3.8 × 10⁶ would take ~8 more days (~$65 of the trial credit), not the 2–3 days estimated from the first pass (the crash keeps many particles near the hole on small steps).
 - **Decision:** implement the plan's alternative end (phase-06 6.4: "t = 3.8 × 10⁶ or torus formed + 10 ring orbits"; torus formed = ≥ 50% of the remaining bound mass with e < 0.3 and r < 200, recorded as t_circ) as `scripts/torus_stop_watch.py`, running on the VM (also @reboot): it logs t_circ, and 10 ring orbits (23,033) later stops the run right after a checkpoint and writes "finished at …" (the resume helper then leaves it; the shutdown helper powers the VM off). Tested on a synthetic ring run. Ring fraction at t = 1,288,095: 0.000.
 - If no torus forms well before the credit or time budget matters, ask Hiten before letting it run the full ~8 days.
+
+## 2026-10-21: Phase 7 breakdown approved; cloud and accounts
+
+- **Phase 7:** Hiten approved the breakdown (`docs/phase-07-breakdown.md`) with Claude's recommended answers: 50k science runs, reduced α scan (0.03, 0.1, 0.3), R7.1 from an R6.1 v2 torus checkpoint, `mpmath` as a test dependency. Steps 7.1–7.2 (1D model, disk profiles) start on the Mac while R6.1 v2 runs.
+- **Multiple Google accounts for more free credit: advised against** (Google's free trial is one per customer; risk of suspension affecting Hiten's main Google account). Legitimate options told to Hiten: pay after the credit (~$8/day per 8-vCPU machine), other providers' own new-customer credits in his name, student compute programs.
+- **Shortening R6.1 v2 (~8 days at the crash-phase pace):** the automatic torus-formed end; profiling the crash-phase cost (next); a larger machine needs a paid account (the trial caps 8 vCPUs).
