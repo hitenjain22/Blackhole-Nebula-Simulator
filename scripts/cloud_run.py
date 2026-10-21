@@ -227,7 +227,7 @@ def main():
                           rho=st.rho, ids=st.ids, level=st.level,
                           visc_heating=st.visc_heating, luminosity=st.luminosity,
                           cond_heating=st.cond_heating, heat_visc=st.heat_visc,
-                          heat_cond=st.heat_cond, heat_pdv=st.heat_pdv,
+                          heat_cond=st.heat_cond, heat_pdv=st.heat_pdv, heat_disk=st.heat_disk,
                           heat_cool=st.heat_cool)  # fmt: skip
             state["snap"] += 1
             dt_snap = snapshot_interval(st.x)

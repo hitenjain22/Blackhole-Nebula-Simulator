@@ -1038,3 +1038,95 @@ def ns_forces_numba(pos, mass, h, rho, omega, stress, nb: Neighbours,
         nb.index, box, kid, C_NORM[kid], rows, acc,
     )  # fmt: skip
     return acc
+
+
+# --------------------------------------------------------------------------- disc viscosity
+#
+# Disc viscosity through the AV form (Lodato & Price 2010; Phantom §2.6.1 Eq. 120; Phase 7
+# Option B): physics.disc_viscosity.disc_q on every pair (approaching and receding),
+#     q_a = -rho_a h_a/(2 r) alpha_AV c_s,a (v_ab . r_hat),
+#     (dv_a/dt)_disc = -sum_b m_b [q_a/(Omega_a rho_a^2) F_ab(h_a)
+#                                  + q_b/(Omega_b rho_b^2) F_ab(h_b)] r_hat
+#     (du_a/dt)_disc = sum_b m_b q_a/(Omega_a rho_a^2) (v_ab . r_hat) F_ab(h_a)   (>= 0)
+# Pair forces along r_ab: energy and angular momentum are conserved exactly. It is added to the
+# shock viscosity (which keeps its switch and reconstruction; DECISIONS 2026-10-21).
+
+
+def disc_forces_reference(pos, vel, mass, h, rho, omega, c_s, alpha_av, nb: Neighbours,
+                          kernel_name=DEFAULT_KERNEL, rows=None):  # fmt: skip
+    """Readable reference: (acc (N, 3), du/dt (N,)) of the disc viscosity for ``rows`` (default
+    all), zeros elsewhere."""
+    from nebula.physics.disc_viscosity import disc_q
+
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    acc, dudt = np.zeros((n, 3)), np.zeros(n)
+    for a in _rows(rows, n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)
+        r = np.linalg.norm(dx, axis=1)
+        rhat = dx / r[:, None]
+        vdr = np.sum((vel[a] - vel[b]) * rhat, axis=1)
+        qa = disc_q(rho[a], h[a], r, alpha_av, c_s[a], vdr) / (omega[a] * rho[a] ** 2)
+        qb = disc_q(rho[b], h[b], r, alpha_av, c_s[b], vdr) / (omega[b] * rho[b] ** 2)
+        fa, fb = kernel.dw_dr(r, h[a]), kernel.dw_dr(r, h[b])
+        acc[a] = -np.sum((mass[b] * (qa * fa + qb * fb))[:, None] * rhat, axis=0)
+        dudt[a] = np.sum(mass[b] * qa * vdr * fa)
+    return acc, dudt
+
+
+@numba.njit(parallel=True, cache=True)
+def _disc_kernel(pos, vel, mass, h, rho, omega, c_s, alpha_av, offset, index, box, kid, cnorm,
+                 rows, acc, dudt):  # fmt: skip
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
+        a = rows[q]
+        ia = 1.0 / (omega[a] * rho[a] * rho[a])
+        ax = np.zeros(3)
+        dx = np.empty(3)
+        heat = 0.0
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
+                continue
+            for c in range(3):
+                d = pos[a, c] - pos[b, c]
+                if box[c] > 0.0:
+                    d -= box[c] * np.round(d / box[c])
+                dx[c] = d
+            r = np.sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2])
+            vdr = 0.0
+            for c in range(3):
+                vdr += (vel[a, c] - vel[b, c]) * dx[c] / r
+            # mirrors physics.disc_viscosity.disc_q
+            qa = -rho[a] * h[a] / (2.0 * r) * alpha_av * c_s[a] * vdr * ia
+            qb = -rho[b] * h[b] / (2.0 * r) * alpha_av * c_s[b] * vdr / (omega[b] * rho[b] * rho[b])
+            fa = _dwdr(r, h[a], kid, cnorm)
+            fb = _dwdr(r, h[b], kid, cnorm)
+            f = mass[b] * (qa * fa + qb * fb)
+            for c in range(3):
+                ax[c] -= f * dx[c] / r
+            heat += mass[b] * qa * vdr * fa
+        for c in range(3):
+            acc[q, c] = ax[c]
+        dudt[q] = heat
+
+
+def disc_forces_numba(pos, vel, mass, h, rho, omega, c_s, alpha_av, nb: Neighbours,
+                      kernel_name=DEFAULT_KERNEL, rows=None):  # fmt: skip
+    """Fast twin of ``disc_forces_reference`` for ``rows`` (results in that order: acc
+    (len(rows), 3), du/dt (len(rows),)). Lists may be a superset (pairs beyond the kernel
+    support add exact zeros)."""
+    n = len(pos)
+    rows = _rows(rows, n)
+    acc, dudt = np.empty((len(rows), 3)), np.empty(len(rows))
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _disc_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
+        np.ascontiguousarray(mass, float), np.ascontiguousarray(h, float),
+        np.ascontiguousarray(rho, float), np.ascontiguousarray(omega, float),
+        np.ascontiguousarray(c_s, float), float(alpha_av), nb.offset, nb.index, box, kid,
+        C_NORM[kid], rows, acc, dudt,
+    )  # fmt: skip
+    return acc, dudt

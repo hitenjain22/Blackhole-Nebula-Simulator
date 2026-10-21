@@ -109,12 +109,16 @@ def test_reused_lists_stay_complete_for_inactive_neighbours(rng):
 # --------------------------------------------------------------------------- one level
 
 
-def test_one_level_equals_shared_step(rng):
+@pytest.mark.parametrize("ns_nu, disc_alpha_av", [(0.0, 0.0), (0.02, 0.0), (0.0, 1.0)])
+def test_one_level_equals_shared_step(rng, ns_nu, disc_alpha_av):
     """Every particle on level 0 (dt_max below every criterion), no limiter: the block scheme is
-    the shared-step scheme of Step 4.2, result for result."""
+    the shared-step scheme of Step 4.2, result for result; also with the disk viscosity of phase
+    7, Option A (nu = 0.02: viscous dt 0.25 h^2 / nu ~ 12 > dt) and Option B (alpha_AV = 1)."""
     x, v, u, m, h = warm_ball(rng)
     dt = 1.0
-    cc = CoupledConfig(hydro=HydroConfig(conductivity_signal=coupled.COND_VELOCITY))
+    hc = HydroConfig(conductivity_signal=coupled.COND_VELOCITY, ns_nu=ns_nu,
+                     disc_alpha_av=disc_alpha_av)  # fmt: skip
+    cc = CoupledConfig(hydro=hc)
     cfg = BlockConfig(coupled=cc, dt_max=dt, limiter=False)
     st = blocks.initialise(x, v, u, m, h, cfg, t_stop=6 * dt)
     ref = coupled.initialise(x, v, u, m, h, cc)
@@ -127,6 +131,9 @@ def test_one_level_equals_shared_step(rng):
     check("one level: internal energies", ref.u, st.u, rtol=0.0)
     check("one level: viscosity alphas", ref.alpha, st.alpha, rtol=0.0)
     check("one level: time", ref.t, st.t, rtol=0.0)
+    if ns_nu > 0 or disc_alpha_av > 0:
+        check("one level: disk viscosity heated every particle (heat_disk > 0)", True,
+              bool(np.all(st.heat_disk > 0)))  # fmt: skip
 
 
 # --------------------------------------------------------------------------- test 1

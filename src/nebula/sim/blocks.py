@@ -47,15 +47,20 @@ import numpy as np
 
 from nebula.physics import viscosity as visc
 from nebula.physics.cooling import beta_cool, cooling_time
+from nebula.physics.disc_viscosity import nu_av
+from nebula.physics.navier_stokes import viscous_dt, viscous_heating, viscous_stress
 from nebula.sim import coupled
 from nebula.sim.accretion import RemovedLedger, record_removal
 from nebula.sim.coupled import CoupledConfig
-from nebula.sim.hydro import eos_state, floor_energy
+from nebula.sim.hydro import eos_state, floor_energy, physical_viscosity
 from nebula.sim.neighbours import Neighbours, tighten
 from nebula.sim.sph import (
     compute_density,
+    disc_forces_numba,
     forces_numba,
     gradients_numba,
+    ns_forces_numba,
+    ns_gradients_numba,
     velocity_gradients_numba,
 )
 from nebula.sim.timesteps import K_MAX, allowed_level, level_for_dt, ticks
@@ -113,12 +118,15 @@ class BlockState:
     luminosity: np.ndarray = field(default=None)  # per particle, over its last step (energy/time)
     visc_heating: np.ndarray = field(default=None)  # viscous part of du/dt (the shock marker)
     cond_heating: np.ndarray = field(default=None)  # conductivity part of du/dt
+    disk_heating: np.ndarray = field(default=None)  # disk viscosity part of du/dt (phase 7 A/B)
+    nu: np.ndarray = field(default=None)  # disk kinematic viscosity at the last active step
     # heat budget per particle since the start (code u): what each part of du/dt and the cooling
     # have added, booked exactly as the kicks apply du/dt, including the opening half-kick of
     # the current step (so u_half - u_0 = visc + cond + pdv - cool); "pdv" is the rest of du/dt,
-    # the reversible P dV work
+    # the reversible P dV work; "disk" the disk viscosity (phase 7, Option A or B)
     heat_visc: np.ndarray = field(default=None)
     heat_cond: np.ndarray = field(default=None)
+    heat_disk: np.ndarray = field(default=None)
     heat_pdv: np.ndarray = field(default=None)
     heat_cool: np.ndarray = field(default=None)
 
@@ -140,8 +148,8 @@ def upgrade_state(st: BlockState) -> BlockState:
     n = len(st.x)
     if "e_radiated" not in st.__dict__:
         st.e_radiated = 0.0
-    for name in ("luminosity", "visc_heating", "cond_heating", "heat_visc", "heat_cond",
-                 "heat_pdv", "heat_cool"):  # fmt: skip
+    for name in ("luminosity", "visc_heating", "cond_heating", "disk_heating", "nu", "heat_visc",
+                 "heat_cond", "heat_disk", "heat_pdv", "heat_cool"):  # fmt: skip
         if st.__dict__.get(name) is None:  # (budgets of an older run then start at the resume)
             setattr(st, name, np.zeros(n))
     return st
@@ -214,7 +222,7 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
     # system step cost ~60% of a 50k run). NaN elsewhere, so a stray read would show at once.
     touched = _with_neighbours(nb, rows, len(st.x))
     p_gas, cs = np.full(len(st.x), np.nan), np.full(len(st.x), np.nan)
-    p_gas[touched], cs[touched] = eos_state(hc, rho[touched], u[touched])
+    p_gas[touched], cs[touched] = eos_state(hc, rho[touched], u[touched], st.x[touched])
     alpha = st.alpha.copy()
     if hc.viscosity and hc.switch and np.any(dt_alpha > 0):
         g = gradients_numba(st.x, v, a_prev, st.mass, h, nb, hc.kernel, rows=rows)
@@ -238,12 +246,38 @@ def _hydro_rows(st: BlockState, cfg: BlockConfig, rows, v, u, dt_alpha, a_prev):
         u=u if hc.conductivity else None, c_s=cs if hc.viscosity else None,
         alpha=alpha if hc.viscosity else None, shock=shock, rows=rows, grad_v=grad_v,
     )  # fmt: skip
+    acc, dudt = f.acc, f.dudt
+    nu = physical_viscosity(hc, st.x[touched], cs[touched])
+    if nu is not None:
+        # Navier-Stokes viscosity (Phantom Eqs. 130-131; hydro.evaluate): the rows' force needs
+        # the stress of every neighbour, so gradients for all touched particles at the current
+        # time (as for the reconstruction), from the full lists of the (valid) neighbour cache
+        g = ns_gradients_numba(st.x, v, st.mass, h, rho, omega, st.neighbour_cache.neighbours,
+                               hc.kernel, rows=touched)  # fmt: skip
+        st.nu[touched] = nu
+        stress = np.zeros_like(g)
+        stress[touched] = viscous_stress(g[touched], rho[touched], nu)
+        acc = acc + ns_forces_numba(st.x, st.mass, h, rho, omega, stress, nb, hc.kernel,
+                                    rows=rows)  # fmt: skip
+        st.disk_heating[rows] = viscous_heating(g[rows], st.nu[rows])
+        dudt = dudt + st.disk_heating[rows]
+    if hc.disc_alpha_av > 0:  # Option B (sim/sph.py disc_forces_numba): rows only; the pair
+        # term reads the neighbours' h, rho, Omega, c_s, all current for the touched particles
+        a_disc, u_disc = disc_forces_numba(st.x, v, st.mass, h, rho, omega, cs, hc.disc_alpha_av,
+                                           nb, hc.kernel, rows=rows)  # fmt: skip
+        acc = acc + a_disc
+        st.disk_heating[rows] = u_disc
+        dudt = dudt + u_disc
+        st.nu[rows] = nu_av(hc.disc_alpha_av, cs[rows], h[rows])
     st.alpha = alpha
-    st.a_hydro[rows] = f.acc
-    st.dudt[rows] = f.dudt
+    st.a_hydro[rows] = acc
+    st.dudt[rows] = dudt
     st.vsig_max[rows] = f.vsig_max if hc.viscosity else cs[rows]
     st.visc_heating[rows] = f.dudt_visc
     st.cond_heating[rows] = f.dudt_cond
+    if hc.isothermal_cs is not None:  # u is not evolved (as in hydro.evaluate): nothing heats
+        for arr in (st.dudt, st.visc_heating, st.cond_heating, st.disk_heating):
+            arr[rows] = 0.0
     return nb
 
 
@@ -259,6 +293,7 @@ def wanted_dt(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
     amag = np.linalg.norm(st.a_hydro[rows], axis=1)
     with np.errstate(divide="ignore"):
         dt = np.minimum(dt, np.where(amag > 0, hc.c_force * np.sqrt(h / amag), np.inf))
+    dt = np.minimum(dt, viscous_dt(h, st.nu[rows]))  # inf where there is no physical viscosity
     if cc.hole:
         dt = np.minimum(dt, cc.eta_orb * np.linalg.norm(st.x[rows], axis=1) ** 1.5)
     return dt
@@ -349,10 +384,11 @@ def _wake(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
 
 def _add_heat(st: BlockState, rows, dt) -> None:
     """Heat budget: the kick u += dt du/dt of ``rows``, split into its parts (dt per row)."""
-    visc, cond = st.visc_heating[rows], st.cond_heating[rows]
+    visc, cond, disk = st.visc_heating[rows], st.cond_heating[rows], st.disk_heating[rows]
     st.heat_visc[rows] += dt * visc
     st.heat_cond[rows] += dt * cond
-    st.heat_pdv[rows] += dt * (st.dudt[rows] - visc - cond)
+    st.heat_disk[rows] += dt * disk
+    st.heat_pdv[rows] += dt * (st.dudt[rows] - visc - cond - disk)
 
 
 def _open(st: BlockState, rows) -> None:
@@ -398,7 +434,10 @@ def initialise(
     st.luminosity = np.zeros(n)
     st.visc_heating = np.zeros(n)
     st.cond_heating = np.zeros(n)
-    st.heat_visc, st.heat_cond, st.heat_pdv, st.heat_cool = (np.zeros(n) for _ in range(4))
+    st.disk_heating, st.nu = np.zeros(n), np.zeros(n)
+    st.heat_visc, st.heat_cond, st.heat_disk, st.heat_pdv, st.heat_cool = (
+        np.zeros(n) for _ in range(5)
+    )
     rows = np.arange(n)
     nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p), st.u, 0.0, None)
     st.level[:] = 0

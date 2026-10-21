@@ -27,6 +27,7 @@ import numpy as np
 
 from nebula.physics import viscosity as visc
 from nebula.physics.cooling import T_FLOOR, beta_cool, cooling_time
+from nebula.physics.disc_viscosity import nu_av
 from nebula.physics.gravity import (
     gn_angmom,
     gn_hamiltonian,
@@ -34,15 +35,19 @@ from nebula.physics.gravity import (
     gn_v_from_p,
     newton_hamiltonian,
 )
+from nebula.physics.navier_stokes import viscous_dt, viscous_heating, viscous_stress
 from nebula.sim.fastphys import gn_v_from_p_nb
-from nebula.sim.hydro import HydroConfig, eos_state, floor_energy
+from nebula.sim.hydro import HydroConfig, eos_state, floor_energy, physical_viscosity
 from nebula.sim.integrator import glf_step_many, kdk_newton_many
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
     COND_VELOCITY,
     compute_density,
+    disc_forces_numba,
     forces_numba,
     gradients_numba,
+    ns_forces_numba,
+    ns_gradients_numba,
     velocity_gradients_numba,
 )
 
@@ -87,6 +92,7 @@ class GasState:
     neighbour_cache: object = field(default=None)
     e_radiated: float = 0.0  # energy radiated so far (cooling), code units
     visc_heating: np.ndarray = field(default=None)  # viscous part of du/dt (the shock marker)
+    nu: np.ndarray = field(default=None)  # physical kinematic viscosity (None if off)
 
 
 def _gn(cfg: CoupledConfig) -> bool:
@@ -147,7 +153,7 @@ def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasS
         raise FloatingPointError(
             f"non-positive internal energy at {int(np.sum(st.u <= 0))} particles"
         )
-    p_gas, cs = eos_state(hc, d.rho, st.u)
+    p_gas, cs = eos_state(hc, d.rho, st.u, st.x)
     nb = tighten(d.neighbours, st.x, d.h)
     alpha = st.alpha
     if hc.viscosity and hc.switch and dt_alpha > 0:
@@ -167,10 +173,25 @@ def _hydro(st: GasState, cfg: CoupledConfig, v, dt_alpha: float, a_prev) -> GasS
         u=st.u if hc.conductivity else None, c_s=cs if hc.viscosity else None,
         alpha=alpha if hc.viscosity else None, shock=shock, grad_v=grad_v,
     )  # fmt: skip
+    acc, dudt = f.acc, f.dudt
+    nu = physical_viscosity(hc, st.x, cs)
+    if nu is not None:  # Navier-Stokes viscosity (Phantom Eqs. 130-131; hydro.evaluate)
+        g = ns_gradients_numba(st.x, v, st.mass, d.h, d.rho, d.omega, nb, hc.kernel)
+        stress = viscous_stress(g, d.rho, nu)
+        acc = acc + ns_forces_numba(st.x, st.mass, d.h, d.rho, d.omega, stress, nb, hc.kernel)
+        dudt = dudt + viscous_heating(g, nu)
+    if hc.disc_alpha_av > 0:  # Option B (sim/sph.py disc_forces_numba; hydro.evaluate)
+        a_disc, u_disc = disc_forces_numba(st.x, v, st.mass, d.h, d.rho, d.omega, cs,
+                                           hc.disc_alpha_av, nb, hc.kernel)  # fmt: skip
+        acc, dudt = acc + a_disc, dudt + u_disc
+        nu = nu_av(hc.disc_alpha_av, cs, d.h)  # equivalent viscosity (time step, diagnostics)
+    visc_heating = f.dudt_visc
+    if hc.isothermal_cs is not None:  # u is not evolved (as in hydro.evaluate): nothing heats
+        dudt, visc_heating = np.zeros(len(st.x)), np.zeros(len(st.x))
     return replace(
-        st, h=d.h, alpha=alpha, a_hydro=f.acc, dudt=f.dudt, rho=d.rho, c_s=cs,
+        st, h=d.h, alpha=alpha, a_hydro=acc, dudt=dudt, rho=d.rho, c_s=cs,
         vsig_max=f.vsig_max if hc.viscosity else cs, neighbour_cache=d.cache,
-        visc_heating=f.dudt_visc,
+        visc_heating=visc_heating, nu=nu,
     )  # fmt: skip
 
 
@@ -197,6 +218,8 @@ def stable_dt(st: GasState, cfg: CoupledConfig) -> float:
     amag = np.linalg.norm(st.a_hydro, axis=1)
     if np.any(amag > 0):
         dt = min(dt, hc.c_force * np.min(np.sqrt(st.h[amag > 0] / amag[amag > 0])))
+    if st.nu is not None:
+        dt = min(dt, float(np.min(viscous_dt(st.h, st.nu))))
     if cfg.hole:
         r = np.linalg.norm(st.x, axis=1)
         dt = min(dt, cfg.eta_orb * np.min(r**1.5))

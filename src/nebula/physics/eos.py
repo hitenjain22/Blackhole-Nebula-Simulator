@@ -7,6 +7,9 @@ Ideal gas (adiabatic index gamma; Phantom, Price et al. 2018, Eq. 27-28):
     P = (gamma - 1) rho u,        c_s = sqrt(gamma P / rho) = sqrt(gamma (gamma - 1) u)
 Isothermal:
     P = c_s^2 rho
+Locally isothermal (phase-07 7.4 ring test; Lodato & Price 2010 §3; Phantom ieos = 3):
+    c_s(r) = c_s0 (r / r_0)^(-q),  r = distance from the hole, q = 3/4 so that
+    nu = alpha c_s^2 / Omega_K is constant in r (the Lynden-Bell & Pringle case)
 Radiation limit (Phase 6 test 4: a gamma = 4/3 gas):
     P = rho u / 3,                c_s = sqrt(4/3 P / rho) = sqrt(4 u / 9)
 Gas + radiation: see below.
@@ -42,9 +45,15 @@ def ideal_gas_u_si(t_k, gamma: float = 5.0 / 3.0):
     return units.K_B * np.asarray(t_k, float) / ((gamma - 1.0) * units.MU * units.M_P)
 
 
-def isothermal_pressure(rho, c_s: float):
-    """P = c_s^2 rho."""
-    return c_s * c_s * np.asarray(rho)
+def isothermal_pressure(rho, c_s):
+    """P = c_s^2 rho (c_s a number, or one per particle)."""
+    return np.asarray(c_s) ** 2 * np.asarray(rho)
+
+
+def locally_isothermal_cs(r, c_s0: float, r0: float, q: float = 0.75):
+    """c_s = c_s0 (r / r0)^(-q) (phase-07 7.4; Lodato & Price 2010): with q = 3/4,
+    c_s^2 / Omega_K = c_s0^2 r0^(3/2) is the same at every r."""
+    return c_s0 * (np.asarray(r, float) / r0) ** (-q)
 
 
 # --------------------------------------------------------------------------- gas + radiation

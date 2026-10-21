@@ -21,6 +21,7 @@ import numpy as np
 
 from nebula import units
 from nebula.physics import viscosity as visc
+from nebula.physics.disc_viscosity import nu_av
 from nebula.physics.eos import (
     gasrad_state,
     gasrad_u_si,
@@ -28,6 +29,7 @@ from nebula.physics.eos import (
     ideal_gas_sound_speed,
     ideal_gas_u_si,
     isothermal_pressure,
+    locally_isothermal_cs,
     radiation_limit_pressure,
     radiation_limit_sound_speed,
 )
@@ -39,6 +41,7 @@ from nebula.sim.sph import (
     COND_PRESSURE,
     ShockCapturing,
     compute_density,
+    disc_forces_numba,
     forces_numba,
     gradients_numba,
     ns_forces_numba,
@@ -51,6 +54,10 @@ from nebula.sim.sph import (
 class HydroConfig:
     gamma: float = 5.0 / 3.0
     isothermal_cs: float | None = None  # if set: P = c_s^2 rho, u not evolved
+    # locally isothermal (phase-07 7.4 ring test): with iso_r0 set, c_s = isothermal_cs at r =
+    # iso_r0 and c_s ~ r^(-iso_q) with r the distance from the origin (the hole)
+    iso_r0: float | None = None
+    iso_q: float = 0.75
     eos: str = (
         "ideal"  # "ideal" (gamma), "gasrad" (gas + radiation, Phase 6), "radiation" (P = rho u/3)
     )
@@ -78,6 +85,9 @@ class HydroConfig:
     # with Omega_K = r^(-3/2) about the origin (the hole)
     ns_nu: float = 0.0
     ns_alpha: float = 0.0
+    # disc viscosity through the AV form (Phase 7 Option B; physics/disc_viscosity.py): a fixed
+    # alpha_AV on every pair, nu ~ alpha_AV c_s h / 10; off by default; not with Option A
+    disc_alpha_av: float = 0.0
 
     def shock(self) -> ShockCapturing:
         """The force pass's shock-capturing settings for this configuration."""
@@ -108,8 +118,13 @@ class HydroState:
     neighbour_cache: object = field(default=None)  # sph.NeighbourCache, reused between steps
 
 
-def eos_state(cfg: HydroConfig, rho, u):
-    """Pressure and sound speed (code units) from the configured equation of state."""
+def eos_state(cfg: HydroConfig, rho, u, x=None):
+    """Pressure and sound speed (code units) from the configured equation of state; positions
+    ``x`` are needed only for the locally isothermal one."""
+    if cfg.isothermal_cs is not None and cfg.iso_r0 is not None:
+        cs = locally_isothermal_cs(np.linalg.norm(x, axis=1), cfg.isothermal_cs, cfg.iso_r0,
+                                   cfg.iso_q)  # fmt: skip
+        return isothermal_pressure(rho, cs), cs
     if cfg.isothermal_cs is not None:
         return isothermal_pressure(rho, cfg.isothermal_cs), np.full_like(rho, cfg.isothermal_cs)
     if np.any(u <= 0):
@@ -158,7 +173,7 @@ def evaluate(
         state.x, state.mass, state.h, box=box, kernel_name=cfg.kernel, eta=cfg.eta,
         h_max=cfg.h_max, cache=state.neighbour_cache, skin=cfg.skin,
     )  # fmt: skip
-    p, cs = _eos(cfg, d.rho, state.u)
+    p, cs = eos_state(cfg, d.rho, state.u, state.x)
     nb = tighten(d.neighbours, state.x, d.h)  # only interacting pairs (identical sums, less work)
     alpha = state.alpha
     if cfg.viscosity and cfg.switch and dt_alpha > 0:
@@ -190,6 +205,11 @@ def evaluate(
         acc = acc + ns_forces_numba(state.x, state.mass, d.h, d.rho, d.omega, stress, nb,
                                     cfg.kernel)  # fmt: skip
         dudt_all = dudt_all + viscous_heating(g, nu)
+    if cfg.disc_alpha_av > 0:  # Option B (sim/sph.py disc_forces_numba)
+        a_disc, u_disc = disc_forces_numba(state.x, state.v, state.mass, d.h, d.rho, d.omega, cs,
+                                           cfg.disc_alpha_av, nb, cfg.kernel)  # fmt: skip
+        acc, dudt_all = acc + a_disc, dudt_all + u_disc
+        nu = nu_av(cfg.disc_alpha_av, cs, d.h)  # equivalent viscosity (time step, diagnostics)
     dudt = np.zeros(len(state.x)) if cfg.isothermal_cs is not None else dudt_all
     vsig = f.vsig_max if cfg.viscosity else np.maximum(cs, 0.0)
     return replace(
@@ -199,10 +219,10 @@ def evaluate(
 
 
 def physical_viscosity(cfg: HydroConfig, x, c_s):
-    """Kinematic viscosity per particle (None if off): ns_nu, or ss_viscosity(ns_alpha, c_s, r)
-    with r the distance from the origin (the hole)."""
-    if cfg.ns_nu > 0 and cfg.ns_alpha > 0:
-        raise ValueError("set either ns_nu or ns_alpha, not both")
+    """Kinematic viscosity per particle of Option A (None if off): ns_nu, or
+    ss_viscosity(ns_alpha, c_s, r) with r the distance from the origin (the hole)."""
+    if (cfg.ns_nu > 0) + (cfg.ns_alpha > 0) + (cfg.disc_alpha_av > 0) > 1:
+        raise ValueError("set only one of ns_nu, ns_alpha, disc_alpha_av")
     if cfg.ns_nu > 0:
         return np.full(len(x), cfg.ns_nu)
     if cfg.ns_alpha > 0:
