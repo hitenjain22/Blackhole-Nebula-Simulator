@@ -32,6 +32,7 @@ from nebula.physics.eos import (
     radiation_limit_sound_speed,
 )
 from nebula.physics.kernels import DEFAULT_ETA, DEFAULT_KERNEL
+from nebula.physics.navier_stokes import ss_viscosity, viscous_dt, viscous_heating, viscous_stress
 from nebula.sim.fastphys import gasrad_state_nb
 from nebula.sim.neighbours import tighten
 from nebula.sim.sph import (
@@ -40,6 +41,8 @@ from nebula.sim.sph import (
     compute_density,
     forces_numba,
     gradients_numba,
+    ns_forces_numba,
+    ns_gradients_numba,
     velocity_gradients_numba,
 )
 
@@ -70,6 +73,11 @@ class HydroConfig:
     reconstruction: bool = True  # velocity reconstruction in the viscosity (DECISIONS D2)
     recon_closeness: bool = True  # its closeness factor (Frontiere et al. 2017 Eq. 51)
     recon_gate: int = 2  # sph.GATE_MINMOD (DECISIONS D2)
+    # physical Navier-Stokes viscosity (Phase 7 Option A; physics/navier_stokes.py), off by
+    # default: a constant kinematic viscosity, or Shakura-Sunyaev nu = alpha c_s^2 / Omega_K
+    # with Omega_K = r^(-3/2) about the origin (the hole)
+    ns_nu: float = 0.0
+    ns_alpha: float = 0.0
 
     def shock(self) -> ShockCapturing:
         """The force pass's shock-capturing settings for this configuration."""
@@ -95,6 +103,7 @@ class HydroState:
     pressure: np.ndarray = field(default=None)
     c_s: np.ndarray = field(default=None)
     vsig_max: np.ndarray = field(default=None)
+    nu: np.ndarray = field(default=None)  # physical kinematic viscosity per particle (or None)
     n_flagged: int = 0  # density flags (h at its cap) in the last evaluation
     neighbour_cache: object = field(default=None)  # sph.NeighbourCache, reused between steps
 
@@ -173,12 +182,32 @@ def evaluate(
         alpha=alpha if cfg.viscosity else None,
         shock=shock, grad_v=grad_v,
     )  # fmt: skip
-    dudt = np.zeros(len(state.x)) if cfg.isothermal_cs is not None else f.dudt
+    acc, dudt_all = f.acc, f.dudt
+    nu = physical_viscosity(cfg, state.x, cs)
+    if nu is not None:
+        g = ns_gradients_numba(state.x, state.v, state.mass, d.h, d.rho, d.omega, nb, cfg.kernel)
+        stress = viscous_stress(g, d.rho, nu)
+        acc = acc + ns_forces_numba(state.x, state.mass, d.h, d.rho, d.omega, stress, nb,
+                                    cfg.kernel)  # fmt: skip
+        dudt_all = dudt_all + viscous_heating(g, nu)
+    dudt = np.zeros(len(state.x)) if cfg.isothermal_cs is not None else dudt_all
     vsig = f.vsig_max if cfg.viscosity else np.maximum(cs, 0.0)
     return replace(
-        state, h=d.h, alpha=alpha, acc=f.acc, dudt=dudt, rho=d.rho, pressure=p, c_s=cs,
-        vsig_max=vsig, n_flagged=int(np.sum(d.flags != 0)), neighbour_cache=d.cache,
+        state, h=d.h, alpha=alpha, acc=acc, dudt=dudt, rho=d.rho, pressure=p, c_s=cs,
+        vsig_max=vsig, nu=nu, n_flagged=int(np.sum(d.flags != 0)), neighbour_cache=d.cache,
     )  # fmt: skip
+
+
+def physical_viscosity(cfg: HydroConfig, x, c_s):
+    """Kinematic viscosity per particle (None if off): ns_nu, or ss_viscosity(ns_alpha, c_s, r)
+    with r the distance from the origin (the hole)."""
+    if cfg.ns_nu > 0 and cfg.ns_alpha > 0:
+        raise ValueError("set either ns_nu or ns_alpha, not both")
+    if cfg.ns_nu > 0:
+        return np.full(len(x), cfg.ns_nu)
+    if cfg.ns_alpha > 0:
+        return ss_viscosity(cfg.ns_alpha, c_s, np.linalg.norm(x, axis=1))
+    return None
 
 
 def initialise(x, v, u, mass, h_guess, cfg: HydroConfig, t: float = 0.0) -> HydroState:
@@ -197,7 +226,8 @@ def stable_dt(state: HydroState, cfg: HydroConfig) -> float:
     amag = np.linalg.norm(state.acc, axis=1)
     with np.errstate(divide="ignore"):
         dt_force = cfg.c_force * np.min(np.sqrt(state.h / np.where(amag > 0, amag, np.nan)))
-    return float(np.nanmin([dt_cour, dt_force]))
+    dt_visc = np.min(viscous_dt(state.h, state.nu)) if state.nu is not None else np.inf
+    return float(np.nanmin([dt_cour, dt_force, dt_visc]))
 
 
 def step(state: HydroState, cfg: HydroConfig, dt: float) -> HydroState:
