@@ -895,3 +895,146 @@ def gradients_numba(
         div, curl, ddiv,
     )  # fmt: skip
     return Gradients(div, curl, ddiv)
+
+
+# --------------------------------------------------------------------------- Navier-Stokes
+#
+# Physical viscosity with two first derivatives (Phantom, Price et al. 2018 §2.7.1; Phase 7
+# Option A). Velocity gradient with the SPH difference operator (Eq. 131):
+#     G_a^ij = dv^i/dx^j = -1/(Omega_a rho_a) sum_b m_b (v_a - v_b)^i d_j W_ab(h_a)
+# and the viscous force with the conjugate symmetric operator (Eq. 130, viscous part of S):
+#     (dv_a^i/dt)_visc = sum_b m_b [Sv_a^ij/(Omega_a rho_a^2) d_j W_ab(h_a)
+#                                    + Sv_b^ij/(Omega_b rho_b^2) d_j W_ab(h_b)]
+# with Sv the viscous stress (physics.navier_stokes.viscous_stress) and d_j W_ab(h) = F_ab(h)
+# (x_a - x_b)^j / r. The heating is physics.navier_stokes.viscous_heating(G_a) per particle; with
+# these conjugate operators sum m (v . a_visc + Lambda) = 0 exactly (Eq. 132).
+
+
+def ns_gradients_reference(pos, vel, mass, h, rho, omega, nb: Neighbours,
+                           kernel_name=DEFAULT_KERNEL, rows=None) -> np.ndarray:  # fmt: skip
+    """Readable reference of Eq. 131 for ``rows`` (default all); (N, 3, 3), zeros elsewhere."""
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    out = np.zeros((n, 3, 3))
+    for a in _rows(rows, n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)
+        r = np.linalg.norm(dx, axis=1)
+        grad = (kernel.dw_dr(r, h[a]) / r)[:, None] * dx  # d_j W_ab(h_a)
+        vab = vel[a] - vel[b]
+        out[a] = -np.sum(mass[b][:, None, None] * vab[:, :, None] * grad[:, None, :], axis=0) / (
+            omega[a] * rho[a]
+        )
+    return out
+
+
+def ns_forces_reference(pos, mass, h, rho, omega, stress, nb: Neighbours,
+                        kernel_name=DEFAULT_KERNEL, rows=None) -> np.ndarray:  # fmt: skip
+    """Readable reference of the viscous acceleration (Eq. 130) for ``rows``; (N, 3), zeros
+    elsewhere. ``stress``: viscous stress Sv (N, 3, 3) of all particles."""
+    kernel = get_kernel(kernel_name)
+    n = len(pos)
+    acc = np.zeros((n, 3))
+    for a in _rows(rows, n):
+        b = nb.of(a)
+        b = b[b != a]
+        dx = minimum_image(pos[a] - pos[b], nb.box)
+        r = np.linalg.norm(dx, axis=1)
+        ga = (kernel.dw_dr(r, h[a]) / r)[:, None] * dx
+        gb = (kernel.dw_dr(r, h[b]) / r)[:, None] * dx
+        ta = stress[a] / (omega[a] * rho[a] ** 2)
+        tb = stress[b] / (omega[b] * rho[b] ** 2)[:, None, None]
+        acc[a] = np.sum(mass[b][:, None] * (ga @ ta.T + np.einsum("bij,bj->bi", tb, gb)), axis=0)
+    return acc
+
+
+@numba.njit(parallel=True, cache=True)
+def _ns_gradient_kernel(pos, vel, mass, h, rho, omega, offset, index, box, kid, cnorm, rows, out):
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to out[a]
+        a = rows[q]
+        g = np.zeros((3, 3))
+        dx = np.empty(3)
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
+                continue
+            for c in range(3):
+                d = pos[a, c] - pos[b, c]
+                if box[c] > 0.0:
+                    d -= box[c] * np.round(d / box[c])
+                dx[c] = d
+            r = np.sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2])
+            f = mass[b] * _dwdr(r, h[a], kid, cnorm) / r
+            for i in range(3):
+                vab = vel[a, i] - vel[b, i]
+                for j in range(3):
+                    g[i, j] -= vab * f * dx[j]
+        inv = 1.0 / (omega[a] * rho[a])
+        for i in range(3):
+            for j in range(3):
+                out[a, i, j] = g[i, j] * inv
+
+
+def ns_gradients_numba(pos, vel, mass, h, rho, omega, nb: Neighbours,
+                       kernel_name=DEFAULT_KERNEL, rows=None, out=None) -> np.ndarray:  # fmt: skip
+    """Fast twin of ``ns_gradients_reference`` (lists may be a superset: pairs beyond 2 h_a add
+    exact zeros); fills ``out`` (N, 3, 3) for ``rows`` and returns it."""
+    n = len(pos)
+    rows = _rows(rows, n)
+    out = np.zeros((n, 3, 3)) if out is None else out
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _ns_gradient_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(vel, float),
+        np.ascontiguousarray(mass, float), np.ascontiguousarray(h, float),
+        np.ascontiguousarray(rho, float), np.ascontiguousarray(omega, float), nb.offset,
+        nb.index, box, kid, C_NORM[kid], rows, out,
+    )  # fmt: skip
+    return out
+
+
+@numba.njit(parallel=True, cache=True)
+def _ns_force_kernel(pos, mass, h, rho, omega, stress, offset, index, box, kid, cnorm, rows, acc):
+    for q in numba.prange(rows.shape[0]):  # particle a = rows[q]; writes only to row q
+        a = rows[q]
+        ia = 1.0 / (omega[a] * rho[a] * rho[a])
+        ax = np.zeros(3)
+        dx = np.empty(3)
+        for k in range(offset[a], offset[a + 1]):
+            b = index[k]
+            if b == a:
+                continue
+            for c in range(3):
+                d = pos[a, c] - pos[b, c]
+                if box[c] > 0.0:
+                    d -= box[c] * np.round(d / box[c])
+                dx[c] = d
+            r = np.sqrt(dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2])
+            fa = _dwdr(r, h[a], kid, cnorm) / r * ia
+            fb = _dwdr(r, h[b], kid, cnorm) / r / (omega[b] * rho[b] * rho[b])
+            for i in range(3):
+                s = 0.0
+                for j in range(3):
+                    s += (stress[a, i, j] * fa + stress[b, i, j] * fb) * dx[j]
+                ax[i] += mass[b] * s
+        for i in range(3):
+            acc[q, i] = ax[i]
+
+
+def ns_forces_numba(pos, mass, h, rho, omega, stress, nb: Neighbours,
+                    kernel_name=DEFAULT_KERNEL, rows=None) -> np.ndarray:  # fmt: skip
+    """Fast twin of ``ns_forces_reference``: viscous accelerations of ``rows`` (in that order,
+    shape (len(rows), 3))."""
+    n = len(pos)
+    rows = _rows(rows, n)
+    acc = np.empty((len(rows), 3))
+    box = np.zeros(3) if nb.box is None else np.asarray(nb.box, float)
+    kid = KERNEL_IDS[kernel_name]
+    _ns_force_kernel(
+        np.ascontiguousarray(pos, float), np.ascontiguousarray(mass, float),
+        np.ascontiguousarray(h, float), np.ascontiguousarray(rho, float),
+        np.ascontiguousarray(omega, float), np.ascontiguousarray(stress, float), nb.offset,
+        nb.index, box, kid, C_NORM[kid], rows, acc,
+    )  # fmt: skip
+    return acc
