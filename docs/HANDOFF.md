@@ -66,8 +66,10 @@ swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phase
 - **Resolution:** 10k runs are dominated by numerical overheating at pericentre (unbound 11%,
   energy spread ±43%); 50k is much better (0.75%, ±13%). **Phase 6 main run R6.1 must be 50k.**
 - **R6.1 v2 at 50k is RUNNING on Google Cloud (`runs/R6.1_50k_v2`, started 2026-10-19 17:27 Pacific / 00:27 UTC,
-  commit ffcd410, α_u = 0.05, h_max = 200, t_end 3.8 × 10⁶).** Helpers armed: `~/resume_if_needed.sh` and
-  `~/shutdown_when_done.sh` (both for R6.1_50k_v2, in crontab @reboot; the watcher is running). The old
+  commit ffcd410, α_u = 0.05, h_max = 200, t_end 3.8 × 10⁶).** Helpers armed: `~/resume_if_needed.sh`,
+  `~/shutdown_when_done.sh` and `scripts/torus_stop_watch.py R6.1_50k_v2` (all in crontab @reboot and
+  running): the run ends at 'torus formed + 10 ring orbits' or t = 3.8 × 10⁶. Pace in the crash phase
+  ~13,000 time units/h (full 3.8M would be ~8 days); ask Hiten before letting it run that long. The old
   stalled `R6.1_50k` (α_u = 1, no cap) is kept on the VM as a record (paused at t ≈ 446,000).
 - **Why it stalled (fully diagnosed, DECISIONS 2026-10-19):** over-heated gas sprays into a
   near-vacuum halo; halo particles' h grows to 2,000–2,800, neighbouring the whole cloud; the level
@@ -208,3 +210,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
 - 2026-10-21: energy-ledger criterion decision recorded (judged against shock-processed energy after the crash starts; R6.1 v2 0.02%). Hiten away; Claude continues autonomously (monitor R6.1 v2, prepare Phase 6 analysis).
 - 2026-10-21: Phase 6 analysis tools added while R6.1 v2 runs: scripts/plot_crash.py (crash at three moments; figure in docs/figures), scripts/energy_budget.py (closes to the ledger), cloud_video.py framing/colours for runs with outflows; preview video to t = 1.27M in docs/figures. Background watcher on the Mac notifies when R6.1 v2 ends or errors.
 - 2026-10-21: drafted docs/phase-07-breakdown.md (NOT started; awaits Hiten's approval; lists conflicts between the Phase 7 plan and Phase 6 findings and 4 questions).
+- 2026-10-21: R6.1 v2 pace in the crash phase ~13k time units/h (3.8M would take ~8 days); deployed torus_stop_watch.py on the VM (ends the run at torus formed + 10 ring orbits); Phase 7 breakdown drafted (awaits approval).
