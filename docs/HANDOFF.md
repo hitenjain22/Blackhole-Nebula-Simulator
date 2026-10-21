@@ -89,10 +89,12 @@ swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phase
 
 ## 4. Waiting on Hiten (ask him / remind him)
 
-Nothing pending right now. **Decided 2026-10-19 (Hiten approved):** runs with the hole use
-conductivity α_u = 0.05 (MAGMA2) with the velocity signal and h_max = 200 (`CoupledConfig`,
-`physics.viscosity.ALPHA_U_MAGMA2`, `coupled.H_MAX_HOLE`); option C not adopted; R6.1 restarts
-from t = 0 at 50k as `runs/R6.1_50k_v2`. Older runs resume with their own settings (tested).
+**Next decision (to prepare 2026-10-21):** how to handle the few hundred over-heated particles
+near the hole that drive R6.1 v2's gas loss (4.8% at t = 1.14M, rising) and ledger drift
+(6 × 10⁻⁴ > the 10⁻⁴ criterion). Diagnosis in DECISIONS 2026-10-20/21 (drift is real, not a
+step-size problem). Claude promised options with evidence: physically justified cooling of hot
+thin gas, a principled heat limit, more particles; measure what each removes before recommending.
+Hiten agreed to let R6.1 v2 run overnight through its second pass (~t = 1.19M).
 
 ## 5. Key decisions to remember (details in docs/DECISIONS.md)
 
@@ -201,3 +203,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
 - 2026-10-19: Hiten approved α_u 0.05 + h_max 200 + R6.1 restart. Implemented (commit 3d51dd9; 184 fast tests pass; MAGMA2's 0.05 confirmed in the paper text). Slow suite running on the VM before launching R6.1_50k_v2.
 - 2026-10-19: full suite passes (184 fast; 19 slow sim tests on the VM + 2 GPU slow tests on the Mac). R6.1_50k_v2 launched on the VM 00:27 UTC with helpers armed. Next: check after the first pass (~2–4 h) against the old R6.1 numbers.
 - 2026-10-19: gravity-only ceiling for radius 60 computed (method validated at radius 25): typical ~1e-7, hottest 1% ~5e-6. R6.1 v2 typical gas below it on approach, ~1.5–3.5× above at closest approach (first attempt 4–10×). Results log updated. Next: R6.1 v2 post-pass check (unbound gas, halo, lost gas) vs the first attempt.
+- 2026-10-20/21: R6.1 v2 at t = 1.14M: 2.8% swallowed (4.8% lost), ledger drift 6e-4. Exact-ledger and half-step tests: drift real, not step size; cause = over-heated particles near the hole. Running overnight through the 2nd pass; options to prepare next.

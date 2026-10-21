@@ -356,3 +356,12 @@ Runs cond_x1–x4 on the VM, R6.1's settings with h_max = 200, to t = 420,000; b
 - **Option C (early removal of escaping gas) not adopted:** the cap removes the stall, and a radius-only cut could remove bound gas that returns. r_escape stays 50,000.
 - **Older runs resume unchanged:** configs without alpha_u / h_max map to α_u = 1, no cap (`cloud_run.block_config`); tested (`tests/sim/test_hole_defaults.py`).
 - **R6.1 restarts from t = 0 at 50k** with these settings (`runs/R6.1_50k_v2` on the VM); the stalled `R6.1_50k` stays as the record of the old settings.
+
+## 2026-10-20/21: R6.1 v2 after the first pass: gas loss and ledger drift (diagnosis in progress)
+
+- **Seen** (`runs/R6.1_50k_v2`, synced from the VM): between the passes gas keeps being swallowed (t = 1,144,475: 1,391 removed = 2.8%, lost incl. L < 4: 4.8%, above the 1% flag) and the ledgers drift (dE 6.1 × 10⁻⁴, dL 6.3 × 10⁻⁴ relative; Phase 6 asks |ΔE|/Σm|H| < 10⁻⁴). dL jumped at t ≈ 913,000–921,000 (+3.7 × 10⁻⁴) during a burst of 15 removals.
+- **Exact (synced) ledger** from the VM checkpoint brought to a sync point on the Mac (t = 1,077,248): dE 4.79 × 10⁻⁴, dL 4.98 × 10⁻⁴ (same as the snapshot values): the drift is real, not a prediction artefact.
+- **Per 256-unit synced interval** (12 intervals): dE ~ ±10⁻⁶, dL up to 1.3 × 10⁻⁶, also in intervals without removals; every removed particle is extremely hot (u 0.02–0.1).
+- **Half time steps** (all criteria × 0.5, 4 intervals): dL shrinks 4–5× in quiet intervals, dE barely changes, and an interval with a very hot removal gets worse (chaotic divergence). Not a step-size problem; tightening the criteria would not fix it.
+- **Interpretation:** a few hundred over-heated particles (viscosity at the bend, resolution) orbit near the hole, are re-heated each pass, lose angular momentum and are swallowed; their huge forces carry the ledger error. Same root as the stall and the halo.
+- **Plan (Claude, 2026-10-21; for Hiten's decision):** let R6.1 v2 run through its second pass (data); then compare options for these particles with evidence (physically justified cooling of hot thin gas; a principled limit; more particles), measuring how much of the loss and drift each removes.
