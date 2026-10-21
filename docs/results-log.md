@@ -88,3 +88,12 @@ Weaker conductivity halves the unbound gas and cuts the heating of the typical g
 | hottest particle | 1.0 × 10⁻³ | 1.5 × 10⁻³ | ~1 × 10⁻⁵ |
 
 The typical gas is now below the ceiling on the approach and within ~1.5–3.5× of it at closest approach (the ceiling assumes all the squeeze becomes heat, so some excess remains); the hottest 1% is within it. A handful of front-edge particles are still over-heated ~100× by viscosity at the bend (resolution); with the h cap they no longer stall the run.
+
+## 2026-10-21: R6.1 (50k, radius 60, α_u = 0.05, h cap 200): the stream crash starts at the second passage
+
+- **First pass** (t ≈ 396,000): typical gas near the hole below the gravity-only heating ceiling on the approach, ~1.5–3.5× above it at closest approach (entry above).
+- **Crash at passage 2:** the first pass leaves the gas's orbital energies spread (±13%), so the most-bound gas returns early. From t ≈ 930,000 it passes the hole and meets incoming stream gas at r ≈ 1,600–1,800, the predicted self-intersection radius (r_SI = 1,664). The share of gas being shock-heated grows from 0.3% (t = 801,000) to 6.6% (t = 1,189,000). The test-particle estimate put the first crash at passage 4 (t ≈ 2.77 million) and phase-06 §6.1 anticipated an earlier one from the extra spread. Picture: `docs/figures/R6.1_v2_shocks.png`; preview video to t = 1.27 million: `docs/figures/R6.1_50k_v2_preview_to_1.27M.mp4`.
+- **Outflow:** 15% of the gas is unbound at t = 1,265,645 (0.6% before the crash); 76% of it became unbound at r = 300–2,500 (crash region and just after pericentre): crash-driven outflow, a real effect, its amount inflated by the numerically heated, spread stream.
+- **Accretion:** 4.0% swallowed by t = 1,265,645 (0.6% before the crash, numerical; the rest a mix of real accretion and the near-hole resolution limit).
+- **Energy ledger:** |ΔE| = 0.02% of the heat the shocks have made (criterion after the crash: 0.1%, Hiten's decision); 8.9 × 10⁻⁴ of the cloud's small binding energy.
+- No ring yet (e < 0.3, r < 200: < 0.1%). Run continuing to t = 3.8 million.

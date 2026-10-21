@@ -24,6 +24,7 @@ from nebula.analysis.cloud_metrics import snapshot_temperature  # noqa: E402
 from nebula.render.video import write_video  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+FRAME_R = 12_000.0
 
 
 def run_eos(run: str) -> str:
@@ -35,6 +36,8 @@ def run_eos(run: str) -> str:
 def frames(run: str, hold: int):
     files = sorted((ROOT / "runs" / run / "snapshots").glob("snap_*.npz"))
     eos = run_eos(run)
+    # colour range: with gas + radiation the gas stays below ~10^6.5 K (ideal gas reaches 10^8)
+    t_top = 6.5 if eos == "gasrad" else 8.0
     day = units.DAY / units.BlackHoleUnits().time_s  # code time units per day
     centre = half = None
     fig = plt.figure(figsize=(12.8, 7.2), dpi=100)
@@ -42,7 +45,11 @@ def frames(run: str, hold: int):
         d = np.load(f)
         x, t = d["x"].astype(float), float(d["t"])
         logt = np.log10(snapshot_temperature(eos, d["rho"], d["u"]))
-        lo, hi = np.percentile(x[:, :2], 1, axis=0), np.percentile(x[:, :2], 99, axis=0)
+        # frame the gas within FRAME_R of the hole (unbound outflow can reach tens of thousands
+        # and would shrink the stream and the crash to a dot)
+        inner = x[np.linalg.norm(x, axis=1) < FRAME_R]
+        inner = inner if len(inner) > 100 else x
+        lo, hi = np.percentile(inner[:, :2], 1, axis=0), np.percentile(inner[:, :2], 99, axis=0)
         c_new = 0.5 * (lo + hi)
         h_new = max(0.65 * float(np.max(hi - lo)), 15.0)
         if centre is None:
@@ -52,7 +59,7 @@ def frames(run: str, hold: int):
             half = float(np.exp(0.5 * np.log(half) + 0.5 * np.log(h_new)))
         fig.clf()
         ax = fig.add_axes([0.06, 0.08, 0.72, 0.84])
-        sc = ax.scatter(x[:, 0], x[:, 1], c=logt, s=0.6, cmap="inferno", vmin=4.0, vmax=8.0,
+        sc = ax.scatter(x[:, 0], x[:, 1], c=logt, s=0.6, cmap="inferno", vmin=4.0, vmax=t_top,
                         linewidths=0)  # fmt: skip
         ax.set_facecolor("#d0d4d8")
         if np.all(np.abs(centre) < 1.6 * half):
