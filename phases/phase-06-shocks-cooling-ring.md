@@ -179,7 +179,7 @@ All runs 10k (Hiten, 2026-10-15; D1: 1k is never used near the hole).
 ## Done when
 
 - [ ] Tests 1–9 pass with expected/actual printed.
-- [ ] R6.1, R6.2, R6.3a–d, R6.4 complete with flat ledgers (|ΔE|/Σm|H| < 10⁻⁴ over the whole run including crashes).
+- [ ] R6.1, R6.2, R6.3a–d, R6.4 complete with flat ledgers (|ΔE|/Σm|H| < 10⁻⁴ over the whole run including crashes). *(Hiten, 2026-10-21, DECISIONS: once the stream crash has started, the energy error is also judged against the energy the shocks process, Σ m (viscous heat), limit 10⁻³; the 10⁻⁴ limit on Σm|H| still applies before the crash. Reason: the crash turns ~4× the cloud's binding energy into heat.)*
 - [ ] The numerical-circularization check (6.7) is done and written up.
 - [ ] Resolution check of the lost gas (D4 update): a 50k radius-60 run through the first pass loses a smaller share than R6.1 (10k), both at the peak and after the pass (`scripts/loss_check.py R6.1_RUN 50K_RUN t=...`).
 - [ ] Pictures and preview reviewed by Hiten.

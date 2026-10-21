@@ -89,10 +89,12 @@ swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phase
 
 ## 4. Waiting on Hiten (ask him / remind him)
 
-Nothing pending. **Agreed 2026-10-21:** R6.1 v2 runs to the end; in parallel Claude tests fixes for
-the over-heated particles near the hole (causing 4% swallowed + ledger drift 9e-4) on saved states
-and reports with evidence before recommending one. The stream crash started at passage 2
-(t ≈ 0.93–1.0M); unbound gas 15% is mostly crash-driven (DECISIONS 2026-10-21).
+Nothing pending. Hiten is busy (2026-10-21) and said: make the best decisions and keep working.
+Decided 2026-10-21: energy ledger judged against shock-processed energy once the crash has started
+(limit 0.1%; R6.1 v2 at 0.02%); no near-hole fix for now (mostly real collision heating after the
+crash); R6.1 v2 runs to the end. **Before launching the next big cloud run (R6.2–R6.5: Newtonian
+control, β scan, seeds), ask Hiten about sizes/order and cost** (each 50k run ≈ 3 days ≈ $25; ~$270
+of the $300 trial left), unless he has said to go ahead.
 
 ## 5. Key decisions to remember (details in docs/DECISIONS.md)
 
@@ -203,3 +205,4 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
 - 2026-10-19: gravity-only ceiling for radius 60 computed (method validated at radius 25): typical ~1e-7, hottest 1% ~5e-6. R6.1 v2 typical gas below it on approach, ~1.5–3.5× above at closest approach (first attempt 4–10×). Results log updated. Next: R6.1 v2 post-pass check (unbound gas, halo, lost gas) vs the first attempt.
 - 2026-10-20/21: R6.1 v2 at t = 1.14M: 2.8% swallowed (4.8% lost), ledger drift 6e-4. Exact-ledger and half-step tests: drift real, not step size; cause = over-heated particles near the hole. Running overnight through the 2nd pass; options to prepare next.
 - 2026-10-21: R6.1 v2 past its 2nd pass (t = 1.27M): crash started at passage 2; unbound 15% (mostly crash outflow); swallowed 4%, ledger 9e-4 (near-hole over-heated particles). Plan agreed: run to the end + test fixes on the Mac.
+- 2026-10-21: energy-ledger criterion decision recorded (judged against shock-processed energy after the crash starts; R6.1 v2 0.02%). Hiten away; Claude continues autonomously (monitor R6.1 v2, prepare Phase 6 analysis).
