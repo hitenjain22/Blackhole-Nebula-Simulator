@@ -60,7 +60,8 @@ def _errors(led, led0):
 
 def hot_blob(
     eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False,
-    cooling_beta: float = float("inf"), **hydro_kw,
+    cooling_beta: float = float("inf"), respa: bool = False, respa_eta: float = 0.05,
+    **hydro_kw,
 ):  # fmt: skip
     """Returns a dict: t, energy and angular-momentum error series, max of each, the largest u
     reached, the lowest particle angular momentum and largest h seen (the blob must stay a
@@ -96,7 +97,7 @@ def hot_blob(
     else:
         if wrong:
             raise ValueError("the wrong-coupling comparison is for the shared step only")
-        cfg = BlockConfig(coupled=cc, dt_max=64.0)
+        cfg = BlockConfig(coupled=cc, dt_max=64.0, respa=respa, respa_eta=respa_eta)
         st = blocks.initialise(x, v, u, m, h, cfg, t_stop=T_END_BLOB)
         led0 = blocks.ledger(st, cfg)
         while st.n < st.n_stop:
@@ -126,16 +127,23 @@ def hot_blob(
 
 def cached_hot_blob(
     eta_orb: float, courant: float, wrong: bool = False, block_steps: bool = False,
-    cooling_beta: float = float("inf"), eos: str = "ideal",
+    cooling_beta: float = float("inf"), eos: str = "ideal", respa: bool = False,
+    respa_eta: float = 0.05,
 ):  # fmt: skip
     """``hot_blob`` through the run cache (shared by the slow tests and scripts/plot_ledger.py).
-    cooling_beta / eos: Phase 6 test 8 (beta-cooling, gas + radiation EOS)."""
+    cooling_beta / eos: Phase 6 test 8 (beta-cooling, gas + radiation EOS); respa: gravity
+    sub-stepping (sim/blocks.py)."""
     from nebula.sim.runcache import cached
 
     name = f"hotblob_{eta_orb}_{courant}_{'wrong' if wrong else 'right'}"
     name += "_blocks" if block_steps else ""
     if cooling_beta != float("inf") or eos != "ideal":
         name += f"_beta{cooling_beta:g}_{eos}"
+    if respa:
+        name += f"_respa{respa_eta:g}"
     return cached(
-        name, lambda: hot_blob(eta_orb, courant, wrong, block_steps, cooling_beta, eos=eos)
+        name,
+        lambda: hot_blob(
+            eta_orb, courant, wrong, block_steps, cooling_beta, respa, respa_eta, eos=eos
+        ),  # fmt: skip
     )

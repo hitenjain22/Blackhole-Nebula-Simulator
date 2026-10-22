@@ -75,6 +75,12 @@ class BlockConfig:
     hydro: bool = True  # False: gravity only (plan test 1; no density or forces)
     r_acc: float | None = None  # swallowing radius (sim/accretion.py; Phase 5: 4.0)
     r_escape: float | None = None  # escape radius (phase-06 6.4: 50,000); removed as "escaped"
+    # gravity sub-stepping (RESPA; Price et al. 2018 §2.3.3, Tuckerman et al. 1992; DECISIONS
+    # 2026-10-21): the hole's gravity flow is integrated in sub-steps that each keep the orbit
+    # criterion eta_orb r^(3/2); the gas step is set by the gas criteria and the looser cap
+    # respa_eta r^(3/2). Off by default; not for production runs without Hiten's approval.
+    respa: bool = False
+    respa_eta: float = 0.05
 
 
 @dataclass
@@ -129,6 +135,11 @@ class BlockState:
     heat_disk: np.ndarray = field(default=None)
     heat_pdv: np.ndarray = field(default=None)
     heat_cool: np.ndarray = field(default=None)
+    # gravity sub-stepping (cfg.respa): the flow's state at the last completed sub-step of the
+    # current step, and its tick (n_beg <= n_sub <= n_end)
+    x_sub: np.ndarray = field(default=None)
+    p_sub: np.ndarray = field(default=None)
+    n_sub: np.ndarray = field(default=None)
 
     @property
     def t(self) -> float:
@@ -148,6 +159,8 @@ def upgrade_state(st: BlockState) -> BlockState:
     n = len(st.x)
     if "e_radiated" not in st.__dict__:
         st.e_radiated = 0.0
+    if st.__dict__.get("x_sub") is None:  # no sub-steps taken yet: the flow starts at n_beg
+        st.x_sub, st.p_sub, st.n_sub = st.x_beg.copy(), st.p_half.copy(), st.n_beg.copy()
     for name in ("luminosity", "visc_heating", "cond_heating", "disk_heating", "nu", "heat_visc",
                  "heat_cond", "heat_disk", "heat_pdv", "heat_cool"):  # fmt: skip
         if st.__dict__.get(name) is None:  # (budgets of an older run then start at the resume)
@@ -295,7 +308,8 @@ def wanted_dt(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
         dt = np.minimum(dt, np.where(amag > 0, hc.c_force * np.sqrt(h / amag), np.inf))
     dt = np.minimum(dt, viscous_dt(h, st.nu[rows]))  # inf where there is no physical viscosity
     if cc.hole:
-        dt = np.minimum(dt, cc.eta_orb * np.linalg.norm(st.x[rows], axis=1) ** 1.5)
+        eta = cfg.respa_eta if cfg.respa else cc.eta_orb  # (sub-steps keep eta_orb: _respa_flow)
+        dt = np.minimum(dt, eta * np.linalg.norm(st.x[rows], axis=1) ** 1.5)
     return dt
 
 
@@ -379,6 +393,8 @@ def _wake(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
     st.u_half[j] += 0.5 * d_len * st.dudt[j]
     _add_heat(st, j, 0.5 * d_len)
     st.n_end[j] = end_new
+    # the flow restarts from x_beg with the corrected p_half (sub-steps taken are discarded)
+    st.x_sub[j], st.p_sub[j], st.n_sub[j] = st.x_beg[j], st.p_half[j], st.n_beg[j]
     st.woken += len(j)
 
 
@@ -400,6 +416,7 @@ def _open(st: BlockState, rows) -> None:
     st.p_half[rows] = st.p[rows] + 0.5 * length[:, None] * st.a_hydro[rows]
     st.u_half[rows] = st.u[rows] + 0.5 * length * st.dudt[rows]
     _add_heat(st, rows, 0.5 * length)
+    st.x_sub[rows], st.p_sub[rows], st.n_sub[rows] = st.x[rows], st.p_half[rows], st.n
 
 
 def initialise(
@@ -435,6 +452,7 @@ def initialise(
     st.visc_heating = np.zeros(n)
     st.cond_heating = np.zeros(n)
     st.disk_heating, st.nu = np.zeros(n), np.zeros(n)
+    st.x_sub, st.p_sub, st.n_sub = x.copy(), p.copy(), np.zeros(n, np.int64)
     st.heat_visc, st.heat_cond, st.heat_disk, st.heat_pdv, st.heat_cool = (
         np.zeros(n) for _ in range(5)
     )
@@ -454,7 +472,10 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     s_ticks = n_next - st.n_beg
     s = s_ticks * st.tick
     half_len = 0.5 * (st.n_end - st.n_beg) * st.tick
-    x, p_flow = _flow(cc, st.x_beg, st.p_half, s)
+    if cfg.respa and cc.hole:
+        x, p_flow = _respa_flow(st, cfg, n_next)
+    else:
+        x, p_flow = _flow(cc, st.x_beg, st.p_half, s)
     t1 = time.perf_counter()
     rows = np.flatnonzero(st.n_end == n_next)
     lag = (s - half_len)[:, None]  # 0 at the midpoint of the step, +L/2 at its end
@@ -497,6 +518,49 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     if cc.hole:
         rows = _swallow(st, cfg, rows)
     return rows
+
+
+def _substep_levels(st: BlockState, cfg: BlockConfig, j) -> np.ndarray:
+    """Levels of the next gravity sub-steps of particles j: the orbit criterion eta_orb r^(3/2)
+    at the sub-step's start, never longer than the particle's step, and aligned (n_sub a
+    multiple of the sub-step), so sub-steps tile the step exactly and do not depend on when
+    predictions are taken."""
+    cc = cfg.coupled
+    r = np.linalg.norm(st.x_sub[j], axis=1)
+    # the step's actual length (a wake-up may label a particle finer without cutting its step)
+    k_step = K_MAX - np.log2(st.n_end[j] - st.n_beg[j]).astype(np.int64)
+    k = np.maximum(level_for_dt(cc.eta_orb * r**1.5, cfg.dt_max), k_step)
+    if np.any(k > K_MAX):
+        raise ValueError(f"a gravity sub-step needs a level beyond K_MAX = {K_MAX}")
+    while True:
+        bad = st.n_sub[j] % ticks(k) != 0
+        if not np.any(bad):
+            return k
+        k = np.where(bad, k + 1, k)
+
+
+def _respa_flow(st: BlockState, cfg: BlockConfig, n_next: int):
+    """Gravity flow of every particle to tick n_next with sub-steps (cfg.respa): the stored
+    sub-step state advances through every sub-step that ends by n_next; the remainder (inactive
+    particles mid-sub-step) is a temporary prediction. Returns (x, p_flow) at n_next."""
+    cc = cfg.coupled
+    while True:
+        j = np.flatnonzero(st.n_sub < n_next)
+        if len(j) == 0:
+            break
+        t_sub = ticks(_substep_levels(st, cfg, j))
+        ok = st.n_sub[j] + t_sub <= n_next
+        j, t_sub = j[ok], t_sub[ok]
+        if len(j) == 0:
+            break
+        st.x_sub[j], st.p_sub[j] = _flow(cc, st.x_sub[j], st.p_sub[j], t_sub * st.tick)
+        st.n_sub[j] += t_sub
+    x, p = st.x_sub.copy(), st.p_sub.copy()
+    rest = np.flatnonzero(st.n_sub < n_next)
+    if len(rest):
+        x[rest], p[rest] = _flow(cc, st.x_sub[rest], st.p_sub[rest],
+                                 (n_next - st.n_sub[rest]) * st.tick)  # fmt: skip
+    return x, p
 
 
 def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
