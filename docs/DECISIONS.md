@@ -424,3 +424,13 @@ Runs cond_x1–x4 on the VM, R6.1's settings with h_max = 200, to t = 420,000; b
 ## 2026-10-21 (Hiten): gravity sub-stepping approved; cloud and high resolution preferred
 
 Hiten approved (1) gravity sub-stepping (RESPA) for the ring tests and the main runs, with the cap chosen by accuracy tests (angular-momentum drift), and (2) the ring test at 50k on the cloud VM. Standing preference: heavy runs on the VM rather than the Mac, particle counts as high as practical.
+
+## 2026-10-21: 10k ring comparison, Option A vs B (to 0.01 t_nu; RESPA cap 0.005)
+
+| | L1 vs 1D (target nu) | swallowed (1D: 0.025%) | dJ/J |
+|---|---|---|---|
+| A (Navier-Stokes) | 6.2%, 5.1% | 0.45% | 6.1e-4 (growing ~linearly) |
+| B (disc viscosity via AV) | 8.7%, 7.0% | 1.54% | 1.7e-6 |
+| none | - | 0.02% | 3.5e-7 |
+
+B's excess swallowing is explained by its nu ~ h (5x target in the sparse inner tail; the 1D model with B's measured nu(R) predicts 1.36%). A matches the spreading better and swallows 3x less, but leaks angular momentum (the two-first-derivatives operator; the plan's fallback "symmetrize" applies). Figure outputs/checks/ring10k_A_vs_B.png. Not decided yet: next, see whether A's spin leak can be removed (symmetrized form) and run both at 50k on the VM.
