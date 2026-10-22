@@ -420,3 +420,7 @@ Runs cond_x1–x4 on the VM, R6.1's settings with h_max = 200, to t = 420,000; b
 - **Measured:** hot blob (plan test 4): energy 4.06e-6 ordinary, 4.20e-6 (cap 0.02), 5.70e-6 (cap 0.05), all < 1e-5; particle-steps 10-12x fewer. 10k ring to t = 400: Sigma difference 0.0002 vs a change of 0.0123, 9.6x faster. **But angular momentum** drifts more, because neighbours no longer share steps (pair forces at different instants): 2k ring, 0.003 t_nu: 3.8e-8 ordinary; 2.8e-6, 8.3e-7, 2.6e-7 for caps 0.02, 0.01, 0.005 (order ~1.7; the same without disc viscosity, so it is the ordinary gas forces). Being measured over longer times before choosing.
 - **Not used for production** without Hiten's approval.
 - **Resolution note (ring test):** <h>/H at r0 is 1.31 at 2k particles and ~0.73 at 10k: vertically unresolved by the plan's own flag (> 0.5), where Option B's alpha mapping is invalid; ~0.43 expected at 50k.
+
+## 2026-10-21 (Hiten): gravity sub-stepping approved; cloud and high resolution preferred
+
+Hiten approved (1) gravity sub-stepping (RESPA) for the ring tests and the main runs, with the cap chosen by accuracy tests (angular-momentum drift), and (2) the ring test at 50k on the cloud VM. Standing preference: heavy runs on the VM rather than the Mac, particle counts as high as practical.
