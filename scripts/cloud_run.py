@@ -210,7 +210,9 @@ def main():
         if st.removed.count > n_removed:
             for e in st.removed.log[n_removed:]:
                 tag = "  FIRST PASS (plan alarm)" if e["first_pass"] else ""
-                log(folder, f"swallowed particle {e['id']} at t = {e['t']:.1f}: L {e['L0']:.3f}"
+                # escapes (r > r_escape) are removed too; label them, not as swallowed
+                what = "swallowed" if e["reason"] == "accreted" else f"removed ({e['reason']})"
+                log(folder, f"{what} particle {e['id']} at t = {e['t']:.1f}: L {e['L0']:.3f}"
                             f" -> {e['L']:.3f}, u {e['u']:.2e}{tag}")  # fmt: skip
             n_removed = st.removed.count
         if st.t >= state["next_t"] or st.n >= st.n_stop or event:
