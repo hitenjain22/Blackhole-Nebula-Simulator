@@ -434,3 +434,7 @@ Hiten approved (1) gravity sub-stepping (RESPA) for the ring tests and the main 
 | none | - | 0.02% | 3.5e-7 |
 
 B's excess swallowing is explained by its nu ~ h (5x target in the sparse inner tail; the 1D model with B's measured nu(R) predicts 1.36%). A matches the spreading better and swallows 3x less, but leaks angular momentum (the two-first-derivatives operator; the plan's fallback "symmetrize" applies). Figure outputs/checks/ring10k_A_vs_B.png. Not decided yet: next, see whether A's spin leak can be removed (symmetrized form) and run both at 50k on the VM.
+
+## 2026-10-26 (Hiten): open-source reuse; project may become GPL
+
+Hiten's mentor: using open-source code is fine (no different from using AI). Hiten: reuse open-source fixes and methods as much as possible, and it is OK for the project to become open source under the GPL, so Phantom's GPL code may be ported directly (with credit). To do before the first copied GPL code lands: add a GPL-3.0 LICENSE file and note the origin of each ported routine in its docstring. Every ported formula still follows the project's rules (physics/ original, reference test).
