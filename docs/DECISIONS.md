@@ -438,3 +438,7 @@ B's excess swallowing is explained by its nu ~ h (5x target in the sparse inner 
 ## 2026-10-26 (Hiten): open-source reuse; project may become GPL
 
 Hiten's mentor: using open-source code is fine (no different from using AI). Hiten: reuse open-source fixes and methods as much as possible, and it is OK for the project to become open source under the GPL, so Phantom's GPL code may be ported directly (with credit). To do before the first copied GPL code lands: add a GPL-3.0 LICENSE file and note the origin of each ported routine in its docstring. Every ported formula still follows the project's rules (physics/ original, reference test).
+
+## 2026-10-26: R6.4 Newtonian control launched on a second VM (Hiten: "start on the runs")
+
+Second VM `nebula-sim-2` (c4d-highcpu-8, us-central1-b, same image, uv 0.13.1, Python 3.12.3, NumPy 2.3.5, Numba 0.62.1), possible after the account upgrade (CPU quota 16). 205 non-GPU tests pass there (9 GPU tests cannot run: no GPU, as on the first VM). Reproducibility check: commit 9c52998 re-run of R6.1 v2's settings reproduces R6.1 v2 (commit ffcd410) bit for bit (x, p, u, h, rho) at its snapshots to t = 30,976, so the code added since (disk viscosity, RESPA, isothermal options, all off by default) does not change the default scheme. `R6.4_50k_newton`: R6.1 v2's settings with gravity = newton (phase-06 control, check 6.7), started 22:24 UTC; resume/shutdown helpers armed. Not yet decided: the 100k run (proposed: R6.1 v2's settings at 100k to t ~ 1.3M, through the crash, on the first VM once R6.1 v2 ends; extend if useful).
