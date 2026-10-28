@@ -102,7 +102,9 @@ def frames(run, hold, w=1280, h=720, only_day=None):
         inner = inner if len(inner) > 100 else x
         lo, hi = np.percentile(inner[:, :2], 2, axis=0), np.percentile(inner[:, :2], 98, axis=0)
         c_new, h_new = 0.5 * (lo + hi), max(0.62 * float(np.max(hi - lo)), 40.0)
-        if centre is None or only_day is not None:
+        if centre is None or only_day is not None or np.linalg.norm(c_new - centre) > 0.3 * half:
+            # first frame, a still, or the gas has moved too far for a smooth follow (the
+            # small, fast-falling cloud early on would leave the view): jump to it
             centre, half = c_new, h_new
         else:  # smooth camera
             centre = 0.8 * centre + 0.2 * c_new
