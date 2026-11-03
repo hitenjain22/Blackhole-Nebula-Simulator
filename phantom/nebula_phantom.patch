@@ -1,0 +1,17 @@
+diff --git a/src/main/checksetup.f90 b/src/main/checksetup.f90
+index 5e12b59..83e727c 100644
+--- a/src/main/checksetup.f90
++++ b/src/main/checksetup.f90
+@@ -1142,9 +1142,9 @@ subroutine check_cooling(xcom,vcom,nerror)
+ 
+  if (.not.h2chemistry .and. maxvxyzu >= 4 .and. icooling == 3 .and. iexternalforce/=iext_corotate .and. nptmass==0) then
+     if (dot_product(xcom,xcom) >  1.e-2) then
+-       print*,'ERROR: Gammie (2001) cooling (icooling=3) assumes Omega = 1./r^1.5'
+-       print*,'                but the centre of mass is not at the origin!'
+-       nerror = nerror + 1
++       print*,"WARNING: Gammie (2001) cooling uses Omega = 1/r^1.5 about the origin (the external mass);"
++       print*,"         centre of mass not at the origin (allowed: nebula cloud on an orbit)"
++       ! nebula: warning only (cloud on an orbit; Omega about the external mass at the origin)
+     endif
+  endif
+  !cooling requires adiabatic eos (e.g. ieos=2)
