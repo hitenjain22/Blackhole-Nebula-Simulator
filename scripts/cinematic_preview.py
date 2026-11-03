@@ -2,7 +2,7 @@
 ray-traces the gas through the hole's light bending; this is an artistic look at the particles).
 
     uv run python scripts/cinematic_preview.py RUN [sub=2] [still=DAY]
-    uv run python scripts/cinematic_preview.py RUN look=clean [fps=60] [sub=4]   (for sharing)
+    uv run python scripts/cinematic_preview.py RUN look=clean [fps=60] [sub=4] [still=DAY] (share)
 
 Brightness follows the gas column (mass per pixel, log scaled, with a soft bloom); colour follows
 the mass-weighted temperature (dull red at 10^4 K through orange and white to blue-white at
@@ -307,9 +307,14 @@ def frames(run, sub, w=1280, h=720, only_day=None, clean=False, fps=30):
     fonts = _font(int(h / 24)), _font(int(h / 42))
     if only_day is not None:
         for f in files:
-            t, _, x, logt, _, _ = _load(f, eos)
+            t, _, x, logt, hp, _ = _load(f, eos)
             if t / day >= only_day:
                 centre, half = _target(x)
+                if clean:
+                    img = render(x, logt, np.ones(len(x)), centre, half, w, h, stars, hp=hp,
+                                 floor=0.01)  # fmt: skip
+                    yield _decorate_clean(img, 1.0)
+                    return
                 img = render(x, logt, np.ones(len(x)), centre, half, w, h, stars)
                 yield _decorate(img, t / day, len(x), centre, half, w, h, fonts)
                 return
@@ -352,8 +357,10 @@ def main():
     opts = dict(a.split("=", 1) for a in sys.argv[2:] if "=" in a)
     if "still" in opts:
         day = float(opts["still"])
-        frame = next(frames(run, 1, 1920, 1080, only_day=day))
-        out = ROOT / "outputs" / "checks" / f"{run}_cinematic_day{int(day)}.png"
+        clean = opts.get("look") == "clean"
+        frame = next(frames(run, 1, 1920, 1080, only_day=day, clean=clean))
+        tag = "_clean" if clean else ""
+        out = ROOT / "outputs" / "checks" / f"{run}_cinematic{tag}_day{int(day)}.png"
         Image.fromarray(frame).save(out)
         print(f"saved {out}")
         return
