@@ -12,7 +12,12 @@ Newton-Raphson from the current h, safeguarded by a bisection bracket (lo, hi); 
 when |h_new - h| / h_start < tol (Phantom: 1e-4). h is capped at h_max: a particle with no
 root below it (too few neighbours, e.g. isolated) gets h = h_max and a flag, never a NaN:
 whenever h ends within 0.1% of its limit, f(limit) is evaluated to decide whether a root
-exists below it (the iteration only creeps toward a limit it cannot cross).
+exists below it (the iteration only creeps toward a limit it cannot cross). A capped particle
+has Omega = 1: its h is held fixed instead of following h(rho), and the grad-h term comes from
+dh/drho (Price 2012 §2.3; fixed-h SPH has Omega = 1). The formula would give Omega -> 0 for a
+nearly isolated particle (its own term cancels the 1), multiplying a grazing neighbour's push
+by up to 1e8 and switching it on abruptly at the kernel edge (the R6.1 v2 ledger drift,
+DECISIONS 2026-11-03). SWIFT does the same (SPHENIX hydro.h: grad_h_term = 0 at h_max).
 
 Two implementations that must agree (CLAUDE.md rule 2): ``density_reference`` (plain
 Python/NumPy, readable) and the parallel Numba kernel behind ``compute_density``. Parallel
@@ -200,7 +205,7 @@ def density_reference(
                 flag = FLAG_AT_H_MAX if h_lim >= h_max else FLAG_SEARCH_TOO_SMALL
         rs, dws = _rho_sum_reference(r, m_j, h, kernel)
         h_out[i], rho[i], flags[i] = h, rs, flag
-        omega[i] = 1.0 + h / (3.0 * rs) * dws
+        omega[i] = 1.0 if flag == FLAG_AT_H_MAX else 1.0 + h / (3.0 * rs) * dws
     return DensityResult(h_out, rho, omega, iters, flags, nb)
 
 
@@ -287,7 +292,7 @@ def _density_kernel(
         rs, dws = _sums(r, m, cnt, h, kid, cnorm)
         h_out[q] = h
         rho[q] = rs
-        omega[q] = 1.0 + h / (3.0 * rs) * dws
+        omega[q] = 1.0 if flag == 1 else 1.0 + h / (3.0 * rs) * dws  # capped: fixed h
         iters[q] = it
         flags[q] = flag
 

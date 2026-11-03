@@ -100,3 +100,25 @@ def test_compression_heats():
     )
     expansion = forces_numba(pos, -vel, mass, d.h, d.rho, d.omega, p, d.neighbours)
     check("expansion cools (du/dt < 0, interior)", True, bool(np.all(expansion.dudt[inner] < 0)))
+
+
+def test_capped_pair_force_fades_at_kernel_edge():
+    """Two particles alone with h capped at h_max (R6.1 v2's sparse outflow: h_max 200, mass
+    1/50015, u 5e-3). With h held fixed Omega = 1 (sph.py docstring; DECISIONS 2026-11-03), so
+    the push follows the kernel gradient and fades to zero at the kernel edge (r = 2 h). With the
+    grad-h formula Omega was 1e-8 at r = 395 and the push did not fade (measured: 2.9e-5 at
+    r = 395 and 391, i.e. it switched on abruptly at the edge), the R6.1 v2 ledger drift."""
+    h_max, m = 200.0, np.full(2, 1.0 / 50015)
+    acc = {}
+    for sep in (300.0, 395.0, 399.0):
+        pos = np.array([[0.0, 0.0, 0.0], [sep, 0.0, 0.0]])
+        d, p = hydro_state(pos, m, np.full(2, 5e-3), np.full(2, h_max), h_max=h_max)
+        check(f"capped pair at r = {sep:.0f}: Omega = 1 (fixed h)", [1.0, 1.0], d.omega)
+        ref = forces_reference(pos, np.zeros_like(pos), m, d.h, d.rho, d.omega, p, d.neighbours)
+        fast = forces_numba(pos, np.zeros_like(pos), m, d.h, d.rho, d.omega, p, d.neighbours)
+        check(f"capped pair at r = {sep:.0f}: Numba = reference", ref.acc, fast.acc, rtol=1e-12,
+              per_vector=True)  # fmt: skip
+        acc[sep] = np.linalg.norm(ref.acc[0])
+    check("capped pair: push at r = 395 / at r = 300 < 0.05", True, acc[395.0] < 0.05 * acc[300.0])
+    check("capped pair: push at r = 399 / at r = 395 < 0.1", True, acc[399.0] < 0.1 * acc[395.0])
+    print(f"   |a| at r = 300, 395, 399: {acc[300.0]:.3e} {acc[395.0]:.3e} {acc[399.0]:.3e}")

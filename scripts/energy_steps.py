@@ -39,7 +39,7 @@ CSV_EVERY = 2000
 class StepAudit:
     """Per-step energy parts of a block-step run; call advance() instead of blocks.advance."""
 
-    def __init__(self, st, bcfg):
+    def __init__(self, st, bcfg, per_particle=False):
         self.st, self.bcfg, self.cc = st, bcfg, bcfg.coupled
         n_id = int(st.ids.max()) + 1
         self.n_id = n_id
@@ -48,6 +48,8 @@ class StepAudit:
         self.p_beg, self.u_beg = np.zeros((n_id, 3)), np.zeros(n_id)
         self.p_beg[st.ids], self.u_beg[st.ids] = st.p, st.u  # closed states at step starts
         self.sums = {k: np.zeros(len(BINS) - 1) for k in PARTS}
+        # optional: each particle's own sum of open + flow + close and of the second-order parts
+        self.by_id = {k: np.zeros(n_id) for k in ("total", "second")} if per_particle else None
 
     def total(self) -> float:
         return float(sum(self.sums[k].sum() for k in ("open", "flow", "close")))
@@ -96,6 +98,11 @@ class StepAudit:
         b = np.clip(np.searchsorted(BINS, np.linalg.norm(x_f, axis=1)) - 1, 0, len(BINS) - 2)
         for k in PARTS:
             self.sums[k] += np.bincount(b, weights=m * part[k], minlength=len(BINS) - 1)
+        if self.by_id is not None:
+            tot = part["open"] + part["flow"] + part["close"]
+            np.add.at(self.by_id["total"], ids, m * tot)
+            two = part["open"] + part["close"] - part["open1"] - part["close1"]
+            np.add.at(self.by_id["second"], ids, m * two)
         self.p_beg[ids[here]] = st.p[j[here]]  # the next steps start from the closed state
         self.u_beg[ids[here]] = st.u[j[here]]
 
