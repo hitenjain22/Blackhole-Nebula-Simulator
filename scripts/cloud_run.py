@@ -71,6 +71,8 @@ def make_config(opts):
         "cond": opts.get("cond", "velocity"),
         "alpha_u": float(opts.get("alpha_u", CoupledConfig().hydro.alpha_u)),
         "h_max": float(opts.get("h_max", CoupledConfig().hydro.h_max)),
+        # energy-consistent removal (DECISIONS 2026-11-03); "legacy": the removal of older runs
+        "removal_sync": opts.get("removal", "sync") == "sync",
     }
     return cfg
 
@@ -88,8 +90,10 @@ def block_config(cfg):
                  conductivity_signal=signal, h_max=cfg.get("h_max", float("inf")))  # fmt: skip
     cc = replace(cc, hydro=hc, cooling_beta=cfg.get("beta", float("inf")),
                  gravity=cfg.get("gravity", "gn"))  # fmt: skip
+    # runs started before 2026-11-03 have no removal_sync: they resume with the old removal
     return BlockConfig(coupled=cc, dt_max=cfg["dt_max"], r_acc=cfg["r_acc"],
-                       r_escape=cfg.get("r_escape"))  # fmt: skip
+                       r_escape=cfg.get("r_escape"),
+                       removal_sync=cfg.get("removal_sync", False))  # fmt: skip
 
 
 def snapshot_interval(x: np.ndarray) -> float:

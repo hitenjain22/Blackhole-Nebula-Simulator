@@ -2,10 +2,12 @@
 ledger drift (diagnosis step 3-4, HANDOFF 2026-11-02).
 
     uv run python scripts/restart_experiment.py NAME from=R6.1_50k_v2 day=416 days=8 [max_gap=2]
+        [removal=sync|legacy]
     uv run python scripts/restart_experiment.py NAME --resume
 
 The run's own config (manifest) is used; max_gap (neighbouring time-step levels differ by at
-most this; the run used 2, i.e. a factor 4) is the one setting an experiment may change. The
+most this; the run used 2, i.e. a factor 4) and removal (sync: the energy-consistent removal of
+DECISIONS 2026-11-03; default the source run's own) are the settings an experiment may change. The
 snapshot is float32 and does not hold the integrator's mid-step state, so the restart starts
 every particle fresh at that time: it follows the original statistically, not bit for bit.
 
@@ -49,6 +51,8 @@ def start(name, opts):
     day = float(opts["day"])
     cfg = dict(src_cfg, restart_from=src, restart_day=day, days=float(opts.get("days", 8)),
                max_gap=int(opts.get("max_gap", 2)))  # fmt: skip
+    if "removal" in opts:
+        cfg["removal_sync"] = opts["removal"] == "sync"
     files = sorted((RUNS / src / "snapshots").glob("snap_*.npz"))
     day_t = cloud_run_day()
     times = np.array([float(np.load(f)["t"]) for f in files])

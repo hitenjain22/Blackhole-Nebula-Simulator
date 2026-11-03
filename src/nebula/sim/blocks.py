@@ -36,6 +36,20 @@ already ends by n + T' keeps its step but takes the finer level label.
 
 With every particle on one level and no limiter this reproduces coupled.step result for
 result (tests/sim/test_blocks.py).
+
+Removal (swallowed inside r_acc, escaped beyond r_escape; DECISIONS 2026-11-03). A particle is
+removed at the end of one of its own steps, after the closing kicks, with its closed state
+(H + u) booked in the removed ledger. Each pair exchange is balanced only when both particles
+of the pair receive the same kicks, so ``removal_sync``:
+  - the active particles that interacted with a removed one get their forces recomputed
+    without it (same predicted velocities and u as the first evaluation) before their opening
+    kicks: neither side of the pair receives a kick for the time after the removal;
+  - an active particle whose gravity flow over its new step ends inside r_acc or beyond
+    r_escape wakes its neighbours to end their steps with it (the wake-up above with no level
+    gap), so that at its removal all its neighbours are at a sync point.
+Without it (runs before 2026-11-03) the survivors kept a half-kick from the removed particle
+that nothing paid for, an O(dt) energy and angular momentum error per removal (that run's
+ledger drift; restart experiments in HANDOFF 2026-11-03).
 """
 
 import math
@@ -81,6 +95,9 @@ class BlockConfig:
     # respa_eta r^(3/2). Off by default; not for production runs without Hiten's approval.
     respa: bool = False
     respa_eta: float = 0.05
+    # energy-consistent removal (DECISIONS 2026-11-03; module docstring "Removal"). False: the
+    # removal of runs before 2026-11-03 (resumes of those runs must keep it).
+    removal_sync: bool = True
 
 
 @dataclass
@@ -140,6 +157,8 @@ class BlockState:
     x_sub: np.ndarray = field(default=None)
     p_sub: np.ndarray = field(default=None)
     n_sub: np.ndarray = field(default=None)
+    # removal_sync: the particle's current step is predicted to end in its removal
+    doomed: np.ndarray = field(default=None)
 
     @property
     def t(self) -> float:
@@ -159,6 +178,8 @@ def upgrade_state(st: BlockState) -> BlockState:
     n = len(st.x)
     if "e_radiated" not in st.__dict__:
         st.e_radiated = 0.0
+    if st.__dict__.get("doomed") is None:
+        st.doomed = np.zeros(n, bool)
     if st.__dict__.get("x_sub") is None:  # no sub-steps taken yet: the flow starts at n_beg
         st.x_sub, st.p_sub, st.n_sub = st.x_beg.copy(), st.p_half.copy(), st.n_beg.copy()
     for name in ("luminosity", "visc_heating", "cond_heating", "disk_heating", "nu", "heat_visc",
@@ -377,6 +398,12 @@ def _wake(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
     than 2^max_gap times the step of an active neighbour (see module docstring)."""
     need = np.full(len(st.level), -1, np.int64)
     _wake_targets(st.level, rows, nb.offset, nb.index, cfg.max_gap, need)
+    _cut_steps(st, need)
+
+
+def _cut_steps(st: BlockState, need) -> None:
+    """Wake-up of the particles whose step is still running (inactive, or opened at this tick)
+    and longer than level need[j] allows (need -1: none)."""
     inactive = st.n_end > st.n
     j = np.flatnonzero(inactive & (need > st.level))
     if len(j) == 0:
@@ -387,7 +414,13 @@ def _wake(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
     # itself is cut only if it would end after n + T' (Durier Eq. C2).
     st.level[j] = need[j]
     cut = end_new < st.n_end[j]
-    j, end_new = j[cut], end_new[cut]
+    _cut_to(st, j[cut], end_new[cut], need[j[cut]])
+
+
+def _cut_to(st: BlockState, j, end_new, level) -> None:
+    """Cut the running steps of particles j to end at ticks end_new (< their n_end), with
+    level labels ``level``: opening kick corrected to the new length (Durier Eq. C5)."""
+    st.level[j] = level
     d_len = (end_new - st.n_end[j]) * st.tick  # negative: the step is shortened
     st.p_half[j] += 0.5 * d_len[:, None] * st.a_hydro[j]
     st.u_half[j] += 0.5 * d_len * st.dudt[j]
@@ -441,7 +474,7 @@ def initialise(
         vsig_max=np.zeros(n),
         level_offset=np.zeros(n, np.int64) if level_offset is None
         else np.asarray(level_offset, np.int64),
-        n_stop=int(round((t_stop - t0) / tick)),
+        n_stop=int(round((t_stop - t0) / tick)), doomed=np.zeros(n, bool),
     )  # fmt: skip
     st.ids = np.arange(n)
     st.r0 = np.linalg.norm(x, axis=1)
@@ -461,6 +494,8 @@ def initialise(
     st.level[:] = 0
     _choose_levels(st, cfg, rows, nb)
     _open(st, rows)
+    if cc.hole and cfg.removal_sync:
+        _wake_for_removal(st, cfg, rows, nb)
     return st
 
 
@@ -501,23 +536,89 @@ def advance(st: BlockState, cfg: BlockConfig) -> np.ndarray:
     st.n = n_next
     st.x = x
     st.u = u_pred
-    nb = _hydro_rows(st, cfg, rows, _velocity(cc, x, p_pred), u_pred, 2.0 * half_len[rows], a_prev)
+    v_eval = _velocity(cc, x, p_pred)
+    nb = _hydro_rows(st, cfg, rows, v_eval, u_pred, 2.0 * half_len[rows], a_prev)
     t2 = time.perf_counter()
+    sync_removal = cc.hole and cfg.removal_sync
+    u_eval = u_pred.copy() if sync_removal else None  # (st.u is u_pred: closed in place below)
     p_pred[rows] = p_flow[rows] + half_len[rows, None] * st.a_hydro[rows]
     st.u[rows] = st.u_half[rows] + half_len[rows] * st.dudt[rows]
     _add_heat(st, rows, half_len[rows])
     st.p = p_pred
+    n_active = len(rows)
+    if sync_removal:
+        rows, nb = _remove(st, cfg, rows, nb, v_eval, u_eval)
     _choose_levels(st, cfg, rows, nb)
     _open(st, rows)
+    if sync_removal:
+        _wake_for_removal(st, cfg, rows, nb)
     st.last_pairs = nb
     st.timers["flow"] += t1 - t0
     st.timers["hydro"] += t2 - t1
     st.timers["levels"] += time.perf_counter() - t2
-    st.active_counts.append(len(rows))
-    st.particle_steps += len(rows)
-    if cc.hole:
+    st.active_counts.append(n_active)
+    st.particle_steps += n_active
+    if cc.hole and not cfg.removal_sync:
         rows = _swallow(st, cfg, rows)
     return rows
+
+
+def _remove(st: BlockState, cfg: BlockConfig, rows, nb, v_eval, u_eval):
+    """Removal with ``removal_sync`` (module docstring): after the closing kicks, remove the
+    active particles inside r_acc or beyond r_escape (closed state booked), then recompute the
+    forces of the remaining active particles that interacted with them, without them, at the
+    same predicted velocities and u as the first evaluation (switch not advanced again).
+    Returns the remaining active rows and their pair lists, renumbered."""
+    n_old = len(st.x)
+    new_rows, keep = _swallow_keep(st, cfg, rows)
+    if keep is None:
+        return new_rows, nb
+    owner = np.repeat(np.arange(n_old), np.diff(nb.offset))
+    hit = np.zeros(n_old, bool)
+    hit[owner[~keep[nb.index]]] = True
+    new_index = np.cumsum(keep) - 1
+    mask = keep[owner] & keep[nb.index]
+    counts = np.bincount(new_index[owner[mask]], minlength=len(st.x))
+    offset = np.zeros(len(st.x) + 1, np.int64)
+    np.cumsum(counts, out=offset[1:])
+    nb = Neighbours(offset, new_index[nb.index[mask]], nb.box)
+    redo = new_rows  # all of them: densities changed near the removed ones (pairs among them)
+    if len(redo) and cfg.hydro:
+        _hydro_rows(st, cfg, redo, v_eval[keep], u_eval[keep], np.zeros(len(redo)), None)
+    return new_rows, nb
+
+
+def _wake_for_removal(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
+    """Flag the active particles whose gravity flow over the step just opened ends inside r_acc
+    or beyond r_escape (st.doomed), and cut the steps of their neighbours to end with theirs
+    (Durier wake-up with no level gap). Active particles that neighbour a flagged particle still
+    in its step are cut the same way, so all its neighbours are at a sync point when it is
+    removed (module docstring, Removal)."""
+    if len(rows) == 0 or not cfg.hydro or (cfg.r_acc is None and cfg.r_escape is None):
+        return
+    cc = cfg.coupled
+    length = (st.n_end[rows] - st.n_beg[rows]) * st.tick
+    x_end, _ = _flow(cc, st.x_beg[rows], st.p_half[rows], length)
+    r = np.linalg.norm(x_end, axis=1)
+    doomed = np.zeros(len(rows), bool)
+    if cfg.r_acc is not None:
+        doomed |= r < cfg.r_acc
+    if cfg.r_escape is not None:
+        doomed |= r > cfg.r_escape
+    st.doomed[rows] = doomed
+    # pairs of the active rows (symmetric lists): a flagged particle's neighbours, and active
+    # particles next to a flagged one still in its step, must end by its (actual) step end
+    owner = np.repeat(np.arange(len(st.x)), np.diff(nb.offset))
+    other = nb.index
+    end = np.full(len(st.x), np.iinfo(np.int64).max)
+    label = st.level.copy()
+    for a, b in ((owner, other), (other, owner)):
+        m = st.doomed[a] & (a != b)
+        np.minimum.at(end, b[m], st.n_end[a[m]])
+        np.maximum.at(label, b[m], st.level[a[m]])
+    j = np.flatnonzero((end < st.n_end) & (st.n_end > st.n))
+    if len(j):
+        _cut_to(st, j, end[j], label[j])
 
 
 def _substep_levels(st: BlockState, cfg: BlockConfig, j) -> np.ndarray:
@@ -567,6 +668,11 @@ def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
     """Update the active particles' pericentre flags; remove those inside r_acc (their state is
     true at their own step end) into the removed-particle ledger. Returns the active rows that
     remain, renumbered."""
+    return _swallow_keep(st, cfg, rows)[0]
+
+
+def _swallow_keep(st: BlockState, cfg: BlockConfig, rows):
+    """_swallow, also returning the mask of the particles kept (None if none was removed)."""
     cc = cfg.coupled
     x, p = st.x[rows], st.p[rows]
     r = np.linalg.norm(x, axis=1)
@@ -577,7 +683,7 @@ def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
     acc = r < cfg.r_acc if cfg.r_acc is not None else np.zeros(len(rows), bool)
     esc = r > cfg.r_escape if cfg.r_escape is not None else np.zeros(len(rows), bool)
     if not (np.any(acc) or np.any(esc)):
-        return rows
+        return rows, None
     for mask, reason in ((acc, "accreted"), (esc, "escaped")):
         g = rows[mask]
         if len(g) == 0:
@@ -594,7 +700,7 @@ def _swallow(st: BlockState, cfg: BlockConfig, rows) -> np.ndarray:
     keep[gone] = False
     _prune(st, keep)
     new_index = np.cumsum(keep) - 1
-    return new_index[rows[keep[rows]]]
+    return new_index[rows[keep[rows]]], keep
 
 
 def _prune(st: BlockState, keep: np.ndarray) -> None:

@@ -62,6 +62,7 @@ def make_config(opts):
         "gravity": opts.get("gravity", "newton"),
         "respa": opts.get("respa", "on") == "on",
         "respa_eta": float(opts.get("respa_eta", 0.02)),
+        "removal_sync": opts.get("removal", "sync") == "sync",  # DECISIONS 2026-11-03
         "r_acc": float(opts.get("r_acc", 4.0)),
         "seed": int(opts.get("seed", 0)),
         "dt_max": 4096.0,
@@ -78,7 +79,8 @@ def block_config(cfg, c_s0):
     elif cfg["visc"] != "none":
         raise ValueError(f"visc must be none, A or B, not {cfg['visc']!r}")
     return BlockConfig(coupled=replace(cc, hydro=hc), dt_max=cfg["dt_max"], r_acc=cfg["r_acc"],
-                       respa=cfg["respa"], respa_eta=cfg["respa_eta"])  # fmt: skip
+                       respa=cfg["respa"], respa_eta=cfg["respa_eta"],
+                       removal_sync=cfg.get("removal_sync", False))  # fmt: skip
 
 
 def h_over_H_at_r0(st):
