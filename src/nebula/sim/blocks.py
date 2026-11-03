@@ -606,10 +606,16 @@ def _wake_for_removal(st: BlockState, cfg: BlockConfig, rows, nb) -> None:
     if cfg.r_escape is not None:
         doomed |= r > cfg.r_escape
     st.doomed[rows] = doomed
-    # pairs of the active rows (symmetric lists): a flagged particle's neighbours, and active
-    # particles next to a flagged one still in its step, must end by its (actual) step end
-    owner = np.repeat(np.arange(len(st.x)), np.diff(nb.offset))
-    other = nb.index
+    # a flagged particle's neighbours, and active particles next to a flagged one still in its
+    # step, must end by its (actual) step end. The cached lists (search margin, symmetric) also
+    # hold particles that come within reach during the step; the pairs now interacting if the
+    # cache was dropped by a removal.
+    lists = nb if st.neighbour_cache is None else st.neighbour_cache.neighbours
+    src = np.zeros(len(st.x), bool)
+    src[rows] = True
+    owner = np.repeat(np.arange(len(st.x)), np.diff(lists.offset))
+    keep = src[owner]
+    owner, other = owner[keep], lists.index[keep]
     end = np.full(len(st.x), np.iinfo(np.int64).max)
     label = st.level.copy()
     for a, b in ((owner, other), (other, owner)):
