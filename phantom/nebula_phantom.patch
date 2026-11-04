@@ -1,5 +1,5 @@
 diff --git a/src/main/checksetup.f90 b/src/main/checksetup.f90
-index 5e12b59..83e727c 100644
+index 5e12b59c7..83e727c6c 100644
 --- a/src/main/checksetup.f90
 +++ b/src/main/checksetup.f90
 @@ -1142,9 +1142,9 @@ subroutine check_cooling(xcom,vcom,nerror)
@@ -15,3 +15,40 @@ index 5e12b59..83e727c 100644
      endif
   endif
   !cooling requires adiabatic eos (e.g. ieos=2)
+diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
+index ed9092e05..3a40d311d 100644
+--- a/src/main/externalforces.f90
++++ b/src/main/externalforces.f90
+@@ -43,6 +43,7 @@ module externalforces
+  real, public :: Rdisc = 5.
+ 
+  real, public :: accradius1_hard = 0.
++ real, public :: orbfac = 0.  ! nebula: dt <= C_force*orbfac*r^1.5 for iext_gnewton (0 = off)
+  logical, public :: extract_iextern_from_hdr = .false.
+ 
+  public :: mass1,a
+@@ -424,6 +425,8 @@ subroutine externalforce(iexternalforce,xi,yi,zi,hi,ti,fextxi,fextyi,fextzi,phi,
+           dtf2 = huge(dtf2)
+        endif
+        dtf  = min(dtf1,dtf2)
++       ! nebula: orbit criterion (our eta_orb r^1.5 = C_force*orbfac*r^1.5)
++       if (iexternalforce == iext_gnewton .and. orbfac > 0.) dtf = min(dtf,orbfac*(xi*xi + yi*yi + zi*zi)**0.75)
+        !if (dtf2 < dtf1) print*,' phi timestep = ',dtf2,' h/a = ',dtf1, ' ratio = ',dtf2/dtf1
+     else
+        dtf = huge(dtf)
+@@ -630,6 +633,7 @@ subroutine write_options_externalforces(iunit,iexternalforce)
+     if (accradius1_hard < tiny(0.)) accradius1_hard = accradius1
+     call write_inopt(accradius1,'accradius1','soft accretion radius of central object',iunit)
+     call write_inopt(accradius1_hard,'accradius1_hard','hard accretion radius of central object',iunit)
++    if (iexternalforce == iext_gnewton) call write_inopt(orbfac,'orbfac','nebula: dt <= C_force*orbfac*r^1.5 (0=off)',iunit)
+  end select
+ 
+  select case(iexternalforce)
+@@ -741,6 +745,7 @@ subroutine read_options_externalforces(db,nerr,iexternalforce)
+     call read_inopt(accradius1,'accradius1',db,errcount=nerr,min=0.,default=accradius1)
+     call read_inopt(accradius1_hard,'accradius1_hard',db,errcount=nerr,&
+                     min=0.,max=accradius1,default=accradius1_hard)
++    if (iexternalforce == iext_gnewton) call read_inopt(orbfac,'orbfac',db,errcount=nerr,min=0.,default=orbfac)
+  end select
+ 
+  select case(iexternalforce)
