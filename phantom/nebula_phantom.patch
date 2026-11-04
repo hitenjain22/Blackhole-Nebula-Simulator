@@ -52,3 +52,128 @@ index ed9092e05..3a40d311d 100644
   end select
  
   select case(iexternalforce)
+diff --git a/src/main/force.F90 b/src/main/force.F90
+index 92580da5d..97ea14ba5 100644
+--- a/src/main/force.F90
++++ b/src/main/force.F90
+@@ -948,6 +948,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+                        ihsoft
+  use dim,         only:maxalpha,maxp,mhd_nonideal,gravity,gr,use_apr,isothermal,&
+                       use_sinktree,disc_viscosity,track_lum,igradomega,igradsoft,igradzeta
++ use part,        only:hfact
++ use shock_capturing, only:nebula_recon
+  use part,        only:rho,dvdx,aprmassoftype,shortsinktree
+  use nicil,       only:nimhd_get_jcbcb,nimhd_get_dBdt
+  use eos,         only:ieos,eos_is_non_ideal,use_var_comp,icooling
+@@ -1048,6 +1050,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+  real    :: auterm,avBterm,vsigB
+  real    :: jcbcbj(3),jcbj(3),dBnonideal(3),dBnonidealj(3),divBi,curlBi(3),curlBj(3)
+  real    :: vsigavi,vsigavj
++ real    :: projvav,nb_gax,nb_gay,nb_gaz,nb_gbx,nb_gby,nb_gbz,nb_pa,nb_pb,nb_phi,nb_eta,nb_vdr
+  real    :: dustfraci(maxdusttypes),dustfracj(maxdusttypes),tsi(maxdusttypes)
+  real    :: sqrtrhodustfraci(maxdusttypes),sqrtrhodustfracj(maxdusttypes)
+  real    :: dustfracisum,dustfracjsum,rhogasj,epstsi!,rhogas1j
+@@ -1436,6 +1439,36 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+        ! do the projection here
+        projv = dvx*runix + dvy*runiy + dvz*runiz
+ 
++       !--nebula: velocity jump for the shock viscosity. With nebula_recon = 1 it mirrors our
++       !  sim/sph.py (physics/viscosity.py limiter_ratio, van_leer_limiter, closeness_factor,
++       !  reconstructed_jump, viscous_jump; Frontiere et al. 2017 Eqs. 48-53): both velocities
++       !  extrapolated to the pair midpoint with the (exact-linear) gradients, then the
++       !  min-mod gate: projvav = max(v*.r, v.r) if both < 0, else 0
++       projvav = projv
++       if (nebula_recon > 0 .and. .not.gr .and. iamgasi .and. iamgasj) then
++          nb_gax = dvdxi(1)*dx + dvdxi(2)*dy + dvdxi(3)*dz
++          nb_gay = dvdxi(4)*dx + dvdxi(5)*dy + dvdxi(6)*dz
++          nb_gaz = dvdxi(7)*dx + dvdxi(8)*dy + dvdxi(9)*dz
++          nb_gbx = dvdx(1,j)*dx + dvdx(2,j)*dy + dvdx(3,j)*dz
++          nb_gby = dvdx(4,j)*dx + dvdx(5,j)*dy + dvdx(6,j)*dz
++          nb_gbz = dvdx(7,j)*dx + dvdx(8,j)*dy + dvdx(9,j)*dz
++          nb_pa = dx*nb_gax + dy*nb_gay + dz*nb_gaz
++          nb_pb = dx*nb_gbx + dy*nb_gby + dz*nb_gbz
++          nb_phi = 0.
++          if (nb_pb /= 0.) then
++             if (nb_pa/nb_pb > 0.) nb_phi = min(1.,4.*(nb_pa/nb_pb)/((1. + nb_pa/nb_pb)**2))
++          endif
++          nb_eta = min(rij2*rij1*hi1,rij2*rij1*hj1)
++          if (nb_eta < 1./hfact) nb_phi = nb_phi*exp(-((nb_eta - 1./hfact)/0.2)**2)
++          nb_vdr = projv - 0.5*nb_phi*((nb_gax + nb_gbx)*runix + (nb_gay + nb_gby)*runiy &
++                                     + (nb_gaz + nb_gbz)*runiz)
++          if (nb_vdr < 0. .and. projv < 0.) then
++             projvav = max(nb_vdr,projv)
++          else
++             projvav = 0.
++          endif
++       endif
++
+        if (iamgasj .and. .not.isothermal) then
+           enj = vxyzu(4,j)
+           if (eos_is_non_ideal(ieos) .or. use_var_comp) then  ! only do this if eos requires temperature in physical units
+@@ -1480,7 +1513,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+              vsigavi   = alphai*vsigi
+           else
+              vsigi     = max(vwavei - beta*projv,0.)
+-             vsigavi   = max(alphai*vwavei - beta*projv,0.)
++             vsigavi   = max(alphai*vwavei - beta*projvav,0.)
+           endif
+           if (vsigi > vsigmax) vsigmax = vsigi
+ 
+@@ -1555,7 +1588,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+                 vsigavj = alphaj*vsigj
+              else
+                 vsigj = max(vwavej - beta*projv,0.)
+-                vsigavj = max(alphaj*vwavej - beta*projv,0.)
++                vsigavj = max(alphaj*vwavej - beta*projvav,0.)
+              endif
+              if (vsigj > vsigmax) vsigmax = vsigj
+           else
+@@ -1640,13 +1673,13 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+                 dudtdissi = -0.5*pmassj*rho1i*alphai*spsoundi*hi*rij1*projv**2*grkerni
+              endif
+           else
+-             if (projv < 0.) then
++             if (projvav < 0.) then
+                 if (gr) then
+                    qrho2i = -0.5*rho1i*vsigavi*enthi*du_losi
+                    if (usej) qrho2j = -0.5*rho1j*vsigavj*enthj*du_losj
+                 else
+-                   qrho2i = -0.5*rho1i*vsigavi*projv
+-                   if (usej) qrho2j = -0.5*rho1j*vsigavj*projv
++                   qrho2i = -0.5*rho1i*vsigavi*projvav
++                   if (usej) qrho2j = -0.5*rho1j*vsigavj*projvav
+                 endif
+              endif
+              !--energy conservation from artificial viscosity
+diff --git a/src/main/shock_capturing.f90 b/src/main/shock_capturing.f90
+index 43f171dde..1561da59d 100644
+--- a/src/main/shock_capturing.f90
++++ b/src/main/shock_capturing.f90
+@@ -34,6 +34,9 @@ module shock_capturing
+  real, public :: alphamax
+  real, public :: alphaB
+  integer, public :: ireconav
++ ! nebula: 1 = reconstructed velocity jump in the (non-GR) shock viscosity, as our
++ ! sim/sph.py: Frontiere et al. 2017 van Leer limiter + closeness, min-mod gate
++ integer, public :: nebula_recon = 0
+ 
+  public :: write_options_shock_capturing, read_options_shock_capturing
+ 
+@@ -90,6 +93,9 @@ subroutine write_options_shock_capturing(iunit,use_conductivity)
+  if (gr) call write_inopt(ireconav,'ireconav',&
+               'use reconstruction in shock viscosity (-1=off,0=no limiter,1=Van Leer,2=MC)',iunit)
+ 
++ if (.not.gr) call write_inopt(nebula_recon,'nebula_recon',&
++              'nebula: reconstructed jump in shock viscosity (0=off,1=on)',iunit)
++
+  if (disc_viscosity) call write_inopt(disc_viscosity,'disc_viscosity',&
+                           'use cs, multiply by h/|rij| and apply to approaching/receding',iunit)
+ 
+@@ -114,6 +120,7 @@ subroutine read_options_shock_capturing(db,nerr)
+  if (mhd) call read_inopt(alphaB,'alphaB',db,errcount=nerr,min=0.,max=10.)
+  if (gr) call read_inopt(ireconav,'ireconav',db,errcount=nerr,default=ireconav)
+  call read_inopt(disc_viscosity,'disc_viscosity',db,errcount=nerr,default=disc_viscosity)
++ if (.not.gr) call read_inopt(nebula_recon,'nebula_recon',db,errcount=nerr,default=0,min=0,max=1)
+ 
+  if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
+  if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')

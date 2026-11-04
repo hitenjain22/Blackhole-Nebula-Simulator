@@ -460,3 +460,16 @@ Decided overnight under Hiten's standing instruction (decide with the recommende
 - **Fix:** Omega = 1 when the density solve flags the particle at h_max (reference and Numba kernel). SWIFT does the same (SPHENIX hydro.h: `grad_h_term = 0` when h > 0.9999 h_max; method reused, no code copied).
 - **Measured:** far-gas test bed, one day: +1.16e-4 -> +1.5e-7 (orbit factor 1), +1.04e-5 -> +2.5e-8 (1/4). Test `test_capped_pair_force_fades_at_kernel_edge` (fails on the old code). 220 fast tests pass.
 - **Consequences:** R6.1 v2, R6.1_100k and R6.4_50k_newton all ran with spuriously strong pushes between sparse, capped particles (capped fraction 4% at day 200, 63% at day 400, 95% late in v2), so their outflow and halo gas dynamics are affected, and their ledger drift is this bug. Whether to re-run them is Hiten's decision. Old runs are reproduced by checking out the commit in their manifest (no option kept for the old formula).
+
+## 2026-11-04: Phantom as the production engine (trial), with two nebula patches
+
+**Why:** Hiten wants Phase 6 finished in days, not weeks, and approved reusing open-source code (GPL OK). Phantom (github danieljprice/phantom @0855f82, GPL-3.0) has the same generalised-Newtonian force (iexternalforce = 12), gas + radiation EOS, beta-cooling, temperature floor and accretion radius as our code, and runs ~10x more particle-steps per second.
+
+**Changes to Phantom (phantom/nebula_phantom.patch; kept as a patch file, not copied into src/):**
+1. `orbfac`: time step <= C_force*orbfac*r^1.5 for the GN force. Without it Phantom's force step (~0.25 r^1.5) let a particle jump to r ~ 2 and the GN velocity iteration failed (crash at t = 405,000). orbfac 0.005 (= our eta_orb) and 0.04 gave the same result through the pass (to 1%); 0.04 is used.
+2. `nebula_recon = 1`: the shock viscosity uses our reconstructed, min-mod-gated velocity jump (sim/sph.py; Frontiere et al. 2017), computed from Phantom's own exact-linear velocity gradients. Without it Phantom's switch sits at alpha = 1 across the whole cloud before the pass (tidal compression), the gas is ~12x hotter after the pass and 652 particles are swallowed by day 108 (ours 5). With it: 13, and positions, temperatures and closest approach agree with our R6.1 v2 to a few per cent (outputs/checks/phantom_vs_ours_recon.png).
+3. The Gammie-cooling centre-of-mass check is a warning, not an error (our cooling is about the hole at the origin).
+
+**Speed measured:** day 0 to 108 (including the close pass) in 20 min on 8 threads (c4d-highcpu-8), vs about a day for our code.
+
+**Still to do before Phase 6 production:** the full 50k run to day 931 against R6.1 v2 (running: ~/ph_r1 on nebula-sim-2); a test comparing Phantom's per-particle viscosity heating with our Python reference on sample particles (rule 2).
