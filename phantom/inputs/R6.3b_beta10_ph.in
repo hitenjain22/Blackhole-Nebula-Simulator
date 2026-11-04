@@ -48,7 +48,7 @@
                mass1 =       1.000    ! mass of central object in code units
           accradius1 =       4.000    ! soft accretion radius of central object
      accradius1_hard =       4.000    ! hard accretion radius of central object
-              orbfac =       0.040    ! nebula: dt <= C_force*orbfac*r^1.5 (0=off)
+              orbfac =       0.005    ! nebula: dt <= C_force*orbfac*r^1.5 = our eta_orb 0.00125 r^1.5 (accuracy test 2026-11-04)
             eps_soft =       0.000    ! softening length (Plummer) for central potential in code units
 
 # options controlling physical viscosity
