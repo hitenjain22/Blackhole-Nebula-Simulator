@@ -473,3 +473,21 @@ Decided overnight under Hiten's standing instruction (decide with the recommende
 **Speed measured:** day 0 to 108 (including the close pass) in 20 min on 8 threads (c4d-highcpu-8), vs about a day for our code.
 
 **Still to do before Phase 6 production:** the full 50k run to day 931 against R6.1 v2 (running: ~/ph_r1 on nebula-sim-2); a test comparing Phantom's per-particle viscosity heating with our Python reference on sample particles (rule 2).
+
+### 2026-11-04 (later): the full set of nebula options, and the rule-2 test
+
+Production Phantom runs use all of these (input file phantom/cloud.in.txt plus the lines below; the patch is phantom/nebula_phantom.patch):
+
+| Option | What it makes Phantom do (same as our code) | Why it was needed |
+|---|---|---|
+| `orbfac = 0.04` | time step <= C_force*orbfac*r^1.5 near the hole | crash at the first pass without it |
+| `nebula_recon = 1` | reconstructed, min-mod-gated viscosity jump | 100x too much swallowing without it |
+| `nebula_hmax = 200` | h cap, summed density, Omega = 1 (and rho written to dumps) | lone particles' kernels held ~49,000 neighbours; run slowed ~7x |
+| `nebula_cond = 1` | conductivity signal |v.r|, jump u_a - u_b | Phantom used sqrt(dP/rho) and temperature jumps |
+| `nebula_grad = T` | near-singular gradient fallback (D11); div v, curl v for the switch from the corrected gradient | sparse particles got unreliable gradients |
+| `nebula_gamma1 = T` | sound speed from Gamma_1 (gas + radiation) | Phantom used 1 + P/(rho u) |
+| `nebula_dumpderivs` | (testing only) writes a, du/dt, dv/dx to dumps | the rule-2 test |
+
+**Rule-2 test:** tests/sim/test_phantom_patch.py on tests/data/phantom_force_sample.npz (Phantom's day-300 state, 2,203 particles near the hole compared, 93 of them capped, with Phantom's pressure): acceleration median 2e-6, 99th percentile 8e-5; du/dt 8e-7 and 1.2e-4 (tolerances 1e-5 and 1e-3), recon on and off. With each code's own pressure the difference is ~2e-4 (median) from the physical constants (Phantom physcon.f90 vs our CODATA 2018 values), not the formulas.
+
+**Whole-run comparison** (ph_r2 vs our R6.1 v2, outputs/checks/phantom_vs_ours_full_run.png; ph_r2 predates nebula_cond, nebula_grad and nebula_gamma1): agreement to ~day 250; afterwards Phantom keeps a coherent stream longer, a denser warm halo, and ~20% fewer particles swallowed by day 931. Not yet separated: our R6.1 v2 had the h-cap Omega bug (affects exactly the far gas), different time-step schemes, and run-to-run scatter (R6.5 will measure the scatter).

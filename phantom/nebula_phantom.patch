@@ -16,10 +16,57 @@ index 5e12b59c7..83e727c6c 100644
   endif
   !cooling requires adiabatic eos (e.g. ieos=2)
 diff --git a/src/main/dens.F90 b/src/main/dens.F90
-index 6435880db..18d6bf50b 100644
+index 6435880db..a054f9000 100644
 --- a/src/main/dens.F90
 +++ b/src/main/dens.F90
-@@ -1566,7 +1566,7 @@ subroutine finish_cell(cell,cell_converged,nconverged)
+@@ -976,6 +976,46 @@ end subroutine get_density_sums
+ !  the density loop
+ !+
+ !----------------------------------------------------------------
++pure subroutine nebula_fallback(rhosum,nneighi,denom,rmatrix)
++!  nebula: our sim/sph.py _near_singular (DECISIONS D11): with fewer than 4 neighbours, a
++!  non-positive tr R or |det R| < 1e-6 (tr R/3)^3, use G/(tr R/3) (0 if tr R <= 0). Done by
++!  replacing R^-1 = cofactor/det with (scale^2 I)/scale^3 so exactlinear returns dA/scale.
++ real,    intent(in)    :: rhosum(:)
++ integer, intent(in)    :: nneighi
++ real,    intent(inout) :: denom,rmatrix(6)
++ real :: scale
++ scale = (rhosum(irxxi) + rhosum(iryyi) + rhosum(irzzi))/3.
++ if (nneighi < 4 .or. .not.(scale > 0.) .or. .not.(abs(denom) >= 1.e-6*scale**3)) then
++    if (scale > 0.) then
++       rmatrix = (/scale**2,0.,0.,scale**2,0.,scale**2/)
++       denom = scale**3
++    else
++       rmatrix = 0.
++       denom = 1.
++    endif
++ endif
++end subroutine nebula_fallback
++
++pure subroutine nebula_divcurl(rhosum,denom,rmatrix,divcurlvi,ndivcurlv)
++!  nebula: div v and curl v from the corrected gradient (our sim/sph.py _gradients_kernel)
++ real,    intent(in)    :: rhosum(:),denom,rmatrix(6)
++ integer, intent(in)    :: ndivcurlv
++ real,    intent(inout) :: divcurlvi(5)
++ real :: gx(3),gy(3),gz(3),dd
++ if (abs(denom) <= tiny(denom)) return
++ dd = 1./denom
++ call exactlinear(gx(1),gx(2),gx(3),rhosum(idvxdxi),rhosum(idvxdyi),rhosum(idvxdzi),rmatrix,dd)
++ call exactlinear(gy(1),gy(2),gy(3),rhosum(idvydxi),rhosum(idvydyi),rhosum(idvydzi),rmatrix,dd)
++ call exactlinear(gz(1),gz(2),gz(3),rhosum(idvzdxi),rhosum(idvzdyi),rhosum(idvzdzi),rmatrix,dd)
++ ! dv_i/dx_j = -g_i(j) (sign as in calculate_strain_from_sums)
++ divcurlvi(1) = -(gx(1) + gy(2) + gz(3))
++ if (ndivcurlv >= 4) then
++    divcurlvi(2) = -(gz(2) - gy(3))
++    divcurlvi(3) = -(gx(3) - gz(1))
++    divcurlvi(4) = -(gy(1) - gx(2))
++ endif
++end subroutine nebula_divcurl
++
+ pure subroutine calculate_rmatrix_from_sums(rhosum,denom,rmatrix,idone)
+  real,    intent(in)  :: rhosum(:)
+  real,    intent(out) :: denom
+@@ -1566,7 +1606,7 @@ subroutine finish_cell(cell,cell_converged,nconverged)
   use dim,      only:use_apr
   use io,       only:iprint,fatal
   use part,     only:get_partinfo,iamgas,maxphase,massoftype,igas,aprmassoftype,nh
@@ -28,7 +75,7 @@ index 6435880db..18d6bf50b 100644
  
   type(celldens), intent(inout) :: cell
   logical,        intent(out)   :: cell_converged
-@@ -1620,7 +1620,10 @@ subroutine finish_cell(cell,cell_converged,nconverged)
+@@ -1620,7 +1660,10 @@ subroutine finish_cell(cell,cell_converged,nconverged)
         hnew      = 0.8*hi
      endif
  
@@ -39,7 +86,7 @@ index 6435880db..18d6bf50b 100644
      if (cell_converged) cell_converged = converged
      if (present(nconverged) .and. converged) nconverged = nconverged + 1
  
-@@ -1653,7 +1656,7 @@ end subroutine finish_cell
+@@ -1653,7 +1696,7 @@ end subroutine finish_cell
  !--------------------------------------------------------------------------
  pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gradsofti,dhdni_out,omegat_out)
   use part,    only:dhdn
@@ -48,7 +95,7 @@ index 6435880db..18d6bf50b 100644
   real,         intent(in)  :: rhosum(maxrhosum)
   real,         intent(in)  :: pmassi
   real,         intent(in)  :: hi
-@@ -1694,6 +1697,10 @@ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gra
+@@ -1694,6 +1737,10 @@ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gra
   omegat   = 1. - dhdni*gradh_n
   zeta_loc = dhdni*gradh_m
   gradhi   = 1./omegat
@@ -59,16 +106,16 @@ index 6435880db..18d6bf50b 100644
  
   if (present(ni)) ni = ni_loc
   if (present(zeta)) zeta = zeta_loc
-@@ -1719,7 +1726,7 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1719,7 +1766,7 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
   use io,          only:fatal,real4
   use dim,         only:maxp,ndivcurlB,nalpha,use_dust,do_radiation,use_apr,gravity,&
                         igradomega,igradzeta,igradsoft
 - use options,     only:use_dustfrac,implicit_radiation,two_kernel
-+ use options,     only:use_dustfrac,implicit_radiation,two_kernel,nebula_hmax
++ use options,     only:use_dustfrac,implicit_radiation,two_kernel,nebula_hmax,nebula_grad
   use viscosity,   only:bulkvisc,shearparam
   use neighkdtree, only:set_hmaxcell
   use kernel,      only:radkern
-@@ -1797,7 +1804,11 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1797,7 +1844,11 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
         !
         !--store final results of density iteration
         !
@@ -81,6 +128,70 @@ index 6435880db..18d6bf50b 100644
         treecache(4,cell%arr_index(i)) = xyzh(4,lli)
         rho(lli) = rhoi
  
+@@ -1851,7 +1902,9 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+        if (getdv) then
+           ndivcurlv = size(divcurlv,dim=1)
+           call calculate_rmatrix_from_sums(rhosum,denom,rmatrix,igotrmatrix)
++          if (nebula_grad) call nebula_fallback(rhosum,cell%nneigh(i),denom,rmatrix)
+           call calculate_divcurlv_from_sums(rhosum,term,divcurlvi,ndivcurlv,denom,rmatrix)
++          if (nebula_grad) call nebula_divcurl(rhosum,denom,rmatrix,divcurlvi,ndivcurlv)
+           divcurlv(1:ndivcurlv,lli) = real(divcurlvi(1:ndivcurlv),kind=kind(divcurlv)) ! save to global memory
+           if (nalpha >= 3) alphaind(3,lli) = real4(divcurlvi(5))
+        else ! we always need div v for h prediction
+@@ -1873,7 +1926,10 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+        !--get strain tensor from summations
+        !
+        if (maxdvdx==maxp .and. getdv) then
+-          if (.not.igotrmatrix) call calculate_rmatrix_from_sums(rhosum,denom,rmatrix,igotrmatrix)
++          if (.not.igotrmatrix) then
++             call calculate_rmatrix_from_sums(rhosum,denom,rmatrix,igotrmatrix)
++             if (nebula_grad) call nebula_fallback(rhosum,cell%nneigh(i),denom,rmatrix)
++          endif
+           call calculate_strain_from_sums(rhosum,term,denom,rmatrix,dvdxi,.not.realviscosity)
+           ! check for negative stresses to prevent tensile instability
+           if (realviscosity) call get_max_stress(dvdxi,divcurlvi(1),rho1i,stressmax,shearparam,bulkvisc)
+diff --git a/src/main/eos.f90 b/src/main/eos.f90
+index 20c111204..566d7d6d4 100644
+--- a/src/main/eos.f90
++++ b/src/main/eos.f90
+@@ -89,6 +89,9 @@ module eos
+  integer, public :: ieos          = 1
+  integer, public :: iopacity_type = 0      ! used for radiation
+  real,    public :: gmw           = 2.381  ! default mean molecular weight
++ ! nebula: ieos=12 sound speed from Gamma_1 = b + (4-3b)^2 (g-1)/(b + 12 (g-1)(1-b)),
++ ! b = P_gas/P, g = 5/3 (Chandrasekhar 1939; our physics/eos.py gamma1), not 1 + P/(rho u)
++ logical, public :: nebula_gamma1 = .false.
+  real,    public :: T_warm        = 1.42e3  ! temperature of warm neutral medium (ieos=26)
+  real,    public :: mu_warm       = 1.17    ! mean molecular weight of warm medium (ieos=26)
+  real,    public :: rho_branch_cgs = 5.0e-19 ! density below which gas is warm (ieos=26)
+@@ -389,6 +392,11 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
+     call get_idealplusrad_pres(cgsrhoi,temperaturei,mui,cgspresi)
+     call get_idealplusrad_spsoundi(cgsrhoi,cgspresi,cgseni,spsoundi,gammai)
+     if (present(gamma_local)) gamma_local = gammai ! gamma is an output
++    if (nebula_gamma1) then
++       r1 = min(max(cgsrhoi*kb_on_mh*temperaturei/(mui*cgspresi),0.),1.)  ! b = P_gas/P
++       r2 = r1 + (4. - 3.*r1)**2*(2./3.)/(r1 + 12.*(2./3.)*(1. - r1))   ! Gamma_1
++       spsoundi = sqrt(r2*cgspresi/cgsrhoi)
++    endif
+     spsoundi = spsoundi / unit_velocity
+     presi    = cgspresi / unit_pressure
+     ponrhoi  = presi / rhoi
+@@ -1915,6 +1923,7 @@ subroutine write_options_eos(iunit)
+     call write_inopt(gmw,'mu','mean molecular weight',iunit)
+  endif
+  if (ieos == 6) call write_inopt(isink,'isink','sink used as centre of locally isothermal EOS',iunit)
++ if (ieos == 12) call write_inopt(nebula_gamma1,'nebula_gamma1','nebula: sound speed from Gamma_1',iunit)
+ 
+  select case(ieos)
+  case(8)
+@@ -1990,6 +1999,7 @@ subroutine read_options_eos(db,nerr)
+ 
+  call read_inopt(gmw,'mu',db,errcount=nerr,min=0.,default=gmw)
+  if (ieos == 6) call read_inopt(isink,'isink',db,errcount=nerr,min=1,default=isink)
++ if (ieos == 12) call read_inopt(nebula_gamma1,'nebula_gamma1',db,errcount=nerr,default=.false.)
+  call read_inopt(X_in,'X',db,errcount=nerr,min=0.,max=1.,default=X_in)
+  call read_inopt(Z_in,'Z',db,errcount=nerr,min=0.,max=1.,default=Z_in)
+  if (.not.isothermal .and. eos_allows_shock_and_work(ieos)) then
 diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
 index ed9092e05..3a40d311d 100644
 --- a/src/main/externalforces.f90
@@ -119,7 +230,7 @@ index ed9092e05..3a40d311d 100644
  
   select case(iexternalforce)
 diff --git a/src/main/force.F90 b/src/main/force.F90
-index 92580da5d..97ea14ba5 100644
+index 92580da5d..34a74b344 100644
 --- a/src/main/force.F90
 +++ b/src/main/force.F90
 @@ -948,6 +948,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
@@ -127,7 +238,7 @@ index 92580da5d..97ea14ba5 100644
   use dim,         only:maxalpha,maxp,mhd_nonideal,gravity,gr,use_apr,isothermal,&
                        use_sinktree,disc_viscosity,track_lum,igradomega,igradsoft,igradzeta
 + use part,        only:hfact
-+ use shock_capturing, only:nebula_recon
++ use shock_capturing, only:nebula_recon,nebula_cond
   use part,        only:rho,dvdx,aprmassoftype,shortsinktree
   use nicil,       only:nimhd_get_jcbcb,nimhd_get_dBdt
   use eos,         only:ieos,eos_is_non_ideal,use_var_comp,icooling
@@ -139,7 +250,7 @@ index 92580da5d..97ea14ba5 100644
   real    :: dustfraci(maxdusttypes),dustfracj(maxdusttypes),tsi(maxdusttypes)
   real    :: sqrtrhodustfraci(maxdusttypes),sqrtrhodustfracj(maxdusttypes)
   real    :: dustfracisum,dustfracjsum,rhogasj,epstsi!,rhogas1j
-@@ -1436,6 +1439,36 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1436,9 +1439,39 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
         ! do the projection here
         projv = dvx*runix + dvy*runiy + dvz*runiz
  
@@ -175,7 +286,11 @@ index 92580da5d..97ea14ba5 100644
 +
         if (iamgasj .and. .not.isothermal) then
            enj = vxyzu(4,j)
-           if (eos_is_non_ideal(ieos) .or. use_var_comp) then  ! only do this if eos requires temperature in physical units
+-          if (eos_is_non_ideal(ieos) .or. use_var_comp) then  ! only do this if eos requires temperature in physical units
++          if ((eos_is_non_ideal(ieos) .or. use_var_comp) .and. nebula_cond == 0) then  ! only do this if eos requires temperature in physical units
+              tempj = eos_vars(itemp,j)
+              denij = 0.5*(eni/max(tempi,1.) + enj/max(tempj,1.))*(tempi - tempj)  !dU = c_V * dT, but with a floor to avoid issues with very low temperatures
+           else
 @@ -1480,7 +1513,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
               vsigavi   = alphai*vsigi
            else
@@ -211,78 +326,132 @@ index 92580da5d..97ea14ba5 100644
                  endif
               endif
               !--energy conservation from artificial viscosity
+@@ -1674,7 +1707,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+                 else
+                    vsigu = abs(vij)  ! Eq 61 in LP19
+                 endif
+-             elseif (gravity) then
++             elseif (gravity .or. nebula_cond > 0) then  ! nebula_cond: as our code
+                 vsigu = abs(projv)
+              else
+                 rhoav1 = 2./(rhoi + rhoj)
 diff --git a/src/main/options.f90 b/src/main/options.f90
-index 41f59be46..f212b43d7 100644
+index 41f59be46..478df3de0 100644
 --- a/src/main/options.f90
 +++ b/src/main/options.f90
-@@ -44,6 +44,10 @@ module options
+@@ -44,6 +44,16 @@ module options
  ! if true, use a distinct (flatter) kernel to set h from number density
   logical, public :: two_kernel
  
 + ! nebula: cap on the smoothing length (0 = off). A capped particle keeps h fixed at the
 + ! cap: summed density, Omega = 1 (fixed-h SPH), as our sim/sph.py h_max and SWIFT
 + real, public :: nebula_hmax = 0.
++ ! nebula: also write the hydro acceleration, du/dt and velocity gradients to full dumps
++ ! (for comparing Phantom with our Python reference on the same particles)
++ logical, public :: nebula_dumpderivs = .false.
++ ! nebula: gradients as our sim/sph.py: R treated as singular (fewer than 4 neighbours or
++ ! |det R| < 1e-6 (tr R/3)^3) -> G/(tr R/3); div v and curl v from the corrected gradient
++ logical, public :: nebula_grad = .false.
 +
  ! dust method
   logical, public :: use_dustfrac, use_hybrid, use_porosity
  
+diff --git a/src/main/readwrite_dumps.f90 b/src/main/readwrite_dumps.f90
+index 642a15f38..5cfdf6070 100644
+--- a/src/main/readwrite_dumps.f90
++++ b/src/main/readwrite_dumps.f90
+@@ -63,6 +63,8 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
+                    luminosity,eta_nimhd,eta_nimhd_label,apr_level
+  use part,  only:metrics,metricderivs,tmunus
+  use options,    only:use_dustfrac,use_porosity,use_var_comp,icooling,two_kernel
++ use options,    only:nebula_hmax,nebula_dumpderivs
++ use part,       only:fxyzu,dvdx,dvdx_label
+  use dump_utils, only:tag,open_dumpfile_w,allocate_header,&
+                    free_header,write_header,write_array,write_block_header
+  use mpiutils,   only:reduce_mpi,reduceall_mpi,start_threadwrite,end_threadwrite
+@@ -256,7 +258,13 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
+        ! smoothing length written as real*4 to save disk space
+        call write_array(1,xyzh,xyzh_label,1,npart,k,ipass,idump,nums,nerr,use_kind=4,index=4)
+        ! write rho with APR or two_kernel (otherwise recoverable from h via init_rho_from_h)
+-       if (use_apr .or. two_kernel) call write_array(1,rho,'rho',npart,k,ipass,idump,nums,nerr,use_kind=4)
++       ! nebula: a capped h does not give rho, so write rho whenever the cap is on
++       if (use_apr .or. two_kernel .or. nebula_hmax > 0.) &
++          call write_array(1,rho,'rho',npart,k,ipass,idump,nums,nerr,use_kind=4)
++       if (nebula_dumpderivs) then
++          call write_array(1,fxyzu,(/'fx  ','fy  ','fz  ','dudt'/),4,npart,k,ipass,idump,nums,nerr)
++          call write_array(1,dvdx,dvdx_label,9,npart,k,ipass,idump,nums,nerr)
++       endif
+        if (maxalpha==maxp) call write_array(1,alphaind,(/'alpha'/),1,npart,k,ipass,idump,nums,nerr)
+        call write_array(1,divcurlv,divcurlv_label,ndivcurlv,npart,k,ipass,idump,nums,nerr)
+        !if (maxdvdx==maxp) call write_array(1,dvdx,dvdx_label,9,npart,k,ipass,idump,nums,ierrs(17))
 diff --git a/src/main/readwrite_infile.f90 b/src/main/readwrite_infile.f90
-index 2af4e0126..74b3b7803 100644
+index 2af4e0126..949fdc0ca 100644
 --- a/src/main/readwrite_infile.f90
 +++ b/src/main/readwrite_infile.f90
 @@ -28,6 +28,7 @@ module readwrite_infile
  !
   use options,   only:iexternalforce
   use part,      only:hfact,tolh
-+ use options,   only:nebula_hmax
++ use options,   only:nebula_hmax,nebula_dumpderivs,nebula_grad
   use dim,       only:do_radiation,nucleation,use_dust,use_dustgrowth,mhd_nonideal,compiled_with_mcfost,&
                       inject_parts,curlv,driving,track_lum,disc_viscosity,isothermal,use_dustgrowth_coala
   implicit none
-@@ -107,6 +108,7 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
+@@ -107,6 +108,10 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
   call write_options_tree(iwritein)
   call write_inopt(hfact,'hfact','h in units of particle spacing [h = hfact*n^(-1/3)]',iwritein)
   call write_inopt(tolh,'tolh','tolerance on h-n iterations',iwritein,exp=.true.)
 + call write_inopt(nebula_hmax,'nebula_hmax','nebula: cap on h, Omega = 1 at the cap (0=off)',iwritein)
++ call write_inopt(nebula_grad,'nebula_grad','nebula: velocity gradients as our code',iwritein)
++ if (nebula_dumpderivs) call write_inopt(nebula_dumpderivs,'nebula_dumpderivs',&
++     'nebula: write fx,fy,fz,dudt,dvdx to full dumps',iwritein)
  
   ! in GR energy variable is an entropy, so ishock_heating=0 also switches off conductivity
   call write_options_shock_capturing(iwritein,use_conductivity=.not.(gr .and. ishock_heating == 0))
-@@ -326,6 +328,7 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
+@@ -326,6 +331,9 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
   call read_inopt(hfact,'hfact',db,errcount=nerr,min=1.,max=5.)
   call read_inopt(tolh,'tolh',db,errcount=nerr,min=epsilon(tolh))
   if (tolh > 1.e-3) call warn(label,'tolh is quite large!')
 + call read_inopt(nebula_hmax,'nebula_hmax',db,errcount=nerr,default=0.,min=0.)
++ call read_inopt(nebula_dumpderivs,'nebula_dumpderivs',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_grad,'nebula_grad',db,errcount=nerr,default=.false.)
  
   ! parse options internal to other code modules
   call read_options_iocontrol(db,nerr)
 diff --git a/src/main/shock_capturing.f90 b/src/main/shock_capturing.f90
-index 43f171dde..1561da59d 100644
+index 43f171dde..b0dd66fc8 100644
 --- a/src/main/shock_capturing.f90
 +++ b/src/main/shock_capturing.f90
-@@ -34,6 +34,9 @@ module shock_capturing
+@@ -34,6 +34,12 @@ module shock_capturing
   real, public :: alphamax
   real, public :: alphaB
   integer, public :: ireconav
 + ! nebula: 1 = reconstructed velocity jump in the (non-GR) shock viscosity, as our
 + ! sim/sph.py: Frontiere et al. 2017 van Leer limiter + closeness, min-mod gate
 + integer, public :: nebula_recon = 0
++ ! nebula: 1 = conductivity as our sim/sph.py with the hole: signal |v_ab . r_hat| (Phantom
++ ! paper Eq. 44, used there with self-gravity) and the jump u_a - u_b
++ integer, public :: nebula_cond = 0
  
   public :: write_options_shock_capturing, read_options_shock_capturing
  
-@@ -90,6 +93,9 @@ subroutine write_options_shock_capturing(iunit,use_conductivity)
+@@ -90,6 +96,11 @@ subroutine write_options_shock_capturing(iunit,use_conductivity)
   if (gr) call write_inopt(ireconav,'ireconav',&
                'use reconstruction in shock viscosity (-1=off,0=no limiter,1=Van Leer,2=MC)',iunit)
  
++ if (.not.gr) call write_inopt(nebula_cond,'nebula_cond',&
++              'nebula: conductivity signal |v.r| and jump u_a-u_b (0=off,1=on)',iunit)
 + if (.not.gr) call write_inopt(nebula_recon,'nebula_recon',&
 +              'nebula: reconstructed jump in shock viscosity (0=off,1=on)',iunit)
 +
   if (disc_viscosity) call write_inopt(disc_viscosity,'disc_viscosity',&
                            'use cs, multiply by h/|rij| and apply to approaching/receding',iunit)
  
-@@ -114,6 +120,7 @@ subroutine read_options_shock_capturing(db,nerr)
+@@ -114,6 +125,8 @@ subroutine read_options_shock_capturing(db,nerr)
   if (mhd) call read_inopt(alphaB,'alphaB',db,errcount=nerr,min=0.,max=10.)
   if (gr) call read_inopt(ireconav,'ireconav',db,errcount=nerr,default=ireconav)
   call read_inopt(disc_viscosity,'disc_viscosity',db,errcount=nerr,default=disc_viscosity)
 + if (.not.gr) call read_inopt(nebula_recon,'nebula_recon',db,errcount=nerr,default=0,min=0,max=1)
++ if (.not.gr) call read_inopt(nebula_cond,'nebula_cond',db,errcount=nerr,default=0,min=0,max=1)
  
   if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
   if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')
