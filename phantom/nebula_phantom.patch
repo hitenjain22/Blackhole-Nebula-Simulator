@@ -1,5 +1,5 @@
 diff --git a/src/main/checksetup.f90 b/src/main/checksetup.f90
-index 5e12b59c7..83e727c6c 100644
+index 5e12b59..83e727c 100644
 --- a/src/main/checksetup.f90
 +++ b/src/main/checksetup.f90
 @@ -1142,9 +1142,9 @@ subroutine check_cooling(xcom,vcom,nerror)
@@ -15,8 +15,118 @@ index 5e12b59c7..83e727c6c 100644
      endif
   endif
   !cooling requires adiabatic eos (e.g. ieos=2)
+diff --git a/src/main/cooling.f90 b/src/main/cooling.f90
+index 721a263..29742b2 100644
+--- a/src/main/cooling.f90
++++ b/src/main/cooling.f90
+@@ -35,6 +35,7 @@ module cooling
+  use eos,      only:icooling
+  use timestep, only:C_cool
+  use cooling_solver, only:T0_value,lambda_shock_cgs ! expose to other routines
++ use cooling_gammie, only:nebula_cool,nebula_cooling,nebula_erad
+ 
+  implicit none
+  character(len=*), parameter :: label = 'cooling'
+@@ -48,6 +49,7 @@ module cooling
+  real,    public :: Tfloor = 0.                     ! [K]; set in .in file.  On if Tfloor > 0.
+  real,    public :: ufloor = 0.                     ! [code units]; set in init_cooling
+  public :: T0_value,lambda_shock_cgs ! expose to public
++ public :: nebula_cool,nebula_erad
+ 
+  private
+ 
+@@ -94,8 +96,8 @@ subroutine init_cooling(id,master,iprint,ierr)
+     call init_cooling_KI02(ierr)
+     cooling_in_step = .false.
+  case(3)
+-    ! Gammie
+-    cooling_in_step = .false.
++    ! Gammie (nebula_cool: in the step, as our operator-split cooling)
++    cooling_in_step = nebula_cool
+  case(7)
+     ! Gammie PL
+     cooling_in_step = .false.
+@@ -179,7 +181,11 @@ subroutine energ_cooling(xi,yi,zi,ui,rho,dt,divv,dudt,Tdust_in,mu_in,gamma_in,K2
+  case (4,8)
+     call energ_cooling_ism(ui,rho,divv,mui,abundi,dudt)
+  case (3)
+-    call cooling_Gammie_explicit(xi,yi,zi,ui,dudt)
++    if (nebula_cool) then
++       call nebula_cooling(xi,yi,zi,ui,rho,dt,dudt)
++    else
++       call cooling_Gammie_explicit(xi,yi,zi,ui,dudt)
++    endif
+  case (7)
+     call cooling_Gammie_PL_explicit(xi,yi,zi,ui,dudt)
+  case (9)
+diff --git a/src/main/cooling_gammie.f90 b/src/main/cooling_gammie.f90
+index 041be74..91c6ffd 100644
+--- a/src/main/cooling_gammie.f90
++++ b/src/main/cooling_gammie.f90
+@@ -21,6 +21,11 @@ module cooling_gammie
+ !
+  implicit none
+  real, private :: beta_cool  = 3.
++ ! nebula: cooling as our code (nebula_cool), its floor temperature (K) and the energy
++ ! radiated so far (code units; kept in the dump header as nb_erad)
++ logical, public :: nebula_cool = .false.
++ real,    public :: nebula_tfloor = 1.e4
++ real,    public :: nebula_erad = 0.
+ 
+ contains
+ !-----------------------------------------------------------------------
+@@ -28,6 +33,31 @@ contains
+ !   Gammie (2001) cooling
+ !+
+ !-----------------------------------------------------------------------
++subroutine nebula_cooling(xi,yi,zi,ui,rhoi,dt,dudti)
++!  nebula: our physics/cooling.py beta_cool over one step dt:
++!     u_new = u_floor + (u - u_floor) exp(-dt/t_cool),  t_cool = beta/Omega, Omega = r^-3/2
++!  u_floor = 3 k T/(2 mu m_p) + a T^4/rho at T = nebula_tfloor (our physics/eos.py gasrad_u_si)
++ use externalforces, only:mass1
++ use physcon,        only:kboltz,mass_proton_cgs,radconst
++ use units,          only:unit_density,unit_ergg
++ use eos,            only:gmw
++ real, intent(in)    :: xi,yi,zi,ui,rhoi,dt
++ real, intent(inout) :: dudti
++ real :: r2,tcool,uf,unew
++
++ r2    = xi*xi + yi*yi + zi*zi
++ tcool = beta_cool/(sqrt(mass1)*r2**(-0.75))
++ uf    = (1.5*kboltz*nebula_tfloor/(gmw*mass_proton_cgs) &
++          + radconst*nebula_tfloor**4/(rhoi*unit_density))/unit_ergg
++ if (dt > 0.) then
++    unew  = uf + (ui - uf)*exp(-dt/tcool)
++    dudti = dudti + (unew - ui)/dt
++ else
++    dudti = dudti - (ui - uf)/tcool
++ endif
++
++end subroutine nebula_cooling
++
+ subroutine cooling_Gammie_explicit(xi,yi,zi,ui,dudti)
+  use part,           only:xyzmh_ptmass, nptmass
+  use externalforces, only:mass1
+@@ -60,6 +90,8 @@ subroutine write_options_cooling_gammie(iunit)
+  integer, intent(in) :: iunit
+ 
+  call write_inopt(beta_cool,'beta_cool','beta factor in Gammie (2001) cooling',iunit)
++ call write_inopt(nebula_cool,'nebula_cool','nebula: cooling as our code (floor, exact, in step)',iunit)
++ if (nebula_cool) call write_inopt(nebula_tfloor,'nebula_tfloor','nebula: floor temperature (K)',iunit)
+ 
+ end subroutine write_options_cooling_gammie
+ 
+@@ -74,6 +106,8 @@ subroutine read_options_cooling_gammie(db,nerr)
+  integer,      intent(inout) :: nerr
+ 
+  call read_inopt(beta_cool,'beta_cool',db,errcount=nerr,min=1.)
++ call read_inopt(nebula_cool,'nebula_cool',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_tfloor,'nebula_tfloor',db,errcount=nerr,min=0.,default=nebula_tfloor)
+ 
+ end subroutine read_options_cooling_gammie
+ 
 diff --git a/src/main/dens.F90 b/src/main/dens.F90
-index 6435880db..a054f9000 100644
+index 6435880..a054f90 100644
 --- a/src/main/dens.F90
 +++ b/src/main/dens.F90
 @@ -976,6 +976,46 @@ end subroutine get_density_sums
@@ -151,7 +261,7 @@ index 6435880db..a054f9000 100644
            ! check for negative stresses to prevent tensile instability
            if (realviscosity) call get_max_stress(dvdxi,divcurlvi(1),rho1i,stressmax,shearparam,bulkvisc)
 diff --git a/src/main/eos.f90 b/src/main/eos.f90
-index 20c111204..566d7d6d4 100644
+index 20c1112..566d7d6 100644
 --- a/src/main/eos.f90
 +++ b/src/main/eos.f90
 @@ -89,6 +89,9 @@ module eos
@@ -193,44 +303,47 @@ index 20c111204..566d7d6d4 100644
   call read_inopt(Z_in,'Z',db,errcount=nerr,min=0.,max=1.,default=Z_in)
   if (.not.isothermal .and. eos_allows_shock_and_work(ieos)) then
 diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
-index ed9092e05..3a40d311d 100644
+index ed9092e..368abc0 100644
 --- a/src/main/externalforces.f90
 +++ b/src/main/externalforces.f90
 @@ -43,6 +43,7 @@ module externalforces
   real, public :: Rdisc = 5.
  
   real, public :: accradius1_hard = 0.
-+ real, public :: orbfac = 0.  ! nebula: dt <= C_force*orbfac*r^1.5 for iext_gnewton (0 = off)
++ real, public :: orbfac = 0.  ! nebula: dt <= C_force*orbfac*r^1.5 for iext_gnewton and iext_star (0 = off)
   logical, public :: extract_iextern_from_hdr = .false.
  
   public :: mass1,a
-@@ -424,6 +425,8 @@ subroutine externalforce(iexternalforce,xi,yi,zi,hi,ti,fextxi,fextyi,fextzi,phi,
+@@ -424,6 +425,9 @@ subroutine externalforce(iexternalforce,xi,yi,zi,hi,ti,fextxi,fextyi,fextzi,phi,
            dtf2 = huge(dtf2)
         endif
         dtf  = min(dtf1,dtf2)
 +       ! nebula: orbit criterion (our eta_orb r^1.5 = C_force*orbfac*r^1.5)
-+       if (iexternalforce == iext_gnewton .and. orbfac > 0.) dtf = min(dtf,orbfac*(xi*xi + yi*yi + zi*zi)**0.75)
++       if ((iexternalforce == iext_gnewton .or. iexternalforce == iext_star) .and. orbfac > 0.) &
++          dtf = min(dtf,orbfac*(xi*xi + yi*yi + zi*zi)**0.75)
         !if (dtf2 < dtf1) print*,' phi timestep = ',dtf2,' h/a = ',dtf1, ' ratio = ',dtf2/dtf1
      else
         dtf = huge(dtf)
-@@ -630,6 +633,7 @@ subroutine write_options_externalforces(iunit,iexternalforce)
+@@ -630,6 +634,8 @@ subroutine write_options_externalforces(iunit,iexternalforce)
      if (accradius1_hard < tiny(0.)) accradius1_hard = accradius1
      call write_inopt(accradius1,'accradius1','soft accretion radius of central object',iunit)
      call write_inopt(accradius1_hard,'accradius1_hard','hard accretion radius of central object',iunit)
-+    if (iexternalforce == iext_gnewton) call write_inopt(orbfac,'orbfac','nebula: dt <= C_force*orbfac*r^1.5 (0=off)',iunit)
++    if (iexternalforce == iext_gnewton .or. iexternalforce == iext_star) &
++       call write_inopt(orbfac,'orbfac','nebula: dt <= C_force*orbfac*r^1.5 (0=off)',iunit)
   end select
  
   select case(iexternalforce)
-@@ -741,6 +745,7 @@ subroutine read_options_externalforces(db,nerr,iexternalforce)
+@@ -741,6 +747,8 @@ subroutine read_options_externalforces(db,nerr,iexternalforce)
      call read_inopt(accradius1,'accradius1',db,errcount=nerr,min=0.,default=accradius1)
      call read_inopt(accradius1_hard,'accradius1_hard',db,errcount=nerr,&
                      min=0.,max=accradius1,default=accradius1_hard)
-+    if (iexternalforce == iext_gnewton) call read_inopt(orbfac,'orbfac',db,errcount=nerr,min=0.,default=orbfac)
++    if (iexternalforce == iext_gnewton .or. iexternalforce == iext_star) &
++       call read_inopt(orbfac,'orbfac',db,errcount=nerr,min=0.,default=orbfac)
   end select
  
   select case(iexternalforce)
 diff --git a/src/main/force.F90 b/src/main/force.F90
-index 92580da5d..34a74b344 100644
+index 92580da..34a74b3 100644
 --- a/src/main/force.F90
 +++ b/src/main/force.F90
 @@ -948,6 +948,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
@@ -336,7 +449,7 @@ index 92580da5d..34a74b344 100644
               else
                  rhoav1 = 2./(rhoi + rhoj)
 diff --git a/src/main/options.f90 b/src/main/options.f90
-index 41f59be46..478df3de0 100644
+index 41f59be..478df3d 100644
 --- a/src/main/options.f90
 +++ b/src/main/options.f90
 @@ -44,6 +44,16 @@ module options
@@ -357,7 +470,7 @@ index 41f59be46..478df3de0 100644
   logical, public :: use_dustfrac, use_hybrid, use_porosity
  
 diff --git a/src/main/readwrite_dumps.f90 b/src/main/readwrite_dumps.f90
-index 642a15f38..5cfdf6070 100644
+index 642a15f..5cfdf60 100644
 --- a/src/main/readwrite_dumps.f90
 +++ b/src/main/readwrite_dumps.f90
 @@ -63,6 +63,8 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
@@ -384,8 +497,45 @@ index 642a15f38..5cfdf6070 100644
         if (maxalpha==maxp) call write_array(1,alphaind,(/'alpha'/),1,npart,k,ipass,idump,nums,nerr)
         call write_array(1,divcurlv,divcurlv_label,ndivcurlv,npart,k,ipass,idump,nums,nerr)
         !if (maxdvdx==maxp) call write_array(1,dvdx,dvdx_label,9,npart,k,ipass,idump,nums,ierrs(17))
+diff --git a/src/main/readwrite_dumps_common.f90 b/src/main/readwrite_dumps_common.f90
+index caa35ee..b5651d2 100644
+--- a/src/main/readwrite_dumps_common.f90
++++ b/src/main/readwrite_dumps_common.f90
+@@ -261,6 +261,7 @@ end subroutine unfill_header
+ subroutine fill_header(sphNGdump,t,nparttot,npartoftypetot,nblocks,nptmass,hdr,ierr)
+  use eos,            only:write_headeropts_eos,polyk2
+  use options,        only:tolh,alpha,alphau,alphaB,iexternalforce,ieos
++ use cooling_gammie, only:nebula_erad
+  use part,           only:massoftype,hfact,Bextx,Bexty,Bextz,ndustsmall,ndustlarge,&
+                           idust,grainsize,graindens,ndusttypes
+  use checkconserved, only:get_conserv,etot_in,angtot_in,totmom_in,mdust_in,mtot_in
+@@ -337,6 +338,7 @@ subroutine fill_header(sphNGdump,t,nparttot,npartoftypetot,nblocks,nptmass,hdr,i
+  else ! number = 49
+     call add_to_rheader(hfact,'hfact',hdr,ierr)
+     call add_to_rheader(tolh,'tolh',hdr,ierr)
++    call add_to_rheader(nebula_erad,'nb_erad',hdr,ierr)  ! nebula: radiated energy
+     call add_to_rheader(C_cour,'C_cour',hdr,ierr)
+     call add_to_rheader(C_force,'C_force',hdr,ierr)
+     call add_to_rheader(alpha,'alpha',hdr,ierr)
+@@ -400,6 +402,7 @@ subroutine unfill_rheader(hdr,phantomdump,ntypesinfile,nptmass,&
+  use dim,            only:maxvxyzu,nElements,use_dust,use_dustgrowth,use_krome,do_nucleation,idumpfile
+  use eos,            only:extract_eos_from_hdr, read_headeropts_eos
+  use options,        only:ieos,iexternalforce
++ use cooling_gammie, only:nebula_erad
+  use part,           only:massoftype,Bextx,Bexty,Bextz,mhd,periodic,&
+                           maxtypes,grainsize,graindens,ndusttypes
+  use checkconserved, only:get_conserv,etot_in,angtot_in,totmom_in,mdust_in,mtot_in
+@@ -435,6 +438,8 @@ subroutine unfill_rheader(hdr,phantomdump,ntypesinfile,nptmass,&
+  if (phantomdump) then
+     call extract('hfact',hfactfile,hdr,ierr)
+     call extract('tolh',tolhfile,hdr,ierr)
++    call extract('nb_erad',nebula_erad,hdr,ierrs(10))  ! nebula (absent in older dumps)
++    if (ierrs(10) /= 0) nebula_erad = 0.
+     call extract('C_cour',C_courfile,hdr,ierr)
+     call extract('C_force',C_forcefile,hdr,ierr)
+     call extract('alpha',alphafile,hdr,ierr)
 diff --git a/src/main/readwrite_infile.f90 b/src/main/readwrite_infile.f90
-index 2af4e0126..949fdc0ca 100644
+index 2af4e01..949fdc0 100644
 --- a/src/main/readwrite_infile.f90
 +++ b/src/main/readwrite_infile.f90
 @@ -28,6 +28,7 @@ module readwrite_infile
@@ -418,7 +568,7 @@ index 2af4e0126..949fdc0ca 100644
   ! parse options internal to other code modules
   call read_options_iocontrol(db,nerr)
 diff --git a/src/main/shock_capturing.f90 b/src/main/shock_capturing.f90
-index 43f171dde..b0dd66fc8 100644
+index 43f171d..b0dd66f 100644
 --- a/src/main/shock_capturing.f90
 +++ b/src/main/shock_capturing.f90
 @@ -34,6 +34,12 @@ module shock_capturing
@@ -455,3 +605,27 @@ index 43f171dde..b0dd66fc8 100644
  
   if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
   if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')
+diff --git a/src/main/substepping.F90 b/src/main/substepping.F90
+index bbd23f3..7faab3d 100644
+--- a/src/main/substepping.F90
++++ b/src/main/substepping.F90
+@@ -1128,7 +1128,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
+  use options,         only:icooling
+  use chem,            only:update_abundances,get_dphot
+  use dust_formation,  only:evolve_dust,calc_muGamma
+- use cooling,         only:energ_cooling,cooling_in_step
++ use cooling,         only:energ_cooling,cooling_in_step,nebula_cool,nebula_erad
+  use eos_HIIR,        only:muion,Tion
+ #ifdef KROME
+  use part,            only: T_gas_cool
+@@ -1212,6 +1212,10 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
+  endif
+  if ((icooling == 9)  .or. (abs(eos_vars(imu,i) - muion ) < epsilon(muion))) dudtcool = 0.
+  if (cooling_in_step .or. use_krome) vxyzu(4,i) = vxyzu(4,i) + dt * dudtcool
++ if (nebula_cool) then  ! nebula: energy radiated (the ledger's E_rad)
++ !$omp atomic
++    nebula_erad = nebula_erad - pmassi*dt*dudtcool
++ endif
+ 
+ end subroutine cooling_abundances_update
+ 

@@ -1,7 +1,7 @@
 """Write our cloud initial conditions (sim/cloud.py, as cloud_run.py builds them) as a Phantom
 starting dump, for production runs in Phantom (DECISIONS 2026-11-03, Phantom engine).
 
-    uv run --with sarracen --with scikit-learn python scripts/phantom_ic.py OUT TEMPLATE n=50000
+    uv run --with sarracen --with scikit-learn python scripts/phantom_ic.py OUT TEMPLATE n=50000 [seed=1]
 
 Phantom units: length GM/c^2, mass M_bh, time GM/c^3 (so G = c = 1 as in our code; Phantom's
 generalised Newtonian force reads c from the units). Our gas masses use a separate scale (the
@@ -31,7 +31,8 @@ def main():
     opts = dict(a.split("=", 1) for a in sys.argv[3:])
     n, radius = int(opts.get("n", 50_000)), float(opts.get("radius", 60.0))
     hc = replace(CoupledConfig().hydro, eos=opts.get("eos", "gasrad"))
-    ic = cloud_ic(n, radius, None, hydro=hc)
+    seed = int(opts["seed"]) if "seed" in opts else None  # random glass carving (R6.5)
+    ic = cloud_ic(n, radius, seed, hydro=hc)
     bh = units.BlackHoleUnits()
     m_code = hc.gas_units.mass_kg_per_code * ic.mass[0] / bh.mass_kg  # particle mass in M_bh
     # u: ours is in c^2 per unit mass, the same in Phantom's units (velocity unit c)
