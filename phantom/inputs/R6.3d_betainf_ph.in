@@ -65,3 +65,7 @@
         nebula_cond =           1
          nebula_grad =           T
        nebula_gamma1 =           T
+        nebula_pkick =           T    ! nebula: hydro force on GN momentum p
+        nebula_vsync =           T    ! nebula: refresh v-dependent force after hydro kicks
+        nebula_orbdt =           T    ! nebula: orbit criterion limits the hydro step too (accuracy test 2026-11-04)
+      nebula_gn_tolv =   1.000E-10    ! nebula: GN velocity-solve tolerance (Phantom hard-codes 1e-2)

@@ -495,3 +495,33 @@ Production Phantom runs use all of these (input file phantom/cloud.in.txt plus t
 ### 2026-11-04 (night): orbfac = 0.005 (our eta_orb), set by an accuracy test
 
 orbfac 0.04 (chosen earlier from pictures only: a rule-6 breach, AI_LOG) drifted 1.8e-4 of sum m|H| by day 90 (Phantom's own energy agreed: 0.17% by day 80). Tests to day 90 (50k, scripts/phantom_ledger.py): orbfac 0.04: 1.8e-4; 0.005: 5.6e-6 (tolv 1e-2 and 1e-6 identical, so the GN velocity tolerance is not a factor); 0.00125: 8.6e-7; our code (eta_orb = 0.00125 = 0.25 x 0.005): 2.1e-6. Production uses 0.005, our own accuracy-tested criterion; the ledger of the 50k baseline is checked through the crash. Also new: nebula_cool (our beta-cooling with the gas + radiation floor, exact relaxation in the substep, radiated energy total nb_erad in the dump header) with Phantom's Tfloor clamp off.
+
+### 2026-11-04 (morning): four more patch options, after the close-pass energy test failed
+
+**Why:** the Phase 6 runs (orbfac 0.005) were stopped when the 50k baseline's ledger gained +3.4% of sum m|H| across the first close pass (day 90 to 100.4); our code's drift over the same pass is 8.6e-6. Tests restarting Phantom from its day-90 state (scripts/phantom_ledger.py, AI_LOG 2026-11-04 morning):
+
+| Run (day 90 to 100.4) | dE / sum m\|H\| |
+|---|---|
+| P1: production options | 3.36e-2 |
+| P5/P8/P10: pkick / vsync / orbdt alone | 3.40e-2 / 3.31e-2 / 3.01e-2 |
+| P9: all three | 1.53e-2 |
+| P12: pkick + vsync + gn_tolv 1e-10, no orbdt | 1.57e-3 |
+| **P11: all four** | **6.3e-6** (radiated 9.1e-5, all books balance) |
+| our code, same pass | 8.6e-6 |
+
+**Cause:** Phantom solves the GN velocity implicitly in its drift step with a hard-coded tolerance `tolv = 1e-2` (extern_gnewton.f90, update_gnewton), so it always stops after one iteration. The leftover error gains energy along the velocity on every step near the hole. (The `tolv` in the .in file is the SPH corrector's, a different loop.)
+
+**Options added to phantom/nebula_phantom.patch (each makes Phantom do what our code does):**
+
+| Option | What it does | Our code |
+|---|---|---|
+| `nebula_gn_tolv = 1e-10` | tolerance of the GN velocity solve (Phantom's default 1e-2 unchanged when absent) | the leapfrog solves to round-off |
+| `nebula_pkick = T` | hydro acceleration a becomes the force on the canonical momentum, Minv(x) a | phase-04 4.1: the hydro force acts on p |
+| `nebula_vsync = T` | velocity-dependent GN force recomputed at the start of each substep (it was stale after hydro kicks) | forces use the current v |
+| `nebula_orbdt = T` | the orbit criterion C_force orbfac r^1.5 limits the whole (hydro) step, not only the gravity substeps | eta_orb limits every step |
+
+**orbdt is required:** without it (P12) the pass drifts 1.6e-3, over the 1e-4 limit; with it, 6.3e-6. The cost is wall time: P11 took 64 min vs P12's 22 min (4 threads, 50k, 10 days at pericentre). Also used for the Newtonian control R6.4 (iext_star; pkick, vsync and gn_tolv don't apply to it).
+
+**Rule 2:** `test_phantom_pkick_matches_gn_mass_matrix_inv` (tests/sim/test_phantom_patch.py; sample from Phantom's day-96 state, r down to 22): Phantom's Minv a matches physics/gravity.gn_mass_matrix_inv to 4e-16; the transform itself changes a by up to 17% there. orbdt reuses the existing orbfac formula; vsync and gn_tolv call Phantom's own GN force and solve.
+
+**Known small difference kept:** Phantom's shock switch uses the time derivative of div v from fxyzu + fext (hydro + gravity); ours uses the hydro acceleration only. It affects only the switch's trigger, and the close-pass ledger is now at our code's level.

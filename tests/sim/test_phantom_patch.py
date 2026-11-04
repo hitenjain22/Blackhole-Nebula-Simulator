@@ -105,3 +105,29 @@ def test_reconstruction_changes_the_result(sample):
     r = _rel(d["acc_on"], d["acc_off"])[inner]
     check("Phantom recon on vs off: |a| 90th pct rel. diff > 100 x P99_TOL", True,
           bool(np.percentile(r, 90) > 100 * P99_TOL))  # fmt: skip
+
+
+# --------------------------------------------------------------------------- nebula_pkick
+#
+# The patch's nebula_pkick (force.F90) turns Phantom's hydro acceleration into the force on the
+# GN canonical momentum, as our integrator does (phase-04 4.1): stored fxyz = Minv(x) a_hydro,
+# a Fortran copy of physics/gravity.gn_mass_matrix_inv. Data: tests/data/phantom_pkick_sample.npz
+# (scripts/phantom_pkick_sample.py): Phantom's start-up pass on its 50k state at day 96 (closest
+# approach, r down to 22), pkick on and off, 2,000 particles. Both are float64; the only
+# honest difference is round-off, so the tolerance is 1e-12.
+
+PKICK = Path(__file__).resolve().parents[1] / "data" / "phantom_pkick_sample.npz"
+
+
+def test_phantom_pkick_matches_gn_mass_matrix_inv():
+    from nebula.physics.gravity import gn_mass_matrix_inv
+
+    d = np.load(PKICK)
+    ours = np.einsum("nij,nj->ni", gn_mass_matrix_inv(d["x"]), d["acc_pkick_off"])
+    scale = np.linalg.norm(d["acc_pkick_off"], axis=1)
+    rel = np.linalg.norm(d["acc_pkick_on"] - ours, axis=1) / scale
+    change = np.linalg.norm(d["acc_pkick_on"] - d["acc_pkick_off"], axis=1) / scale
+    check("pkick: Phantom Minv a vs gn_mass_matrix_inv, max rel. diff", 0.0, float(rel.max()),
+          atol=1e-12)  # fmt: skip
+    check("pkick: the transform itself changes a by > 1% (test is sensitive)", True,
+          bool(change.max() > 1e-2))  # fmt: skip

@@ -302,8 +302,35 @@ index 20c1112..566d7d6 100644
   call read_inopt(X_in,'X',db,errcount=nerr,min=0.,max=1.,default=X_in)
   call read_inopt(Z_in,'Z',db,errcount=nerr,min=0.,max=1.,default=Z_in)
   if (.not.isothermal .and. eos_allows_shock_and_work(ieos)) then
+diff --git a/src/main/extern_gnewton.f90 b/src/main/extern_gnewton.f90
+index 410269d..20d7b9a 100644
+--- a/src/main/extern_gnewton.f90
++++ b/src/main/extern_gnewton.f90
+@@ -23,6 +23,9 @@ module extern_gnewton
+  public  :: get_gnewton_spatial_force, get_gnewton_vdependent_force
+  public  :: update_gnewton
+  public  :: get_gnewton_energy
++ ! nebula: tolerance of the implicit velocity solve (Phantom's built-in value is 1e-2, which
++ ! stops after one iteration and gives a systematic energy gain at pericentre; DECISIONS)
++ real, public :: nebula_gn_tolv = 1.e-2
+ 
+  private
+ 
+@@ -111,10 +114,10 @@ subroutine update_gnewton(vhalfx,vhalfy,vhalfz,fxi,fyi,fzi,fexti,dkdt,xi,yi,zi,m
+  integer             :: its, itsmax
+  integer, parameter  :: maxitsext = 50 ! maximum number of iterations on external force
+  character(len=30), parameter :: label = 'update_gnewton'
+- real, parameter :: tolv = 1.e-2
+- real, parameter :: tolv2 = tolv*tolv
++ real :: tolv2
+  real :: pos(3),vel(3)
+ 
++ tolv2 = nebula_gn_tolv*nebula_gn_tolv
+  itsmax = maxitsext
+  its = 0
+  converged = .false.
 diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
-index ed9092e..368abc0 100644
+index ed9092e..43c3cb1 100644
 --- a/src/main/externalforces.f90
 +++ b/src/main/externalforces.f90
 @@ -43,6 +43,7 @@ module externalforces
@@ -324,26 +351,46 @@ index ed9092e..368abc0 100644
         !if (dtf2 < dtf1) print*,' phi timestep = ',dtf2,' h/a = ',dtf1, ' ratio = ',dtf2/dtf1
      else
         dtf = huge(dtf)
-@@ -630,6 +634,8 @@ subroutine write_options_externalforces(iunit,iexternalforce)
+@@ -606,6 +610,7 @@ end function was_accreted
+ !+
+ !-----------------------------------------------------------------------
+ subroutine write_options_externalforces(iunit,iexternalforce)
++ use extern_gnewton, only:nebula_gn_tolv
+  use infile_utils,         only:write_inopt,get_optstring
+  use extern_corotate,      only:write_options_corotate
+  use extern_binary,        only:write_options_externbinary
+@@ -630,6 +635,10 @@ subroutine write_options_externalforces(iunit,iexternalforce)
      if (accradius1_hard < tiny(0.)) accradius1_hard = accradius1
      call write_inopt(accradius1,'accradius1','soft accretion radius of central object',iunit)
      call write_inopt(accradius1_hard,'accradius1_hard','hard accretion radius of central object',iunit)
 +    if (iexternalforce == iext_gnewton .or. iexternalforce == iext_star) &
 +       call write_inopt(orbfac,'orbfac','nebula: dt <= C_force*orbfac*r^1.5 (0=off)',iunit)
++ if (iexternalforce == iext_gnewton) &
++       call write_inopt(nebula_gn_tolv,'nebula_gn_tolv','nebula: GN velocity-solve tolerance',iunit)
   end select
  
   select case(iexternalforce)
-@@ -741,6 +747,8 @@ subroutine read_options_externalforces(db,nerr,iexternalforce)
+@@ -715,6 +724,7 @@ end subroutine read_headeropts_extern
+ !+
+ !-----------------------------------------------------------------------
+ subroutine read_options_externalforces(db,nerr,iexternalforce)
++ use extern_gnewton, only:nebula_gn_tolv
+  use io,                   only:error,warn
+  use extern_corotate,      only:read_options_corotate
+  use extern_binary,        only:read_options_externbinary
+@@ -741,6 +751,10 @@ subroutine read_options_externalforces(db,nerr,iexternalforce)
      call read_inopt(accradius1,'accradius1',db,errcount=nerr,min=0.,default=accradius1)
      call read_inopt(accradius1_hard,'accradius1_hard',db,errcount=nerr,&
                      min=0.,max=accradius1,default=accradius1_hard)
 +    if (iexternalforce == iext_gnewton .or. iexternalforce == iext_star) &
 +       call read_inopt(orbfac,'orbfac',db,errcount=nerr,min=0.,default=orbfac)
++    if (iexternalforce == iext_gnewton) &
++       call read_inopt(nebula_gn_tolv,'nebula_gn_tolv',db,errcount=nerr,min=0.,default=nebula_gn_tolv)
   end select
  
   select case(iexternalforce)
 diff --git a/src/main/force.F90 b/src/main/force.F90
-index 92580da..34a74b3 100644
+index 92580da..4a7ac7c 100644
 --- a/src/main/force.F90
 +++ b/src/main/force.F90
 @@ -948,6 +948,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
@@ -448,11 +495,76 @@ index 92580da..34a74b3 100644
                  vsigu = abs(projv)
               else
                  rhoav1 = 2./(rhoi + rhoj)
+@@ -2741,6 +2774,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+                           ind_timesteps,ndivcurlB
+  use eos,            only:ieos,icooling,iopacity_type,ipdv_heating,ishock_heating,correct_entropy_derivative
+  use options,        only:alpha,use_dustfrac,implicit_radiation,use_porosity
++ use options,        only:nebula_pkick,iexternalforce,nebula_orbdt
++ use externalforces, only:iext_gnewton,mass1,orbfac,iext_star
++ use units,          only:get_c_code
+  use part,           only:iboundary,igas,isink,maxphase,maxvxyzu,nptmass,xyzmh_ptmass,eos_vars, &
+                           massoftype,get_partinfo,tstop,strain_from_dvdx,ithick,iradP,sinks_have_heating,&
+                           luminosity,nucleation,idK2,idkappa,dust_temp,ndustsmall,imu,&
+@@ -2772,6 +2808,7 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+  use eos_stamatellos,only:duSPH
+  integer,         intent(in)    :: icall
+  type(cellforce), intent(inout) :: cell
++ real :: nb_rg,nb_r,nb_a,nb_c,nb_xf,nb_dto
+  real,            intent(inout) :: fxyzu(:,:)
+  real,            intent(in)    :: xyzh(:,:)
+  real,            intent(inout) :: vxyzu(:,:)
+@@ -3052,6 +3089,18 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+        fxyzu(2,i) = fsum(ifyi)
+        fxyzu(3,i) = fsum(ifzi)
+     endif
++    !--nebula_pkick: the hydro force acts on the GN canonical momentum p (phase-04 4.1,
++    !  sim/coupled.py), i.e. v += dt*Minv(x)*a at fixed x, Minv = A I + C x x^T with
++    !  A = 1 - 2rg/r, C = -2 rg A/r^3 (mirrors physics/gravity.py gn_mass_matrix_inv).
++    !  The force time step (dtf, from f2i above) uses the force before this, as our code does.
++    if (nebula_pkick .and. iexternalforce == iext_gnewton) then
++       nb_rg  = mass1/get_c_code()**2
++       nb_r   = sqrt(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)
++       nb_a   = 1. - 2.*nb_rg/nb_r
++       nb_c   = -2.*nb_rg*nb_a/nb_r**3
++       nb_xf  = xyzh(1,i)*fxyzu(1,i) + xyzh(2,i)*fxyzu(2,i) + xyzh(3,i)*fxyzu(3,i)
++       fxyzu(1:3,i) = nb_a*fxyzu(1:3,i) + nb_c*nb_xf*xyzh(1:3,i)
++    endif
+     if (use_dust) then
+        if (drag_implicit) then
+           fxyz_drag(1,i) = fsum(ifdragxi)
+@@ -3378,6 +3427,17 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+     else
+        dtchar = 'dt_courant'
+     endif
++    !--nebula_orbdt: the orbit criterion dt <= eta_orb r^1.5 (= C_force*orbfac*r^1.5) limits the
++    !  particle's whole step, hydro kicks included, as in our code (phase-04 4.1 "the smallest
++    !  wins"; sim/coupled.py). Without it Phantom holds the hydro force fixed over many GN substeps.
++    if (nebula_orbdt .and. orbfac > 0. .and. &
++        (iexternalforce == iext_gnewton .or. iexternalforce == iext_star)) then
++       nb_dto = C_force*orbfac*(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)**0.75
++       if (nb_dto < dti) then
++          dti    = nb_dto
++          dtchar = 'dt_orbit'
++       endif
++    endif
+     !
+     allow_decrease = (icall < 2)
+     call get_newbin(dti,dtmax,ibin(i),allow_decrease,dtchar=dtchar) ! get new timestep bin based on dti
+@@ -3395,6 +3455,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+ 
+     dtcourant = min(dtcourant,dtc)
+     dtforce   = min(dtforce,dtf,dtcool,dtdrag,dtdusti,dtclean)
++    if (nebula_orbdt .and. orbfac > 0. .and. &
++        (iexternalforce == iext_gnewton .or. iexternalforce == iext_star)) &
++       dtforce = min(dtforce,C_force*orbfac*(xyzh(1,i)**2 + xyzh(2,i)**2 + xyzh(3,i)**2)**0.75)  ! nebula_orbdt
+ 
+     dtvisc    = min(dtvisc,dtvisci)
+     if (mhd_nonideal .and. iamgasi) then
 diff --git a/src/main/options.f90 b/src/main/options.f90
-index 41f59be..478df3d 100644
+index 41f59be..c69f426 100644
 --- a/src/main/options.f90
 +++ b/src/main/options.f90
-@@ -44,6 +44,16 @@ module options
+@@ -44,6 +44,19 @@ module options
  ! if true, use a distinct (flatter) kernel to set h from number density
   logical, public :: two_kernel
  
@@ -465,6 +577,9 @@ index 41f59be..478df3d 100644
 + ! nebula: gradients as our sim/sph.py: R treated as singular (fewer than 4 neighbours or
 + ! |det R| < 1e-6 (tr R/3)^3) -> G/(tr R/3); div v and curl v from the corrected gradient
 + logical, public :: nebula_grad = .false.
++ logical, public :: nebula_pkick = .false.  ! nebula: hydro force acts on GN momentum p
++ logical, public :: nebula_vsync = .false.  ! nebula: refresh v-dependent force before substeps
++ logical, public :: nebula_orbdt = .false.  ! nebula: orbit criterion also limits the hydro step
 +
  ! dust method
   logical, public :: use_dustfrac, use_hybrid, use_porosity
@@ -535,35 +650,41 @@ index caa35ee..b5651d2 100644
      call extract('C_force',C_forcefile,hdr,ierr)
      call extract('alpha',alphafile,hdr,ierr)
 diff --git a/src/main/readwrite_infile.f90 b/src/main/readwrite_infile.f90
-index 2af4e01..949fdc0 100644
+index 2af4e01..a12766e 100644
 --- a/src/main/readwrite_infile.f90
 +++ b/src/main/readwrite_infile.f90
 @@ -28,6 +28,7 @@ module readwrite_infile
  !
   use options,   only:iexternalforce
   use part,      only:hfact,tolh
-+ use options,   only:nebula_hmax,nebula_dumpderivs,nebula_grad
++ use options,   only:nebula_hmax,nebula_dumpderivs,nebula_grad,nebula_pkick,nebula_vsync,nebula_orbdt
   use dim,       only:do_radiation,nucleation,use_dust,use_dustgrowth,mhd_nonideal,compiled_with_mcfost,&
                       inject_parts,curlv,driving,track_lum,disc_viscosity,isothermal,use_dustgrowth_coala
   implicit none
-@@ -107,6 +108,10 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
+@@ -107,6 +108,13 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
   call write_options_tree(iwritein)
   call write_inopt(hfact,'hfact','h in units of particle spacing [h = hfact*n^(-1/3)]',iwritein)
   call write_inopt(tolh,'tolh','tolerance on h-n iterations',iwritein,exp=.true.)
 + call write_inopt(nebula_hmax,'nebula_hmax','nebula: cap on h, Omega = 1 at the cap (0=off)',iwritein)
 + call write_inopt(nebula_grad,'nebula_grad','nebula: velocity gradients as our code',iwritein)
++ call write_inopt(nebula_pkick,'nebula_pkick','nebula: hydro force on GN momentum p',iwritein)
++ call write_inopt(nebula_vsync,'nebula_vsync','nebula: refresh v-dependent force after hydro kicks',iwritein)
++ call write_inopt(nebula_orbdt,'nebula_orbdt','nebula: orbit criterion limits the hydro step too',iwritein)
 + if (nebula_dumpderivs) call write_inopt(nebula_dumpderivs,'nebula_dumpderivs',&
 +     'nebula: write fx,fy,fz,dudt,dvdx to full dumps',iwritein)
  
   ! in GR energy variable is an entropy, so ishock_heating=0 also switches off conductivity
   call write_options_shock_capturing(iwritein,use_conductivity=.not.(gr .and. ishock_heating == 0))
-@@ -326,6 +331,9 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
+@@ -326,6 +334,12 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
   call read_inopt(hfact,'hfact',db,errcount=nerr,min=1.,max=5.)
   call read_inopt(tolh,'tolh',db,errcount=nerr,min=epsilon(tolh))
   if (tolh > 1.e-3) call warn(label,'tolh is quite large!')
 + call read_inopt(nebula_hmax,'nebula_hmax',db,errcount=nerr,default=0.,min=0.)
 + call read_inopt(nebula_dumpderivs,'nebula_dumpderivs',db,errcount=nerr,default=.false.)
 + call read_inopt(nebula_grad,'nebula_grad',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_pkick,'nebula_pkick',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_vsync,'nebula_vsync',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_orbdt,'nebula_orbdt',db,errcount=nerr,default=.false.)
  
   ! parse options internal to other code modules
   call read_options_iocontrol(db,nerr)
@@ -606,10 +727,51 @@ index 43f171d..b0dd66f 100644
   if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
   if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')
 diff --git a/src/main/substepping.F90 b/src/main/substepping.F90
-index bbd23f3..7faab3d 100644
+index bbd23f3..da0d8a7 100644
 --- a/src/main/substepping.F90
 +++ b/src/main/substepping.F90
-@@ -1128,7 +1128,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
+@@ -277,8 +277,9 @@ subroutine substep(npart,ntypes,nptmass,dtsph,dtextforce,time,xyzh,vxyzu,fext, &
+                    dptmass,fsink_old,nbinmax,ibin_wake,gtgrad,group_info, &
+                    bin_info,nmatrix,n_group,n_ingroup,n_sing)
+  use io,             only:iverbose,id,master,iprint,fatal
+- use options,        only:iexternalforce
+- use part,           only:fxyz_ptmass_sinksink,ndptmass
++ use options,        only:iexternalforce,nebula_vsync
++ use part,           only:fxyz_ptmass_sinksink,ndptmass,isdead_or_accreted
++ use externalforces, only:externalforce,externalforce_vdependent
+  use io_summary,     only:summary_variable,iosumextr,iosumextt
+  use externalforces, only:is_velocity_dependent
+  use ptmass,         only:use_fourthorder,use_regnbody,ck,dk,ptmass_check_stars,icreate_sinks
+@@ -300,6 +301,28 @@ subroutine substep(npart,ntypes,nptmass,dtsph,dtextforce,time,xyzh,vxyzu,fext, &
+  real    :: timei,time_par,dt,t_end_step
+  real    :: dtextforce_min
+  real(kind=4) :: t1,t2,tcpu1,tcpu2
++ integer :: nb_i
++ real    :: nb_phi,nb_dtf,nb_fv(3)
++!
++! nebula_vsync: the stored external force holds the velocity-dependent (GN) part evaluated
++! at the end of the last substep, before the hydro kicks changed v. The substep leapfrog's
++! opening kick must use the force at the current v (Strang split: hydro kick, then the GN
++! flow from the kicked state; our sim/coupled.py). Recompute it here, as initial.F90 does.
++! Gas only, no sinks (our setup).
++!
++ if (nebula_vsync .and. is_velocity_dependent(iexternalforce)) then
++    !$omp parallel do default(none) shared(npart,xyzh,vxyzu,fext,iexternalforce,time) &
++    !$omp private(nb_i,nb_phi,nb_dtf,nb_fv)
++    do nb_i=1,npart
++       if (.not.isdead_or_accreted(xyzh(4,nb_i))) then
++          call externalforce(iexternalforce,xyzh(1,nb_i),xyzh(2,nb_i),xyzh(3,nb_i),xyzh(4,nb_i), &
++                             time,fext(1,nb_i),fext(2,nb_i),fext(3,nb_i),nb_phi,nb_dtf,ii=nb_i)
++          call externalforce_vdependent(iexternalforce,xyzh(1:3,nb_i),vxyzu(1:3,nb_i),nb_fv,nb_phi)
++          fext(1:3,nb_i) = fext(1:3,nb_i) + nb_fv
++       endif
++    enddo
++    !$omp end parallel do
++ endif
+ !
+ ! determine whether or not to use substepping
+ !
+@@ -1128,7 +1151,7 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
   use options,         only:icooling
   use chem,            only:update_abundances,get_dphot
   use dust_formation,  only:evolve_dust,calc_muGamma
@@ -618,7 +780,7 @@ index bbd23f3..7faab3d 100644
   use eos_HIIR,        only:muion,Tion
  #ifdef KROME
   use part,            only: T_gas_cool
-@@ -1212,6 +1212,10 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
+@@ -1212,6 +1235,10 @@ subroutine cooling_abundances_update(i,pmassi,xyzh,vxyzu,eos_vars,abundance,nucl
   endif
   if ((icooling == 9)  .or. (abs(eos_vars(imu,i) - muion ) < epsilon(muion))) dudtcool = 0.
   if (cooling_in_step .or. use_krome) vxyzu(4,i) = vxyzu(4,i) + dt * dudtcool

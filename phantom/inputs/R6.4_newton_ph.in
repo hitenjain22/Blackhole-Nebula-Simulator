@@ -68,3 +68,4 @@
        nebula_gamma1 =           T
          nebula_cool =           T
        nebula_tfloor =   1.000E+04
+        nebula_orbdt =           T    ! nebula: orbit criterion limits the hydro step too (accuracy test 2026-11-04)
