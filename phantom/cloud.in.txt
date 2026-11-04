@@ -1,14 +1,14 @@
-# Phantom 0855f82ff5f0891b3446f6c58abee61eb5210d36 + phantom/nebula_phantom.patch; run ph_r1 (from t=0)
-# Runtime options file for Phantom, written 04/11/2026 01:45:20.6
+# Phantom 0855f82ff5f0891b3446f6c58abee61eb5210d36 + phantom/nebula_phantom.patch; run ph_r2 (from t=0)
+# Runtime options file for Phantom, written 04/11/2026 03:44:07.5
 # Options not present assume their default values
 # This file is updated automatically after a full dump
 
 # job name
-             logfile =  cloud06.log   ! file to which output is directed
-            dumpfile =  cloud_00095   ! dump file to start from
+             logfile =  cloud08.log   ! file to which output is directed
+            dumpfile =  cloud_00094   ! dump file to start from
 
 # options controlling run time and input/output
-                tmax =   4.400E+05    ! end time
+                tmax =   3.800E+06    ! end time
                dtmax =       4096.    ! time between dumps
                 nmax =          -1    ! maximum number of timesteps (0=just get derivs and stop)
                 nout =          -1    ! write dumpfile every n dtmax (-ve=ignore)
@@ -23,6 +23,7 @@
                 tolv =   1.000E-02    ! tolerance on v iterations in timestepping (>= 100 to skip)
                hfact =       1.600    ! h in units of particle spacing [h = hfact*n^(-1/3)]
                 tolh =   1.000E-04    ! tolerance on h-n iterations
+         nebula_hmax =        200.    ! nebula: cap on h, Omega = 1 at the cap (0=off)
 
 # shock capturing
                alpha =       0.000    ! MINIMUM shock viscosity parameter

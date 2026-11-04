@@ -15,6 +15,72 @@ index 5e12b59c7..83e727c6c 100644
      endif
   endif
   !cooling requires adiabatic eos (e.g. ieos=2)
+diff --git a/src/main/dens.F90 b/src/main/dens.F90
+index 6435880db..18d6bf50b 100644
+--- a/src/main/dens.F90
++++ b/src/main/dens.F90
+@@ -1566,7 +1566,7 @@ subroutine finish_cell(cell,cell_converged,nconverged)
+  use dim,      only:use_apr
+  use io,       only:iprint,fatal
+  use part,     only:get_partinfo,iamgas,maxphase,massoftype,igas,aprmassoftype,nh
+- use options,  only:tolh
++ use options,  only:tolh,nebula_hmax
+ 
+  type(celldens), intent(inout) :: cell
+  logical,        intent(out)   :: cell_converged
+@@ -1620,7 +1620,10 @@ subroutine finish_cell(cell,cell_converged,nconverged)
+        hnew      = 0.8*hi
+     endif
+ 
++    !--nebula: h cap; a particle that wants h above the cap stays at the cap (converged there)
++    if (nebula_hmax > 0. .and. hnew > nebula_hmax) hnew = nebula_hmax
+     converged = ((abs(hnew-hi)/hi_old) < tolh .and. omegat > 0. .and. hi > 0.)
++    if (nebula_hmax > 0. .and. hi >= nebula_hmax .and. hnew >= nebula_hmax) converged = .true.
+     if (cell_converged) cell_converged = converged
+     if (present(nconverged) .and. converged) nconverged = nconverged + 1
+ 
+@@ -1653,7 +1656,7 @@ end subroutine finish_cell
+ !--------------------------------------------------------------------------
+ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gradsofti,dhdni_out,omegat_out)
+  use part,    only:dhdn
+- use options, only:two_kernel
++ use options, only:two_kernel,nebula_hmax
+  real,         intent(in)  :: rhosum(maxrhosum)
+  real,         intent(in)  :: pmassi
+  real,         intent(in)  :: hi
+@@ -1694,6 +1697,10 @@ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gra
+  omegat   = 1. - dhdni*gradh_n
+  zeta_loc = dhdni*gradh_m
+  gradhi   = 1./omegat
++ if (nebula_hmax > 0. .and. hi >= nebula_hmax) then  ! nebula: fixed h at the cap, Omega = 1
++    gradhi   = 1.
++    zeta_loc = 0.
++ endif
+ 
+  if (present(ni)) ni = ni_loc
+  if (present(zeta)) zeta = zeta_loc
+@@ -1719,7 +1726,7 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+  use io,          only:fatal,real4
+  use dim,         only:maxp,ndivcurlB,nalpha,use_dust,do_radiation,use_apr,gravity,&
+                        igradomega,igradzeta,igradsoft
+- use options,     only:use_dustfrac,implicit_radiation,two_kernel
++ use options,     only:use_dustfrac,implicit_radiation,two_kernel,nebula_hmax
+  use viscosity,   only:bulkvisc,shearparam
+  use neighkdtree, only:set_hmaxcell
+  use kernel,      only:radkern
+@@ -1797,7 +1804,11 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+        !
+        !--store final results of density iteration
+        !
+-       xyzh(4,lli) = hn(ni)
++       if (nebula_hmax > 0. .and. hi >= nebula_hmax) then  ! nebula: keep the capped h
++          xyzh(4,lli) = nebula_hmax
++       else
++          xyzh(4,lli) = hn(ni)
++       endif
+        treecache(4,cell%arr_index(i)) = xyzh(4,lli)
+        rho(lli) = rhoi
+ 
 diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
 index ed9092e05..3a40d311d 100644
 --- a/src/main/externalforces.f90
@@ -145,6 +211,49 @@ index 92580da5d..97ea14ba5 100644
                  endif
               endif
               !--energy conservation from artificial viscosity
+diff --git a/src/main/options.f90 b/src/main/options.f90
+index 41f59be46..f212b43d7 100644
+--- a/src/main/options.f90
++++ b/src/main/options.f90
+@@ -44,6 +44,10 @@ module options
+ ! if true, use a distinct (flatter) kernel to set h from number density
+  logical, public :: two_kernel
+ 
++ ! nebula: cap on the smoothing length (0 = off). A capped particle keeps h fixed at the
++ ! cap: summed density, Omega = 1 (fixed-h SPH), as our sim/sph.py h_max and SWIFT
++ real, public :: nebula_hmax = 0.
++
+ ! dust method
+  logical, public :: use_dustfrac, use_hybrid, use_porosity
+ 
+diff --git a/src/main/readwrite_infile.f90 b/src/main/readwrite_infile.f90
+index 2af4e0126..74b3b7803 100644
+--- a/src/main/readwrite_infile.f90
++++ b/src/main/readwrite_infile.f90
+@@ -28,6 +28,7 @@ module readwrite_infile
+ !
+  use options,   only:iexternalforce
+  use part,      only:hfact,tolh
++ use options,   only:nebula_hmax
+  use dim,       only:do_radiation,nucleation,use_dust,use_dustgrowth,mhd_nonideal,compiled_with_mcfost,&
+                      inject_parts,curlv,driving,track_lum,disc_viscosity,isothermal,use_dustgrowth_coala
+  implicit none
+@@ -107,6 +108,7 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
+  call write_options_tree(iwritein)
+  call write_inopt(hfact,'hfact','h in units of particle spacing [h = hfact*n^(-1/3)]',iwritein)
+  call write_inopt(tolh,'tolh','tolerance on h-n iterations',iwritein,exp=.true.)
++ call write_inopt(nebula_hmax,'nebula_hmax','nebula: cap on h, Omega = 1 at the cap (0=off)',iwritein)
+ 
+  ! in GR energy variable is an entropy, so ishock_heating=0 also switches off conductivity
+  call write_options_shock_capturing(iwritein,use_conductivity=.not.(gr .and. ishock_heating == 0))
+@@ -326,6 +328,7 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
+  call read_inopt(hfact,'hfact',db,errcount=nerr,min=1.,max=5.)
+  call read_inopt(tolh,'tolh',db,errcount=nerr,min=epsilon(tolh))
+  if (tolh > 1.e-3) call warn(label,'tolh is quite large!')
++ call read_inopt(nebula_hmax,'nebula_hmax',db,errcount=nerr,default=0.,min=0.)
+ 
+  ! parse options internal to other code modules
+  call read_options_iocontrol(db,nerr)
 diff --git a/src/main/shock_capturing.f90 b/src/main/shock_capturing.f90
 index 43f171dde..1561da59d 100644
 --- a/src/main/shock_capturing.f90
