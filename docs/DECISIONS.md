@@ -525,3 +525,13 @@ orbfac 0.04 (chosen earlier from pictures only: a rule-6 breach, AI_LOG) drifted
 **Rule 2:** `test_phantom_pkick_matches_gn_mass_matrix_inv` (tests/sim/test_phantom_patch.py; sample from Phantom's day-96 state, r down to 22): Phantom's Minv a matches physics/gravity.gn_mass_matrix_inv to 4e-16; the transform itself changes a by up to 17% there. orbdt reuses the existing orbfac formula; vsync and gn_tolv call Phantom's own GN force and solve.
 
 **Known small difference kept:** Phantom's shock switch uses the time derivative of div v from fxyzu + fext (hydro + gravity); ours uses the hydro acceleration only. It affects only the switch's trigger, and the close-pass ledger is now at our code's level.
+
+### 2026-11-09: h prediction respects the h cap (patch fix)
+
+**Why:** R6.1_100k_ph's ledger grew with swallowing after day 105 (4.8e-3 of sum m|H| by day 143; our R6.1_100k ~1e-5; paused 2026-11-04 at Hiten's request). Per-particle audit: each jump came from a few sparse particles 50-300 from the hole, most with h above the 200 cap (266, 343, 367). Phantom predicts h every step from div v (step_leapfrog.f90 predict_sph) without the cap; a particle that is not recomputed that step acts on its neighbours with the over-cap h, then snaps back to 200 at its next density solve (a sudden force change). Over-cap particles first appear at day 104.4 (dump 208) and grow with the drift (1, 4, 9, 11 at days 105, 115, 120, 144).
+
+**Fix (part of nebula_hmax, no new option):** the predicted h is capped, min(h_pred, nebula_hmax), as in our code (inactive particles keep their solved, capped h).
+
+**Test (restart from day 115, 100k, to day 121; tests_ph/HA, HB on nebula-sim):** old build 7.5e-4 (reproduces the main run's growth); fixed build 4.7e-5, of which 4.8e-5 is the first half day (the start dump already held 4 over-cap particles from the old run) and flat afterwards; fixed build also 1.8x faster (45 vs 81 min).
+
+**Consequence:** the main run continues from dump 207 (day 103.9, the last dump with no over-cap h) as a new run R6.1_100k_ph_b (rule 8: R6.1_100k_ph kept as it is). The paused 50k runs (stopped at day 103-104) restart from their last dump with no over-cap h.

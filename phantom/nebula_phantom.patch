@@ -726,6 +726,38 @@ index 43f171d..b0dd66f 100644
  
   if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
   if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')
+diff --git a/src/main/step_leapfrog.f90 b/src/main/step_leapfrog.f90
+index e695d28..73f6d3c 100644
+--- a/src/main/step_leapfrog.f90
++++ b/src/main/step_leapfrog.f90
+@@ -95,7 +95,7 @@ subroutine step(npart,nactive,t,dtsph,dtextforce,dtnew)
+                           use_dustgrowth,use_krome,gr,do_radiation,use_apr,use_sinktree
+  use io,             only:iprint,fatal,iverbose,id,master,warning
+  use options,        only:iexternalforce,use_dustfrac,implicit_radiation,&
+-                          use_porosity,icooling
++                          use_porosity,icooling,nebula_hmax
+  use shock_capturing,only:avdecayconst,alpha,alphamax
+  use part,           only:xyzh,vxyzu,fxyzu,fext,divcurlv,divcurlB,Bevol,dBevol, &
+                           rad,drad,radprop,isdead_or_accreted,rho,&
+@@ -300,7 +300,7 @@ subroutine step(npart,nactive,t,dtsph,dtextforce,dtnew)
+ !$omp shared(Bevol,dBevol,Bpred,dtsph,iphase) &
+ !$omp shared(dustevol,ddustprop,dustprop,dustproppred,dustfrac,ddustevol,dustpred,use_dustfrac) &
+ !$omp shared(filfac,filfacpred,use_porosity) &
+-!$omp shared(alphaind,alphamax,ialphaloc,metrics) &
++!$omp shared(alphaind,alphamax,ialphaloc,metrics,nebula_hmax) &
+ !$omp shared(eos_vars,ufloor,icooling,Tfloor) &
+ !$omp shared(twas,timei) &
+ !$omp shared(rad,drad,radpred)&
+@@ -329,6 +329,9 @@ subroutine step(npart,nactive,t,dtsph,dtextforce,dtnew)
+        ! make prediction for h
+        !
+        xyzh(4,i) = xyzh(4,i) - dtsph*(-xyzh(4,i)/3.)*divcurlv(1,i)
++       !--nebula: the predicted h never exceeds the cap (as in our code; a particle not
++       !  recomputed this step would otherwise act on its neighbours with h above the cap)
++       if (nebula_hmax > 0.) xyzh(4,i) = min(xyzh(4,i),nebula_hmax)
+        !
+        ! make a prediction for v and u to the full step for use in the
+        ! force evaluation. These have already been updated to the
 diff --git a/src/main/substepping.F90 b/src/main/substepping.F90
 index bbd23f3..da0d8a7 100644
 --- a/src/main/substepping.F90
