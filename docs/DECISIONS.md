@@ -535,3 +535,11 @@ orbfac 0.04 (chosen earlier from pictures only: a rule-6 breach, AI_LOG) drifted
 **Test (restart from day 115, 100k, to day 121; tests_ph/HA, HB on nebula-sim):** old build 7.5e-4 (reproduces the main run's growth); fixed build 4.7e-5, of which 4.8e-5 is the first half day (the start dump already held 4 over-cap particles from the old run) and flat afterwards; fixed build also 1.8x faster (45 vs 81 min).
 
 **Consequence:** the main run continues from dump 207 (day 103.9, the last dump with no over-cap h) as a new run R6.1_100k_ph_b (rule 8: R6.1_100k_ph kept as it is). The paused 50k runs (stopped at day 103-104) restart from their last dump with no over-cap h.
+
+### 2026-11-09 (night): the video comes first; Phantom's remaining ledger drift accepted for the video run
+
+**Hiten (with the mentor's view):** "our results dont really matter much ... as long as the video looks good, it is all good. It should still be realistic to some extent and look nice ... if the science is the problem, that is fine."
+
+**State:** the remaining Phantom drift (after the two h-cap fixes) is a deficit in the hydro work of the few particles nearest the hole (about 10 of 100,000, r < ~100) when nebula_orbdt is combined with individual time steps; not yet explained (four hypotheses ruled out; HANDOFF 2026-11-09). It reaches ~1e-3 of sum m|H| by day 150, comparable to the radiated energy, so energy and light-curve numbers from Phantom runs are not science-grade; the gas distribution (what the video shows) is set by the other 99.99% of particles.
+
+**Decision:** R6.1_100k_ph_b (h-prediction cap fix, commit fa69dcc patch) is resumed from its day-150.6 dump and run to the end for the HD video; its ledger is still computed and reported, with this caveat. Rule 9 exception for this run only, by Hiten's decision. Science runs (R6.2-R6.5) stay on hold.
