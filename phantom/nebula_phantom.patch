@@ -1,5 +1,5 @@
 diff --git a/src/main/checksetup.f90 b/src/main/checksetup.f90
-index 5e12b59..83e727c 100644
+index 5e12b59c7..83e727c6c 100644
 --- a/src/main/checksetup.f90
 +++ b/src/main/checksetup.f90
 @@ -1142,9 +1142,9 @@ subroutine check_cooling(xcom,vcom,nerror)
@@ -16,7 +16,7 @@ index 5e12b59..83e727c 100644
   endif
   !cooling requires adiabatic eos (e.g. ieos=2)
 diff --git a/src/main/cooling.f90 b/src/main/cooling.f90
-index 721a263..29742b2 100644
+index 721a263aa..29742b204 100644
 --- a/src/main/cooling.f90
 +++ b/src/main/cooling.f90
 @@ -35,6 +35,7 @@ module cooling
@@ -60,7 +60,7 @@ index 721a263..29742b2 100644
      call cooling_Gammie_PL_explicit(xi,yi,zi,ui,dudt)
   case (9)
 diff --git a/src/main/cooling_gammie.f90 b/src/main/cooling_gammie.f90
-index 041be74..91c6ffd 100644
+index 041be743d..91c6ffdbe 100644
 --- a/src/main/cooling_gammie.f90
 +++ b/src/main/cooling_gammie.f90
 @@ -21,6 +21,11 @@ module cooling_gammie
@@ -126,7 +126,7 @@ index 041be74..91c6ffd 100644
  end subroutine read_options_cooling_gammie
  
 diff --git a/src/main/dens.F90 b/src/main/dens.F90
-index 6435880..a054f90 100644
+index 6435880db..2832e1694 100644
 --- a/src/main/dens.F90
 +++ b/src/main/dens.F90
 @@ -976,6 +976,46 @@ end subroutine get_density_sums
@@ -185,18 +185,20 @@ index 6435880..a054f90 100644
  
   type(celldens), intent(inout) :: cell
   logical,        intent(out)   :: cell_converged
-@@ -1620,7 +1660,10 @@ subroutine finish_cell(cell,cell_converged,nconverged)
+@@ -1620,7 +1660,12 @@ subroutine finish_cell(cell,cell_converged,nconverged)
         hnew      = 0.8*hi
      endif
  
 +    !--nebula: h cap; a particle that wants h above the cap stays at the cap (converged there)
 +    if (nebula_hmax > 0. .and. hnew > nebula_hmax) hnew = nebula_hmax
      converged = ((abs(hnew-hi)/hi_old) < tolh .and. omegat > 0. .and. hi > 0.)
-+    if (nebula_hmax > 0. .and. hi >= nebula_hmax .and. hnew >= nebula_hmax) converged = .true.
++    !  a particle whose step reaches the cap is converged only once it sits exactly at the cap
++    !  (otherwise one converged just below it would store hn(ni) > cap with Omega /= 1)
++    if (nebula_hmax > 0. .and. hnew >= nebula_hmax) converged = (hi >= nebula_hmax)
      if (cell_converged) cell_converged = converged
      if (present(nconverged) .and. converged) nconverged = nconverged + 1
  
-@@ -1653,7 +1696,7 @@ end subroutine finish_cell
+@@ -1653,7 +1698,7 @@ end subroutine finish_cell
  !--------------------------------------------------------------------------
  pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gradsofti,dhdni_out,omegat_out)
   use part,    only:dhdn
@@ -205,7 +207,7 @@ index 6435880..a054f90 100644
   real,         intent(in)  :: rhosum(maxrhosum)
   real,         intent(in)  :: pmassi
   real,         intent(in)  :: hi
-@@ -1694,6 +1737,10 @@ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gra
+@@ -1694,6 +1739,10 @@ pure subroutine finish_rhosum(rhosum,pmassi,hi,iterating,rhoi,ni,gradhi,zeta,gra
   omegat   = 1. - dhdni*gradh_n
   zeta_loc = dhdni*gradh_m
   gradhi   = 1./omegat
@@ -216,7 +218,7 @@ index 6435880..a054f90 100644
  
   if (present(ni)) ni = ni_loc
   if (present(zeta)) zeta = zeta_loc
-@@ -1719,7 +1766,7 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1719,7 +1768,7 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
   use io,          only:fatal,real4
   use dim,         only:maxp,ndivcurlB,nalpha,use_dust,do_radiation,use_apr,gravity,&
                         igradomega,igradzeta,igradsoft
@@ -225,7 +227,7 @@ index 6435880..a054f90 100644
   use viscosity,   only:bulkvisc,shearparam
   use neighkdtree, only:set_hmaxcell
   use kernel,      only:radkern
-@@ -1797,7 +1844,11 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1797,7 +1846,11 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
         !
         !--store final results of density iteration
         !
@@ -238,7 +240,7 @@ index 6435880..a054f90 100644
         treecache(4,cell%arr_index(i)) = xyzh(4,lli)
         rho(lli) = rhoi
  
-@@ -1851,7 +1902,9 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1851,7 +1904,9 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
         if (getdv) then
            ndivcurlv = size(divcurlv,dim=1)
            call calculate_rmatrix_from_sums(rhosum,denom,rmatrix,igotrmatrix)
@@ -248,7 +250,7 @@ index 6435880..a054f90 100644
            divcurlv(1:ndivcurlv,lli) = real(divcurlvi(1:ndivcurlv),kind=kind(divcurlv)) ! save to global memory
            if (nalpha >= 3) alphaind(3,lli) = real4(divcurlvi(5))
         else ! we always need div v for h prediction
-@@ -1873,7 +1926,10 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
+@@ -1873,7 +1928,10 @@ subroutine store_results(icall,cell,getdv,getdb,realviscosity,stressmax,xyzh,&
         !--get strain tensor from summations
         !
         if (maxdvdx==maxp .and. getdv) then
@@ -261,7 +263,7 @@ index 6435880..a054f90 100644
            ! check for negative stresses to prevent tensile instability
            if (realviscosity) call get_max_stress(dvdxi,divcurlvi(1),rho1i,stressmax,shearparam,bulkvisc)
 diff --git a/src/main/eos.f90 b/src/main/eos.f90
-index 20c1112..566d7d6 100644
+index 20c111204..566d7d6d4 100644
 --- a/src/main/eos.f90
 +++ b/src/main/eos.f90
 @@ -89,6 +89,9 @@ module eos
@@ -303,7 +305,7 @@ index 20c1112..566d7d6 100644
   call read_inopt(Z_in,'Z',db,errcount=nerr,min=0.,max=1.,default=Z_in)
   if (.not.isothermal .and. eos_allows_shock_and_work(ieos)) then
 diff --git a/src/main/extern_gnewton.f90 b/src/main/extern_gnewton.f90
-index 410269d..20d7b9a 100644
+index 410269d8b..20d7b9a8a 100644
 --- a/src/main/extern_gnewton.f90
 +++ b/src/main/extern_gnewton.f90
 @@ -23,6 +23,9 @@ module extern_gnewton
@@ -330,7 +332,7 @@ index 410269d..20d7b9a 100644
   its = 0
   converged = .false.
 diff --git a/src/main/externalforces.f90 b/src/main/externalforces.f90
-index ed9092e..43c3cb1 100644
+index ed9092e05..43c3cb198 100644
 --- a/src/main/externalforces.f90
 +++ b/src/main/externalforces.f90
 @@ -43,6 +43,7 @@ module externalforces
@@ -390,10 +392,27 @@ index ed9092e..43c3cb1 100644
  
   select case(iexternalforce)
 diff --git a/src/main/force.F90 b/src/main/force.F90
-index 92580da..4a7ac7c 100644
+index 92580da5d..4783a5e04 100644
 --- a/src/main/force.F90
 +++ b/src/main/force.F90
-@@ -948,6 +948,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -217,6 +217,7 @@ subroutine force(icall,npart,xyzh,vxyzu,fxyzu,divcurlv,divcurlB,Bevol,dBevol,&
+  use viscosity,    only:irealvisc,shearfunc,dt_viscosity
+ #ifdef IND_TIMESTEPS
+  use timestep_ind, only:nbinmax,ibinnow,get_newbin
++ use options,      only:nebula_binlim
+  use timestep,     only:nsteps,time
+ #else
+  use timestep,     only:C_cour,C_force
+@@ -347,7 +348,7 @@ subroutine force(icall,npart,xyzh,vxyzu,fxyzu,divcurlv,divcurlB,Bevol,dBevol,&
+  dtradfacmax     = 0.0
+  dtcleanfacmean  = 0.0
+  dtcleanfacmax   = 0.0
+- ibinnow_m1      = ibinnow - 1_1
++ ibinnow_m1      = ibinnow - int(nebula_binlim,kind=1)  ! nebula_binlim (1 = Phantom)
+ #else
+  ibinnow_m1      = 0
+ #endif
+@@ -948,6 +949,8 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
                         ihsoft
   use dim,         only:maxalpha,maxp,mhd_nonideal,gravity,gr,use_apr,isothermal,&
                        use_sinktree,disc_viscosity,track_lum,igradomega,igradsoft,igradzeta
@@ -402,7 +421,7 @@ index 92580da..4a7ac7c 100644
   use part,        only:rho,dvdx,aprmassoftype,shortsinktree
   use nicil,       only:nimhd_get_jcbcb,nimhd_get_dBdt
   use eos,         only:ieos,eos_is_non_ideal,use_var_comp,icooling
-@@ -1048,6 +1050,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1048,6 +1051,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
   real    :: auterm,avBterm,vsigB
   real    :: jcbcbj(3),jcbj(3),dBnonideal(3),dBnonidealj(3),divBi,curlBi(3),curlBj(3)
   real    :: vsigavi,vsigavj
@@ -410,7 +429,7 @@ index 92580da..4a7ac7c 100644
   real    :: dustfraci(maxdusttypes),dustfracj(maxdusttypes),tsi(maxdusttypes)
   real    :: sqrtrhodustfraci(maxdusttypes),sqrtrhodustfracj(maxdusttypes)
   real    :: dustfracisum,dustfracjsum,rhogasj,epstsi!,rhogas1j
-@@ -1436,9 +1439,39 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1436,9 +1440,39 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
         ! do the projection here
         projv = dvx*runix + dvy*runiy + dvz*runiz
  
@@ -451,7 +470,7 @@ index 92580da..4a7ac7c 100644
               tempj = eos_vars(itemp,j)
               denij = 0.5*(eni/max(tempi,1.) + enj/max(tempj,1.))*(tempi - tempj)  !dU = c_V * dT, but with a floor to avoid issues with very low temperatures
            else
-@@ -1480,7 +1513,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1480,7 +1514,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
               vsigavi   = alphai*vsigi
            else
               vsigi     = max(vwavei - beta*projv,0.)
@@ -460,7 +479,7 @@ index 92580da..4a7ac7c 100644
            endif
            if (vsigi > vsigmax) vsigmax = vsigi
  
-@@ -1555,7 +1588,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1555,7 +1589,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
                  vsigavj = alphaj*vsigj
               else
                  vsigj = max(vwavej - beta*projv,0.)
@@ -469,7 +488,7 @@ index 92580da..4a7ac7c 100644
               endif
               if (vsigj > vsigmax) vsigmax = vsigj
            else
-@@ -1640,13 +1673,13 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1640,13 +1674,13 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
                  dudtdissi = -0.5*pmassj*rho1i*alphai*spsoundi*hi*rij1*projv**2*grkerni
               endif
            else
@@ -486,7 +505,7 @@ index 92580da..4a7ac7c 100644
                  endif
               endif
               !--energy conservation from artificial viscosity
-@@ -1674,7 +1707,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
+@@ -1674,7 +1708,7 @@ subroutine compute_forces(i,iamgasi,iamdusti,xpartveci,hi,hi1,hi21,hi41,gradhi,g
                  else
                     vsigu = abs(vij)  ! Eq 61 in LP19
                  endif
@@ -495,17 +514,17 @@ index 92580da..4a7ac7c 100644
                  vsigu = abs(projv)
               else
                  rhoav1 = 2./(rhoi + rhoj)
-@@ -2741,6 +2774,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+@@ -2741,6 +2775,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
                            ind_timesteps,ndivcurlB
   use eos,            only:ieos,icooling,iopacity_type,ipdv_heating,ishock_heating,correct_entropy_derivative
   use options,        only:alpha,use_dustfrac,implicit_radiation,use_porosity
-+ use options,        only:nebula_pkick,iexternalforce,nebula_orbdt
++ use options,        only:nebula_pkick,iexternalforce,nebula_orbdt,nebula_binlim
 + use externalforces, only:iext_gnewton,mass1,orbfac,iext_star
 + use units,          only:get_c_code
   use part,           only:iboundary,igas,isink,maxphase,maxvxyzu,nptmass,xyzmh_ptmass,eos_vars, &
                            massoftype,get_partinfo,tstop,strain_from_dvdx,ithick,iradP,sinks_have_heating,&
                            luminosity,nucleation,idK2,idkappa,dust_temp,ndustsmall,imu,&
-@@ -2772,6 +2808,7 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+@@ -2772,6 +2809,7 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
   use eos_stamatellos,only:duSPH
   integer,         intent(in)    :: icall
   type(cellforce), intent(inout) :: cell
@@ -513,7 +532,7 @@ index 92580da..4a7ac7c 100644
   real,            intent(inout) :: fxyzu(:,:)
   real,            intent(in)    :: xyzh(:,:)
   real,            intent(inout) :: vxyzu(:,:)
-@@ -3052,6 +3089,18 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+@@ -3052,6 +3090,18 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
         fxyzu(2,i) = fsum(ifyi)
         fxyzu(3,i) = fsum(ifzi)
      endif
@@ -532,7 +551,7 @@ index 92580da..4a7ac7c 100644
      if (use_dust) then
         if (drag_implicit) then
            fxyz_drag(1,i) = fsum(ifdragxi)
-@@ -3378,6 +3427,17 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+@@ -3378,13 +3428,26 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
      else
         dtchar = 'dt_courant'
      endif
@@ -550,7 +569,17 @@ index 92580da..4a7ac7c 100644
      !
      allow_decrease = (icall < 2)
      call get_newbin(dti,dtmax,ibin(i),allow_decrease,dtchar=dtchar) ! get new timestep bin based on dti
-@@ -3395,6 +3455,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
+     !
+     ! Saitoh-Makino limiter, do not allow timestep to be more than 1 bin away from neighbours
+     !
+-    ibin(i) = max(ibin(i),ibin_neighi-1_1)
++    ! nebula_binlim: allowed neighbour step ratio 2**nebula_binlim (Phantom: 1, ratio 2;
++    ! Saitoh & Makino 2009, ApJ 697 L99, used a ratio of 4 = 2 bins)
++    ibin(i) = max(ibin(i),ibin_neighi-int(nebula_binlim,kind=1))
+     !
+     ! find the new maximum value of ibin
+     nbinmaxnew = max(nbinmaxnew,int(ibin(i)))
+@@ -3395,6 +3458,9 @@ subroutine finish_cell_and_store_results(icall,cell,fxyzu,xyzh,vxyzu,poten,dt,dv
  
      dtcourant = min(dtcourant,dtc)
      dtforce   = min(dtforce,dtf,dtcool,dtdrag,dtdusti,dtclean)
@@ -561,10 +590,10 @@ index 92580da..4a7ac7c 100644
      dtvisc    = min(dtvisc,dtvisci)
      if (mhd_nonideal .and. iamgasi) then
 diff --git a/src/main/options.f90 b/src/main/options.f90
-index 41f59be..c69f426 100644
+index 41f59be46..fe95bfad2 100644
 --- a/src/main/options.f90
 +++ b/src/main/options.f90
-@@ -44,6 +44,19 @@ module options
+@@ -44,6 +44,21 @@ module options
  ! if true, use a distinct (flatter) kernel to set h from number density
   logical, public :: two_kernel
  
@@ -580,12 +609,14 @@ index 41f59be..c69f426 100644
 + logical, public :: nebula_pkick = .false.  ! nebula: hydro force acts on GN momentum p
 + logical, public :: nebula_vsync = .false.  ! nebula: refresh v-dependent force before substeps
 + logical, public :: nebula_orbdt = .false.  ! nebula: orbit criterion also limits the hydro step
++ ! nebula: neighbour time-step limiter, steps may differ by 2**nebula_binlim (Phantom: 1)
++ integer, public :: nebula_binlim = 1
 +
  ! dust method
   logical, public :: use_dustfrac, use_hybrid, use_porosity
  
 diff --git a/src/main/readwrite_dumps.f90 b/src/main/readwrite_dumps.f90
-index 642a15f..5cfdf60 100644
+index 642a15f38..beac57397 100644
 --- a/src/main/readwrite_dumps.f90
 +++ b/src/main/readwrite_dumps.f90
 @@ -63,6 +63,8 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
@@ -597,7 +628,7 @@ index 642a15f..5cfdf60 100644
   use dump_utils, only:tag,open_dumpfile_w,allocate_header,&
                     free_header,write_header,write_array,write_block_header
   use mpiutils,   only:reduce_mpi,reduceall_mpi,start_threadwrite,end_threadwrite
-@@ -256,7 +258,13 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
+@@ -256,7 +258,14 @@ subroutine write_fulldump(t,dumpfile,ntotal,iorder,sphNG)
         ! smoothing length written as real*4 to save disk space
         call write_array(1,xyzh,xyzh_label,1,npart,k,ipass,idump,nums,nerr,use_kind=4,index=4)
         ! write rho with APR or two_kernel (otherwise recoverable from h via init_rho_from_h)
@@ -608,12 +639,13 @@ index 642a15f..5cfdf60 100644
 +       if (nebula_dumpderivs) then
 +          call write_array(1,fxyzu,(/'fx  ','fy  ','fz  ','dudt'/),4,npart,k,ipass,idump,nums,nerr)
 +          call write_array(1,dvdx,dvdx_label,9,npart,k,ipass,idump,nums,nerr)
++          if (allocated(ibin)) call write_array(1,ibin,'ibin',npart,k,ipass,idump,nums,nerr)  ! time-step bin
 +       endif
         if (maxalpha==maxp) call write_array(1,alphaind,(/'alpha'/),1,npart,k,ipass,idump,nums,nerr)
         call write_array(1,divcurlv,divcurlv_label,ndivcurlv,npart,k,ipass,idump,nums,nerr)
         !if (maxdvdx==maxp) call write_array(1,dvdx,dvdx_label,9,npart,k,ipass,idump,nums,ierrs(17))
 diff --git a/src/main/readwrite_dumps_common.f90 b/src/main/readwrite_dumps_common.f90
-index caa35ee..b5651d2 100644
+index caa35eedd..b5651d294 100644
 --- a/src/main/readwrite_dumps_common.f90
 +++ b/src/main/readwrite_dumps_common.f90
 @@ -261,6 +261,7 @@ end subroutine unfill_header
@@ -650,18 +682,18 @@ index caa35ee..b5651d2 100644
      call extract('C_force',C_forcefile,hdr,ierr)
      call extract('alpha',alphafile,hdr,ierr)
 diff --git a/src/main/readwrite_infile.f90 b/src/main/readwrite_infile.f90
-index 2af4e01..a12766e 100644
+index 2af4e0126..3eecb256b 100644
 --- a/src/main/readwrite_infile.f90
 +++ b/src/main/readwrite_infile.f90
 @@ -28,6 +28,7 @@ module readwrite_infile
  !
   use options,   only:iexternalforce
   use part,      only:hfact,tolh
-+ use options,   only:nebula_hmax,nebula_dumpderivs,nebula_grad,nebula_pkick,nebula_vsync,nebula_orbdt
++ use options,   only:nebula_hmax,nebula_dumpderivs,nebula_grad,nebula_pkick,nebula_vsync,nebula_orbdt,nebula_binlim
   use dim,       only:do_radiation,nucleation,use_dust,use_dustgrowth,mhd_nonideal,compiled_with_mcfost,&
                       inject_parts,curlv,driving,track_lum,disc_viscosity,isothermal,use_dustgrowth_coala
   implicit none
-@@ -107,6 +108,13 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
+@@ -107,6 +108,14 @@ subroutine write_infile(infile,logfile,evfile,dumpfile,iwritein,iprint)
   call write_options_tree(iwritein)
   call write_inopt(hfact,'hfact','h in units of particle spacing [h = hfact*n^(-1/3)]',iwritein)
   call write_inopt(tolh,'tolh','tolerance on h-n iterations',iwritein,exp=.true.)
@@ -670,12 +702,13 @@ index 2af4e01..a12766e 100644
 + call write_inopt(nebula_pkick,'nebula_pkick','nebula: hydro force on GN momentum p',iwritein)
 + call write_inopt(nebula_vsync,'nebula_vsync','nebula: refresh v-dependent force after hydro kicks',iwritein)
 + call write_inopt(nebula_orbdt,'nebula_orbdt','nebula: orbit criterion limits the hydro step too',iwritein)
++ call write_inopt(nebula_binlim,'nebula_binlim','nebula: neighbour steps may differ by 2**binlim (1=Phantom)',iwritein)
 + if (nebula_dumpderivs) call write_inopt(nebula_dumpderivs,'nebula_dumpderivs',&
 +     'nebula: write fx,fy,fz,dudt,dvdx to full dumps',iwritein)
  
   ! in GR energy variable is an entropy, so ishock_heating=0 also switches off conductivity
   call write_options_shock_capturing(iwritein,use_conductivity=.not.(gr .and. ishock_heating == 0))
-@@ -326,6 +334,12 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
+@@ -326,6 +335,13 @@ subroutine read_options_from_db(db,nerr,logfile,dumpfile,evfile)
   call read_inopt(hfact,'hfact',db,errcount=nerr,min=1.,max=5.)
   call read_inopt(tolh,'tolh',db,errcount=nerr,min=epsilon(tolh))
   if (tolh > 1.e-3) call warn(label,'tolh is quite large!')
@@ -685,11 +718,12 @@ index 2af4e01..a12766e 100644
 + call read_inopt(nebula_pkick,'nebula_pkick',db,errcount=nerr,default=.false.)
 + call read_inopt(nebula_vsync,'nebula_vsync',db,errcount=nerr,default=.false.)
 + call read_inopt(nebula_orbdt,'nebula_orbdt',db,errcount=nerr,default=.false.)
++ call read_inopt(nebula_binlim,'nebula_binlim',db,errcount=nerr,default=1,min=1,max=3)
  
   ! parse options internal to other code modules
   call read_options_iocontrol(db,nerr)
 diff --git a/src/main/shock_capturing.f90 b/src/main/shock_capturing.f90
-index 43f171d..b0dd66f 100644
+index 43f171dde..b0dd66fc8 100644
 --- a/src/main/shock_capturing.f90
 +++ b/src/main/shock_capturing.f90
 @@ -34,6 +34,12 @@ module shock_capturing
@@ -727,7 +761,7 @@ index 43f171d..b0dd66f 100644
   if (alphamax < tiny(alphamax)) call warn(label,'alphamax = 0 means no shock viscosity')
   if (alphamax < 1.) call warn(label,'alphamax < 1 is dangerous if there are shocks: don''t publish crap')
 diff --git a/src/main/step_leapfrog.f90 b/src/main/step_leapfrog.f90
-index e695d28..73f6d3c 100644
+index e695d2871..73f6d3cd4 100644
 --- a/src/main/step_leapfrog.f90
 +++ b/src/main/step_leapfrog.f90
 @@ -95,7 +95,7 @@ subroutine step(npart,nactive,t,dtsph,dtextforce,dtnew)
@@ -759,7 +793,7 @@ index e695d28..73f6d3c 100644
         ! make a prediction for v and u to the full step for use in the
         ! force evaluation. These have already been updated to the
 diff --git a/src/main/substepping.F90 b/src/main/substepping.F90
-index bbd23f3..da0d8a7 100644
+index bbd23f3d9..da0d8a7a3 100644
 --- a/src/main/substepping.F90
 +++ b/src/main/substepping.F90
 @@ -277,8 +277,9 @@ subroutine substep(npart,ntypes,nptmass,dtsph,dtextforce,time,xyzh,vxyzu,fext, &

@@ -546,3 +546,23 @@ orbfac 0.04 (chosen earlier from pictures only: a rule-6 breach, AI_LOG) drifted
 
 ## 2026-11-10: video run R6.1_100k_ph_b ends at day 500, not 931 (Hiten)
 The run was slower than estimated (4-9 min per half day once gas piled up near the hole). The video does not need the full 931 days, so ~/cut_500.sh on nebula-sim-2 stops phantom after dump 996 (day 500), notes it in the manifest (cut_note) and queue.log; ~/video_job2.sh (replaces video_job.sh) accepts that end and uses dumps up to 996. Saves several days and roughly half the remaining cost.
+
+## 2026-11-12: faster Phantom settings for video runs (Hiten: "that's fine"; video first)
+
+**Why:** R6.1_100k_ph_b slowed to ~45 min per half day after day 250. A derivative dump of day 280 (with the new ibin output) showed every particle's time-step bin = 17 - (neighbour hops from the single particle at r = 5.6), for ~40,000 particles: Phantom's Saitoh-Makino limiter allows only a factor 2 per neighbour hop (force.F90), and with h capped at 200 one hop reaches 400. Bin tables also showed Phantom's per-substep work over all particles dominates, so the cost is set by the smallest step anywhere (the innermost particle's orbit criterion C_force*orbfac*r^1.5).
+
+**Tests** (one dump from day 279.6, 100k; CPU s; and the close pass day 90-100.4, 50k, ledger dE/sum m|H| at 100.4):
+
+| Settings | speed-up | close-pass drift |
+|---|---|---|
+| production (binlim 1, accradius 4, orbfac 0.005) | 1 | 1.13e-4 |
+| nebula_binlim 2 | 1.37 | 1.14e-4 |
+| binlim 2 + orbfac 0.01 | 2.2 | 1.23e-4 |
+| binlim 2 + accradius 15 | 2.9 | - |
+| **binlim 2 + accradius 15 + orbfac 0.01** | **5.5** | (1.23e-4 without the accradius change, which does not act at the pass) |
+
+Pictures at day 280.1 indistinguishable (outputs/checks/speed_settings_compare_day280.png).
+
+**Decision:** video runs use `nebula_binlim = 2` (new patch option: neighbour steps may differ by 4, the ratio Saitoh & Makino 2009 used; also applied to Phantom's wake-up), `orbfac = 0.01`, `accradius1 = accradius1_hard = 15`. This is a corner cut accepted for the video (gas inside r = 15 is swallowed early; orbit steps twice as long, +8% close-pass drift). Science-grade runs, if any, revisit this. Patch regenerated (also includes the 2026-11-09 hconv fix and the ibin dump output).
+
+**Open:** the production settings now give 1.1e-4 on the close-pass test, not P11's 6.3e-6 (2026-11-04; radiated energy also differs, 1.7e-4 vs 9.1e-5), so P11's setup or the h-cap fixes differ. Not chased (drift accepted for the video).
