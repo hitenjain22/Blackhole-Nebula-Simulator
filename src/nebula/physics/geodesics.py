@@ -143,3 +143,32 @@ def schw_ray_path(D: float, psi: float, n: int) -> tuple[np.ndarray, np.ndarray]
             u = sol.sol(phi)[0]
     r = 1.0 / u
     return phi, np.column_stack([r * np.cos(phi), r * np.sin(phi)])
+
+
+def schw_static_proper_length(dl, dr, r):
+    """Proper length [GM/c^2] measured by static observers along a short straight step.
+
+    The spatial Schwarzschild metric (Schwarzschild coordinates, G = c = M = 1; e.g. Misner,
+    Thorne & Wheeler 1973, Eq. 31.1) is ds^2 = dr^2 / (1 - 2/r) + r^2 dOmega^2. Splitting a
+    step of coordinate (flat) length dl into its radial part dr and the rest
+    (r^2 dOmega^2 = dl^2 - dr^2):
+
+        ds = sqrt(dl^2 + dr^2 (1 / (1 - 2/r) - 1)) = sqrt(dl^2 + dr^2 * 2 / (r - 2))
+
+    dl, dr, r in GM/c^2; r > 2 is the step's midpoint radius. Phase 8 simplification of the
+    path length in the transfer equation (phases/phase-08-gas-rendering.md 8.4).
+    """
+    dl, dr, r = (np.asarray(a, float) for a in (dl, dr, r))
+    return np.sqrt(dl * dl + dr * dr * 2.0 / (r - 2.0))
+
+
+def schw_radial_proper_distance(r1, r2):
+    """Exact proper distance between radii r1 < r2 (> 2) along a radial line:
+    integral dr / sqrt(1 - 2/r) = F(r2) - F(r1), F(r) = sqrt(r (r - 2)) + 2 ln(sqrt r +
+    sqrt(r - 2)), from integrating the spatial metric above (dF/dr = sqrt(r / (r - 2)); checked
+    against numerical quadrature). Reference value for tests of schw_static_proper_length."""
+
+    def f(r):
+        return np.sqrt(r * (r - 2.0)) + 2.0 * np.log(np.sqrt(r) + np.sqrt(r - 2.0))
+
+    return float(f(r2) - f(r1))

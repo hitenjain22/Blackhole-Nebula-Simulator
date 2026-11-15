@@ -17,17 +17,20 @@ edges leave no seam (8.3).
 
 Marching (8.4): straight sub-steps no longer than half the local cell size of the finest grid
 there (log grid: r min(dln r, dth); box: dx), sampled at each sub-step's midpoint, combined with
-physics.radiative_transfer.transfer_step. Stops when the transmission falls below
-``T_STOP``. Path lengths are flat-space here; step 3 adds the Schwarzschild proper length.
+physics.radiative_transfer.transfer_step. Stops when the transmission falls below ``T_STOP``.
+Path lengths are flat, or with ``curved=True`` the static observer's proper length around the
+hole (step 3; render/bent_rays.py marches bent rays chord by chord).
 
 The emission model is a separate object (``GreyBlackbody``) so Phase 9 can swap it without
 touching the march loop (8 "Done when").
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
+from nebula.physics.geodesics import schw_static_proper_length
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
     grey_absorption,
@@ -108,12 +111,13 @@ def _trilinear(arr, fi, fj, fk, wrap_k):
 def sample_log(tex: Texture, p):
     """(rho, rho (T/T_REF)^4) of the log grid at point p; zero outside r_min..r_max."""
     g = tex.grid
-    r = float(np.sqrt(p @ p))
+    x, y, z = float(p[0]), float(p[1]), float(p[2])
+    r = math.sqrt(x * x + y * y + z * z)
     if not (g.r_min <= r <= g.r_max):
         return 0.0, 0.0
-    fi = np.log(r / g.r_min) / g.dlnr - 0.5
-    fj = np.arccos(np.clip(p[2] / r, -1.0, 1.0)) / g.dth - 0.5
-    fk = (np.arctan2(p[1], p[0]) % (2.0 * np.pi)) / g.dph - 0.5
+    fi = math.log(r / g.r_min) / g.dlnr - 0.5
+    fj = math.acos(min(max(z / r, -1.0), 1.0)) / g.dth - 0.5
+    fk = (math.atan2(y, x) % (2.0 * math.pi)) / g.dph - 0.5
     return _trilinear(tex.rho, fi, fj, fk, True), _trilinear(tex.rho_t4, fi, fj, fk, True)
 
 
@@ -149,21 +153,25 @@ def cell_size(textures, p):
     """Local cell size of the finest grid at p (box dx, or r min(dln r, dth) on the log grid)."""
     base, boxes = textures[0], textures[1:]
     for tb in boxes:
-        if np.all(np.abs(p - np.asarray(tb.grid.centre, float)) <= 0.5 * tb.grid.size):
-            return tb.grid.dx
+        b = tb.grid
+        c, half = b.centre, 0.5 * b.size
+        if all(abs(float(p[a]) - c[a]) <= half for a in range(3)):
+            return b.dx
     g = base.grid
-    r = max(float(np.sqrt(p @ p)), g.r_min)
+    r = max(math.sqrt(float(p[0]) ** 2 + float(p[1]) ** 2 + float(p[2]) ** 2), g.r_min)
     return r * min(g.dlnr, g.dth)
 
 
 # ---------------------------------------------------------------- marching
 
 
-def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0):
+def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved=False):
     """March the straight segment a -> b (front to back) and return (I, T, n_steps).
 
     Each sub-step is at most STEP_FRACTION x the local cell size at both its start and its
-    end (cells shrink toward the hole), sampled at its midpoint.
+    end (cells shrink toward the hole), sampled at its midpoint. ``curved``: optical depth
+    uses the static observer's proper length of each sub-step around the hole
+    (physics.geodesics.schw_static_proper_length) instead of its flat length.
     """
     a = np.asarray(a, float)
     b = np.asarray(b, float)
@@ -178,9 +186,20 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0):
         p = a + s * e
         ds = min(STEP_FRACTION * cell_size(textures, p), length - s)
         ds = min(ds, STEP_FRACTION * cell_size(textures, p + ds * e))
-        lr, lt = sample(textures, p + 0.5 * ds * e)
+        mid = p + 0.5 * ds * e
+        lr, lt = sample(textures, mid)
         src, alpha = model.source_and_absorption(lr, lt)
-        intensity, transmission = transfer_step(intensity, transmission, src, alpha * ds)
+        r_mid = float(np.sqrt(mid @ mid))
+        # A step with no gas changes nothing; skipping it also avoids 0 x infinity when a
+        # captured ray's last step ends exactly on the horizon, where the proper length
+        # diverges (r_mid = 2 happens in float32 on the GPU).
+        if alpha > 0.0 and (not curved or r_mid > 2.0):
+            path = ds
+            if curved:
+                q = p + ds * e
+                dr = float(np.sqrt(q @ q) - np.sqrt(p @ p))
+                path = float(schw_static_proper_length(ds, dr, r_mid))
+            intensity, transmission = transfer_step(intensity, transmission, src, alpha * path)
         s += ds
         n += 1
     return float(intensity), float(transmission), n

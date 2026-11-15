@@ -574,3 +574,15 @@ Pictures at day 280.1 indistinguishable (outputs/checks/speed_settings_compare_d
 **Decision:** textures hold rho and rho (T_em / T_REF)^4 with T_REF = 10^4 K, both linear float32, trilinear interpolation; the sample temperature is T_REF (rho T^4 / rho)^(1/4). Linear interpolation keeps the column density (alpha ds) and the emission (j proportional to rho T^4) of the deposited gas along any ray. Result: test 3 within 0.45% (limit 1%), test 4 within 0.01%, test 5 within 0.005% (scripts/phase8_step2_test_images.py). Texture B (velocities, Phase 9) unchanged.
 
 Also: the CPU reference marcher (render/march.py) is plain Python rather than Numba (8.1 says a Numba twin): it is the readable reference, fast enough for the 64 x 64 GPU comparison; Numba only if test 7 needs it.
+
+## 2026-11-15: GPU gas marcher details (Phase 8 step 3)
+
+**Texture filtering:** the Iris Plus does report `float32-filterable`, but the shader samples with 8 `textureLoad` calls and does the trilinear weights itself (8.3 names this as the fallback). Hardware filter weights carry only about 8 bits of fraction (1/256), which is coarser than test 7's 1e-3 GPU-vs-CPU limit in steep gas; with manual weights the GPU matches the CPU reference to 1.9e-4 (worst pixel, real snapshot). Textures are rg32float (rho, rho (T/T_REF)^4): 8 bytes per cell, so the default log grid is 28 MB and a 160^3 box 33 MB.
+
+**Captured rays at the horizon:** steps with no gas are skipped, and so are steps whose midpoint is not above r = 2. Neither changes any result: a gas-free step adds nothing, and there is no gas inside r_min = 2. Skipping them avoids 0 x infinity when a float32 step lands exactly on r = 2, where the proper length diverges. Without the skip, 8 of 1M rays came out NaN; the CPU and GPU apply the same rule.
+
+**Test 7 split:** the CPU reference takes ~0.1 s per ray in plain Python on this Mac. The default suite checks 256 pixels spread evenly over the 64 x 64 GPU image (~1 min). The full 64 x 64 check (~6 min) is marked slow and is run at the end of every Phase 8 step. Both use the same tolerance.
+
+**Test 6 secondary ring:** it lies 0.005-0.007 deg outside the shadow and is only 3.5e-5 to 3.4e-4 deg wide, so a 512-pixel image cannot place it. It is measured on a camera zoomed to +-0.004 deg around the expected angle (pixel 7.8e-6 deg). The limit is still 1 full-image pixel; a ring outside the zoom window gives no light and fails the test.
+
+**Test 7 opacity:** kappa_grey = 1e7 (code units) for the R6.1_100k day-273 snapshot; transmission across the image runs from 0.001 to 0.88 (5th to 95th percentile). This is a test choice only; step 4 chooses the look.

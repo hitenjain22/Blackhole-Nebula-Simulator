@@ -33,6 +33,7 @@ must match them (tests/render/test_gasgrid.py).
 """
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 import numba
 import numpy as np
@@ -58,15 +59,15 @@ class LogSphericalGrid:
     nth: int = 96
     nph: int = 192
 
-    @property
+    @cached_property
     def dlnr(self) -> float:
         return float(np.log(self.r_max / self.r_min) / self.nr)
 
-    @property
+    @cached_property
     def dth(self) -> float:
         return float(np.pi / self.nth)
 
-    @property
+    @cached_property
     def dph(self) -> float:
         return float(2.0 * np.pi / self.nph)
 
