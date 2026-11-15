@@ -566,3 +566,11 @@ Pictures at day 280.1 indistinguishable (outputs/checks/speed_settings_compare_d
 **Decision:** video runs use `nebula_binlim = 2` (new patch option: neighbour steps may differ by 4, the ratio Saitoh & Makino 2009 used; also applied to Phantom's wake-up), `orbfac = 0.01`, `accradius1 = accradius1_hard = 15`. This is a corner cut accepted for the video (gas inside r = 15 is swallowed early; orbit steps twice as long, +8% close-pass drift). Science-grade runs, if any, revisit this. Patch regenerated (also includes the 2026-11-09 hconv fix and the ibin dump output).
 
 **Open:** the production settings now give 1.1e-4 on the close-pass test, not P11's 6.3e-6 (2026-11-04; radiated energy also differs, 1.7e-4 vs 9.1e-5), so P11's setup or the h-cap fixes differ. Not chased (drift accepted for the video).
+
+## 2026-11-13: render textures hold rho and rho T^4, linear (not log10 rho, log10 T) (Phase 8 step 2)
+
+**Why:** phase-08 8.3 stores log10 rho and log10 T and lets the sampler interpolate the logs. Interpolating logs between a filled cell and an empty one is effectively a step, so every gas edge shrinks by about half a cell: the thin emissive sphere test (8.6 test 3, R = 51 cells) came out 1-2% dim at the centre and 21% dim at b = 0.95 R, and a stream one or two cells wide would render as dots (the 8.8 failure "thin stream vanishes or looks dotted"). The logs were chosen for range (float16 can't hold the densities); in our gas units (cloud mass = 1, lengths in M) linear float32 covers rho and rho (T / 10^4 K)^4 comfortably, and texture_from_fields refuses values that would overflow.
+
+**Decision:** textures hold rho and rho (T_em / T_REF)^4 with T_REF = 10^4 K, both linear float32, trilinear interpolation; the sample temperature is T_REF (rho T^4 / rho)^(1/4). Linear interpolation keeps the column density (alpha ds) and the emission (j proportional to rho T^4) of the deposited gas along any ray. Result: test 3 within 0.45% (limit 1%), test 4 within 0.01%, test 5 within 0.005% (scripts/phase8_step2_test_images.py). Texture B (velocities, Phase 9) unchanged.
+
+Also: the CPU reference marcher (render/march.py) is plain Python rather than Numba (8.1 says a Numba twin): it is the readable reference, fast enough for the 64 x 64 GPU comparison; Numba only if test 7 needs it.
