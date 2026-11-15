@@ -1,6 +1,6 @@
 // Gas along bent light rays (Phase 8, phases/phase-08-gas-rendering.md 8.4). Entry shader.
 // Load order: schw_ray.wgsl, camera_rays.wgsl, gas_march.wgsl (bindings 0-2 come from
-// camera_rays.wgsl). Python side: nebula.render.gpu_march.
+// camera_rays.wgsl; 3-6 gas; 7-8 the star cube map). Python side: nebula.render.gpu_march.
 //
 // Float32 twin of the CPU reference render/bent_rays.py + render/march.py (rule 2; 8.6 test
 // 7 compares them). Formula copies, each mirroring a physics/ function:
@@ -185,7 +185,45 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
     return st;
 }
 
-struct RayOut { intensity: f32, transmission: f32, status: u32, steps: u32 };
+struct RayOut {
+    intensity: f32,
+    transmission: f32,
+    status: u32,
+    steps: u32,
+    sky_dir: vec3<f32>,  // direction on the sky seen by an escaped ray (Phase 2 bend)
+};
+
+// Continue an outgoing ray from state (u, w) at angle phi to infinity: the escape angle
+// phi_inf. Same RK4 steps and Hermite root as trace_ray (schw_ray.wgsl), so a ray gets the
+// same sky direction as in the Phase 2 star renderer (tested: test_gpu_march).
+fn escape_angle(u_in: f32, w_in: f32, phi_in: f32) -> f32 {
+    var u = u_in;
+    var w = w_in;
+    var phi = phi_in;
+    loop {
+        if (phi >= PHI_CAP) {
+            break;
+        }
+        let h = ray_step_size(u);
+        let k1u = w;
+        let k1w = ray_accel(u);
+        let k2u = w + 0.5 * h * k1w;
+        let k2w = ray_accel(u + 0.5 * h * k1u);
+        let k3u = w + 0.5 * h * k2w;
+        let k3w = ray_accel(u + 0.5 * h * k2u);
+        let k4u = w + h * k3w;
+        let k4w = ray_accel(u + h * k3u);
+        let u1 = u + h / 6.0 * (k1u + 2.0 * k2u + 2.0 * k3u + k4u);
+        let w1 = w + h / 6.0 * (k1w + 2.0 * k2w + 2.0 * k3w + k4w);
+        if (u1 < 0.0) {
+            return phi + ray_hermite_root(u, w, u1, w1, h) * h;
+        }
+        u = u1;
+        w = w1;
+        phi += h;
+    }
+    return phi;
+}
 
 fn ray_point(r: f32, ph: f32, e1: vec3<f32>, e2: vec3<f32>) -> vec3<f32> {
     return r * (cos(ph) * e1 + sin(ph) * e2);
@@ -213,6 +251,7 @@ fn march_ray(d: vec3<f32>) -> RayOut {
         } else {
             st = march_chord(cam_pos, max(r_max, r_cam) * e1, st);
             res.status = RAY_ESCAPED;
+            res.sky_dir = e1;
         }
         res.intensity = st.intensity;
         res.transmission = st.transmission;
@@ -256,6 +295,8 @@ fn march_ray(d: vec3<f32>) -> RayOut {
                 st = march_chord(prev, ray_point(r_max, phi + t * h, e1, e2), st);
             }
             res.status = RAY_ESCAPED;
+            let phi_inf = escape_angle(u, w, phi);
+            res.sky_dir = cos(phi_inf) * e1 + sin(phi_inf) * e2;
             break;
         }
         phi += h;
@@ -273,8 +314,23 @@ fn march_ray(d: vec3<f32>) -> RayOut {
     return res;
 }
 
-// Per pixel: (mean I, mean T of escaped sub-rays (0 for captured), captured fraction, mean
-// sub-steps) over n_sub x n_sub sub-rays (bent_rays.render_reference).
+// Output modes (cam.dims.w):
+//   OUT_DIAGNOSTIC: (mean I, mean T of escaped sub-rays (0 for captured), captured fraction,
+//                   mean sub-steps) (bent_rays.render_reference; tests 6-7)
+//   OUT_PICTURE:    (mean gas I, mean of T x star radiance RGB): the stars behind the gas,
+//                   dimmed by it. Star sampling as render_stars.wgsl (cam.lens.z = cube scale;
+//                   mip level from the spread of the pixel's escaped sub-ray directions).
+//   OUT_SKY_DIR:    (sky direction xyz, 1 if escaped else 0) of the last sub-ray (with n_sub = 1:
+//                   the pixel-centre ray), to test escape directions against physics.geodesics
+const OUT_DIAGNOSTIC: u32 = 0u;
+const OUT_PICTURE: u32 = 1u;
+const OUT_SKY_DIR: u32 = 2u;
+const MAX_SUB: u32 = 16u;  // n_sub <= 4
+const TEXEL_ANGLE_FACE0: f32 = 0.000766990;  // as render_stars.wgsl
+
+@group(0) @binding(7) var sky: texture_cube<f32>;
+@group(0) @binding(8) var sky_sampler: sampler;
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= tile.size.x || gid.y >= tile.size.y) {
@@ -282,8 +338,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let pix = tile.origin + gid.xy;
     let idx = gid.y * tile.size.x + gid.x;
-    let n = cam.dims.z;
+    let n = min(cam.dims.z, 4u);
+    let total = f32(n * n);
     var acc = vec4<f32>(0.0);
+    var dirs: array<vec3<f32>, MAX_SUB>;
+    var trans: array<f32, MAX_SUB>;
+    var n_esc = 0u;
+    var mean = vec3<f32>(0.0);
+    var last = vec4<f32>(0.0);
     for (var b = 0u; b < n; b++) {
         for (var a = 0u; a < n; a++) {
             let d = pixel_dir(f32(pix.x) + (f32(a) + 0.5) / f32(n),
@@ -292,7 +354,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let escaped = r.status == RAY_ESCAPED;
             acc += vec4<f32>(r.intensity, select(0.0, r.transmission, escaped),
                              select(1.0, 0.0, escaped), f32(r.steps));
+            last = vec4<f32>(r.sky_dir, select(0.0, 1.0, escaped));
+            if (escaped) {
+                dirs[n_esc] = r.sky_dir;
+                trans[n_esc] = r.transmission;
+                mean += r.sky_dir;
+                n_esc += 1u;
+            }
         }
     }
-    out[idx] = acc / f32(n * n);
+    if (cam.dims.w == OUT_DIAGNOSTIC) {
+        out[idx] = acc / total;
+        return;
+    }
+    if (cam.dims.w == OUT_SKY_DIR) {
+        out[idx] = last;
+        return;
+    }
+    var rgb = vec3<f32>(0.0);
+    if (n_esc > 0u) {
+        let m = normalize(mean);
+        var spread = 0.0;
+        for (var k = 0u; k < n_esc; k++) {
+            spread = max(spread, acos(clamp(dot(dirs[k], m), -1.0, 1.0)));
+        }
+        let face_size = f32(textureDimensions(sky).x);
+        let texel_angle = TEXEL_ANGLE_FACE0 * 2048.0 / face_size;
+        let footprint = 2.0 * spread / f32(n);
+        let lod = log2(max(footprint / texel_angle, 1.0));
+        for (var k = 0u; k < n_esc; k++) {
+            rgb += trans[k] * textureSampleLevel(sky, sky_sampler, dirs[k], lod).rgb;
+        }
+    }
+    out[idx] = vec4<f32>(acc.x / total, rgb * cam.lens.z / total);
 }

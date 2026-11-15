@@ -586,3 +586,13 @@ Also: the CPU reference marcher (render/march.py) is plain Python rather than Nu
 **Test 6 secondary ring:** it lies 0.005-0.007 deg outside the shadow and is only 3.5e-5 to 3.4e-4 deg wide, so a 512-pixel image cannot place it. It is measured on a camera zoomed to +-0.004 deg around the expected angle (pixel 7.8e-6 deg). The limit is still 1 full-image pixel; a ring outside the zoom window gives no light and fails the test.
 
 **Test 7 opacity:** kappa_grey = 1e7 (code units) for the R6.1_100k day-273 snapshot; transmission across the image runs from 0.001 to 0.88 (5th to 95th percentile). This is a test choice only; step 4 chooses the look.
+
+## 2026-11-15: first lensed frame: placeholder look (Phase 8 step 4)
+
+**Colour (placeholder until Phase 9):** the gas is grey, and its brightness goes through the ACES tone curve and the matplotlib "afmhot" fire ramp. Stars are dimmed on the GPU by the gas transmission (T x star radiance), tone mapped as in Phase 2, and added in linear light (render/gas_frames.py). Exposures are automatic per frame: gas, the 99.9th brightness percentile maps to aces(1) = 0.6; stars, Phase 2's rule (99.98th luminance percentile -> 0.5). Per-frame auto exposure would pump in a video; the director (step 6) will use exposure keyframes instead.
+
+**Opacity:** kappa_grey = 1e7 code units for R6.1_100k (chosen by eye from 3e6, 1e7, 3e7; outputs/checks/phase8_step4_variants_R6.1_100k.png). The ring of gas around the hole reads as solid while the debris stream is partly see-through; 3e7 fogs the view and 3e6 washes it out.
+
+**Frame:** R6.1_100k snapshot 170 (day 306), camera r = 40, 5 deg above the orbit plane, 60 deg view. It shows a clearer ring around the hole than days 273 or 290. The torus gas near the hole is sparse in this run (~300 particles inside r = 100), so the frame is soft.
+
+**Picture output mode:** gas_march.wgsl continues escaped rays to infinity for the star field, with the same RK4 and Hermite root as Phase 2's trace_ray. A pixel-by-pixel brightness comparison with the Phase 2 star renderer differs by up to 1e-3 at star edges: identical maths, different float rounding by the shader compiler, made visible by sharp stars. So the test checks the sky directions themselves against physics.geodesics with Phase 2's limits (2e-4 rad); measured 1.8e-5 rad.

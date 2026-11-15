@@ -1,6 +1,6 @@
-"""Phase 8 step 3: gas marched along bent rays, CPU reference and GPU
-(phases/phase-08-gas-rendering.md 8.4; 8.6 tests 6 and 7, plus the proper path length and the
-ray geometry they rest on)."""
+"""Phase 8 steps 3-4: gas marched along bent rays, CPU reference and GPU
+(phases/phase-08-gas-rendering.md 8.4; 8.6 tests 6, 7, 9 and 10, plus the proper path length,
+the ray geometry and the stars behind the gas)."""
 
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from nebula.physics.geodesics import (
     _initial_state,
     _trace,
     schw_radial_proper_distance,
+    schw_ray_escape_angle,
     schw_shadow_angle,
     schw_static_proper_length,
 )
@@ -26,8 +27,14 @@ from nebula.render.bent_rays import (
 from nebula.render.camera import Camera
 from nebula.render.gas_scenes import point_source_textures, ring_angle_deg
 from nebula.render.gasgrid import LogSphericalGrid
-from nebula.render.gpu_march import render_gas, upload_scene
+from nebula.render.gpu_march import (
+    OUT_PICTURE,
+    OUT_SKY_DIR,
+    render_gas,
+    upload_scene,
+)
 from nebula.render.march import GreyBlackbody, texture_from_fields
+from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
 from tests.helpers import check
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -228,3 +235,105 @@ def test_no_invalid_pixels_at_the_horizon(uniform_scene):
     textures, model = uniform_scene
     img, _ = render_gas(cam, upload_scene(textures, model), n_sub=2)
     check("horizon: gas down to r = 2, all pixels finite", True, bool(np.isfinite(img).all()))
+
+
+# ---------------------------------------------------------------- step 4: stars, tests 9-10
+
+
+def test_sky_directions_match_exact_rays():
+    """Escaped rays continue to infinity for the star field (gas_march.wgsl escape_angle). Their
+    sky directions match the float64 reference (physics.geodesics.schw_ray_escape_angle) with
+    Phase 2's limits (tests/render/test_schw_ray_gpu.py): 2e-4 rad for b > 1.05 b_crit, 1e-2 rad
+    for b > 1.001 b_crit, and the same capture/escape decision outside +-1e-4 of b_crit."""
+    g = LogSphericalGrid()
+    empty = upload_scene([texture_from_fields(g, np.zeros(g.shape), np.zeros(g.shape))],
+                         GreyBlackbody(kappa=1.0))  # fmt: skip
+    cam = Camera(position=(30.0, 4.0, 6.0), vfov_deg=70.0, width=24, height=24)
+    out, _ = render_gas(cam, empty, n_sub=1, out_mode=OUT_SKY_DIR)
+    px, py = np.meshgrid(np.arange(24) + 0.5, np.arange(24) + 0.5)
+    d = cam.directions(px, py).reshape(-1, 3)
+    pos = np.asarray(cam.position, float)
+    r_cam = float(np.linalg.norm(pos))
+    errs, x, esc_ref = [], [], []
+    for k, dk in enumerate(d):
+        e1, e2, cos_psi, sin_psi = ray_basis(pos, dk)
+        psi = float(np.arctan2(sin_psi, cos_psi))
+        phi = schw_ray_escape_angle(r_cam, psi)
+        x.append(r_cam * sin_psi / np.sqrt(1 - 2 / r_cam) / (3 * np.sqrt(3)))
+        esc_ref.append(np.isfinite(phi))
+        if np.isfinite(phi) and out.reshape(-1, 4)[k, 3] > 0.5:
+            ref = np.cos(phi) * e1 + np.sin(phi) * e2
+            gpu = out.reshape(-1, 4)[k, :3].astype(float)
+            errs.append(np.arccos(np.clip(ref @ gpu / np.linalg.norm(gpu), -1, 1)))
+        else:
+            errs.append(np.nan)
+    errs, x, esc_ref = np.array(errs), np.array(x), np.array(esc_ref)
+    ok = np.isfinite(errs)
+    check("sky direction error, b > 1.05 b_crit (rad)", 0.0, errs[ok & (x > 1.05)].max(),
+          atol=2e-4)  # fmt: skip
+    check("sky direction error, b > 1.001 b_crit (rad)", 0.0, errs[ok & (x > 1.001)].max(),
+          atol=1e-2)  # fmt: skip
+    away = np.abs(x - 1) > 1e-4
+    esc_gpu = out.reshape(-1, 4)[:, 3] > 0.5
+    check("sky directions: capture/escape mismatches", 0, int(np.sum((esc_gpu != esc_ref) & away)))
+    check("sky directions: rays tested (escaped)", True, bool(ok.sum() > 400))
+
+
+def test_stars_dimmed_by_gas_transmission():
+    """Stars seen through gas that only absorbs (T = 0 K: no emission) are the unobstructed
+    stars times the ray's transmission, which itself matches the CPU reference (test 7)."""
+    g = LogSphericalGrid()
+    rho = np.zeros(g.shape)
+    rho[g.r_centres() < 60.0] = 2e-3  # absorbing ball r < 60: tau ~ 0.1-0.3 across the view
+    gas = [texture_from_fields(g, rho, np.zeros(g.shape))]
+    empty = [texture_from_fields(g, np.zeros(g.shape), np.zeros(g.shape))]
+    model = GreyBlackbody(kappa=1.0)
+    sky = upload_cube_map(build_cube_map(StarFieldConfig(face_size=128, n_stars=5000)))
+    cam = Camera(position=(40.0, 0.0, 3.0), vfov_deg=60.0, width=32, height=32)
+    seen, _ = render_gas(cam, upload_scene(gas, model), sky=sky, out_mode=OUT_PICTURE)
+    bare, _ = render_gas(cam, upload_scene(empty, model), sky=sky, out_mode=OUT_PICTURE)
+    diag, _ = render_gas(cam, upload_scene(gas, model))
+    check("stars through absorbing gas: no gas glow", 0.0, float(np.abs(seen[..., 0]).max()))
+    lit = bare[..., 1:4].sum(-1) > 0
+    check("stars through gas = stars x transmission", (bare[..., 1:4] * diag[..., 1:2])[lit],
+          seen[..., 1:4][lit], rtol=1e-5)  # fmt: skip
+    pix = [(3, 5), (16, 8), (28, 27), (10, 22)]
+    ref = render_reference(cam, gas, model, pixels=pix)
+    for i, j in pix:
+        check(f"transmission pixel ({i}, {j}) vs CPU", ref[j, i, 1], diag[j, i, 1], rtol=1e-4)
+    check("absorbing ball dims the stars", True, bool(diag[..., 1][diag[..., 2] < 0.5].min() < 0.9))
+
+
+@pytest.fixture(scope="module")
+def frame_camera():
+    e = np.radians(5.0)
+    return np.array([40.0 * np.cos(e), 0.0, 40.0 * np.sin(e)])
+
+
+def _frame(real_scene, pos, step_fraction=0.5):
+    textures, model, _ = real_scene
+    cam = Camera(position=tuple(pos), vfov_deg=60.0, width=320, height=180)
+    img, _ = render_gas(cam, upload_scene(textures, model, step_fraction), n_sub=2)
+    return img[..., 0].astype(float)
+
+
+def test_temporal_stability(real_scene, frame_camera):
+    """8.6 test 9: the same snapshot with the camera moved by 1e-6 (along x, y and z): no pixel
+    changes by more than 1e-3 (relative, linear HDR). Nothing random, no flicker."""
+    a = _frame(real_scene, frame_camera)
+    for axis in range(3):
+        moved = frame_camera.copy()
+        moved[axis] += 1e-6
+        rel = np.abs(_frame(real_scene, moved) - a) / np.maximum(a, 1e-300)
+        check(f"test 9: camera moved 1e-6 along {'xyz'[axis]}, largest pixel change", 0.0,
+              rel.max(), atol=1e-3)  # fmt: skip
+
+
+def test_step_size_converged(real_scene, frame_camera):
+    """8.6 test 10: halving the march step (half -> quarter cell) changes a real frame by less
+    than 0.5% (mean absolute difference / mean brightness, linear HDR)."""
+    a = _frame(real_scene, frame_camera)
+    b = _frame(real_scene, frame_camera, step_fraction=0.25)
+    check("test 10: halved step, mean |change| / mean", 0.0, np.abs(b - a).mean() / a.mean(),
+          atol=5e-3)  # fmt: skip
+    print(f"    largest single-pixel change {np.max(np.abs(b - a) / a):.2e}")
