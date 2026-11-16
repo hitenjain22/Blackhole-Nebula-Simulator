@@ -321,3 +321,114 @@ def test_shot_frame_at_a_snapshot_equals_direct_render():
     check("shot frame at snapshot 100 = direct render of snapshot 100", ref, pic, rtol=0.0,
           atol=0.0)  # fmt: skip
     check("shot frame time = snapshot time", t, float(plan.sim_t[0]), rtol=0.0, atol=0.0)
+
+
+BOXED = """
+duration = 2.0
+[targets.gas]
+type = "com"
+[[camera]]
+t = 0.0
+r = 300.0
+elev = 20.0
+az = 0.0
+around = "gas"
+look_at = "gas"
+[[time]]
+t = 0.0
+day = 10.0
+[[time]]
+t = 2.0
+day = 14.0
+[grid]
+r_max = 3000.0
+nr = 200
+[[boxes]]
+around = "gas"
+size = 150.0
+n = 64
+"""
+
+
+def test_detail_box_follows_target(runs, tmp_path):
+    """8.3 item 2: a detail box whose centre follows the gas centre, saved with the plan; the
+    grid settings come from the shot."""
+    tmp, x0 = runs
+    shot = Shot.load(write_shot(tmp, BOXED))
+    plan = plan_frames(shot, Timeline.from_sources(shot.sources, tmp))
+    days = plan.sim_t / CODE_DAY - 10.0
+    centre = x0.astype(np.float32).astype(float).mean(axis=0) + V * days[:, None]
+    check("box: centre follows the gas centre", centre, plan.box_centres[:, 0], atol=1e-4)
+    b = plan.boxes(30, shot)[0]
+    check("box: frame 30 as CartesianBox fields (size, n)", (150.0, 64), (b["size"], b["n"]))
+    check("grid: shot settings", (3000.0, 200), (shot.log_grid().r_max, shot.log_grid().nr))
+    plan.save(tmp_path / "p.npz")
+    check("box: centres saved and reloaded", plan.box_centres,
+          FramePlan.load(tmp_path / "p.npz").box_centres, rtol=0.0, atol=0.0)  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        (("size = 150.0", "size = 6000.0"), "beyond the grid.s"),
+        (("r = 300.0", "r = 2900.0"), "camera reaches r"),
+        (("nr = 200", "nr = 200\nwrong = 1"), r"\[grid\]"),
+        (("n = 64", "n = 64\n[[boxes]]\nsize = 9.0\n[[boxes]]\nsize = 9.0"), "at most 2"),
+        (('around = "gas"\nsize = 150.0', 'around = "nowhere"\nsize = 150.0'), "unknown target"),
+        (("size = 150.0", "size = 150.0\nsize_by_day = [[10, 100]]"), "either size"),
+        (("size = 150.0", "size_by_day = [[12, 100], [11, 200]]"), "increasing days"),
+        (("size = 150.0", "size_by_day = [[10, 100], [12, -5]]"), "increasing days"),
+        (("size = 150.0", "size_by_day = [10, 100]"), "pairs"),
+        (("size = 150.0", "size_by_day = [[10, 100], [14, 7000]]"), "beyond the grid.s"),
+    ],
+)
+def test_bad_grid_and_boxes_rejected(runs, change, message):
+    """A box or camera outside the grid (rays never reach / start outside), unknown grid
+    settings, more than the shader's two boxes, and unknown box targets are refused."""
+    tmp, _ = runs
+    with pytest.raises(ShotError, match=message):
+        shot = Shot.load(write_shot(tmp, BOXED.replace(*change, 1)))
+        plan_frames(shot, Timeline.from_sources(shot.sources, tmp))
+    check(f"grid/boxes: refused ({message})", True, True)
+
+
+def test_box_grows_with_the_gas(runs, tmp_path):
+    """A box with size_by_day: exact sizes at the key days, never outside the neighbouring
+    keys' range between them (monotone: no overshoot, so the gas never pokes out), held
+    beyond the last key, and saved with the plan."""
+    tmp, _ = runs
+    body = BOXED.replace("size = 150.0", "size_by_day = [[10, 100], [12, 150], [13, 400]]")
+    shot = Shot.load(write_shot(tmp, body))
+    plan = plan_frames(shot, Timeline.from_sources(shot.sources, tmp))
+    days, size = plan.sim_t / CODE_DAY, plan.box_sizes[:, 0]
+    check("growing box: size at day 10 (first key)", 100.0, size[0], rtol=1e-12)
+    keyed = [int(np.argmin(np.abs(days - d))) for d in (12.0, 13.0)]
+    want = np.interp(days[keyed], [10, 12, 13], np.log([100, 150, 400]))
+    check("growing box: frames nearest days 12 and 13 (log-linear estimate, 2%)",
+          np.exp(want), size[keyed], rtol=0.02)  # fmt: skip
+    check("growing box: never shrinks (keys increase)", True, bool(np.all(np.diff(size) >= 0)))
+    check("growing box: held at 400 after day 13", 400.0, size[days > 13.0].min(), rtol=1e-12)
+    check("growing box: frame 0 as CartesianBox size", 100.0, plan.boxes(0, shot)[0]["size"],
+          rtol=1e-12)  # fmt: skip
+    plan.save(tmp_path / "p.npz")
+    check("growing box: sizes saved and reloaded", size,
+          FramePlan.load(tmp_path / "p.npz").box_sizes[:, 0], rtol=0.0, atol=0.0)  # fmt: skip
+
+
+def test_gas_outside_boxes(tmp_path):
+    """gas_outside_boxes counts the particles not deep inside a box (kernel reach 2h plus
+    3 cells from the face): here 1 of 4."""
+    from nebula.render.shot_render import gas_outside_boxes
+
+    folder = tmp_path / "g" / "snapshots"
+    folder.mkdir(parents=True)
+    x = np.array([[0.0, 0, 0], [30, 0, 0], [0, -30, 0], [45, 0, 0]], np.float32)
+    np.savez(folder / "snap_00000.npz", t=0.0, x=x, h=np.full(4, 2.0, np.float32),
+             ids=np.arange(4))  # fmt: skip
+    tl = Timeline(np.array([0.0]), [folder / "snap_00000.npz"])
+    plan = FramePlan(np.zeros(1), np.zeros(1), np.array([[500.0, 0, 0]]), np.zeros((1, 3)),
+                     np.full(1, 60.0), np.zeros(1), np.zeros((1, 1, 3)))  # fmt: skip
+    shot = Shot.__new__(Shot)
+    shot.boxes = [{"size": 100.0, "n": 100}]  # dx 1: deep inside means |x| <= 50 - 4 - 3 = 43
+    check("gas outside boxes: 1 of 4 (the one at 45)", 0.25, gas_outside_boxes(plan, shot, tl)[0],
+          rtol=1e-12)  # fmt: skip

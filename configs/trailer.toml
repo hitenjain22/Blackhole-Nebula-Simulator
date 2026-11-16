@@ -1,0 +1,7 @@
+# Phase 8 step 6: first trailer (approach, orbit through the first close pass, aftermath).
+name = "trailer_v1"
+dissolve = 0.5
+shots = ["approach.toml", "orbit_pass.toml", "aftermath.toml"]
+
+# No match_exposure: the aftermath reusing the orbit's exposure came out black (the stream has
+# cooled by then); each shot sets its own.

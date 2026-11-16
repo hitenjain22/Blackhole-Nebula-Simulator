@@ -1,0 +1,98 @@
+# Trailer shot 1: the cloud falling from r = 5,000 towards the hole (days 0-96), the camera
+# travelling alongside it, then swinging behind it to look ahead at the hole as the cloud
+# stretches into a stream. The cloud is far outside the default grid (r_max 2,000), so the grid
+# reaches 8,000 (8.3: "5,000 for early shots"; nr raised to keep the cell size near the hole)
+# and a detail box follows the cloud (1,000 wide: at 400 the stretching stream outgrew it by
+# day ~85 and the box edge showed as a bright square).
+name = "approach"
+fps = 24
+duration = 8.0
+width = 640
+height = 360
+n_sub = 1
+kappa = 1e7
+
+[targets.cloud]
+type = "com"
+
+[grid]
+r_max = 8000.0
+nr = 230
+
+# The box grows with the cloud (size_by_day): n is fixed, so while the cloud is small the cells
+# are fine. A fixed 1,000 box gave 5-unit cells, larger than the gas's smoothing length (~3.3),
+# and the cloud's edge showed as a staircase at 1080p. Sizes: the box holds 99.95% of the
+# particles deep inside (kernel reach + blend cells) with >= 15% to spare up to day 94
+# (measured on every snapshot; scratch script in the 2026-11-16 AI_LOG entry), then 1,000 as
+# before (the stretched stream's few outliers fall to the log grid there, as they did).
+[[boxes]]
+around = "cloud"
+size_by_day = [[0, 165], [20, 175], [32, 195], [44, 225], [52, 255], [60, 290], [68, 335],
+               [76, 400], [84, 510], [88, 610], [92, 800], [94, 1000]]
+n = 200
+
+[[sources]]
+run = "R6.1_100k_ph_approach"
+
+[[camera]]
+t = 0.0
+r = 260.0
+elev = 20.0
+az = 100.0
+around = "cloud"
+look_at = "cloud"
+vfov = 45.0
+
+[[camera]]
+t = 4.0
+r = 300.0
+elev = 25.0
+az = 60.0
+around = "cloud"
+look_at = "cloud"
+vfov = 45.0
+
+[[camera]]
+t = 8.0
+r = 420.0
+elev = 30.0
+az = 15.0
+around = "cloud"
+look_at = "hole"
+vfov = 55.0
+
+[[time]]
+t = 0.0
+day = 0.0
+
+[[time]]
+t = 3.0
+day = 60.0
+
+[[time]]
+t = 6.0
+day = 89.0
+
+[[time]]
+t = 8.0
+day = 95.8
+
+# The cloud (one even temperature) is near-white at first: two stops down there, easing to the
+# middle. The shot ends at day 95.8, before the stream's tip heats at the hole: the approach
+# data has a dump every half day, too coarse for that (the last frames jumped); the orbit
+# shot, with dense data, takes over from day 96.4.
+[[exposure]]
+t = 0.0
+stops = -2.0
+
+[[exposure]]
+t = 2.5
+stops = 0.0
+
+[[exposure]]
+t = 6.5
+stops = 0.0
+
+[[exposure]]
+t = 8.0
+stops = -1.5

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from nebula.render.director import CODE_DAY, Shot, Timeline, plan_frames
-from nebula.render.shot_render import ShotRenderer, camera_gas_clearance
+from nebula.render.shot_render import ShotRenderer, camera_gas_clearance, gas_outside_boxes
 from nebula.render.video import write_video
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +95,12 @@ def main():
               f"{ts.max():.2f} s): raise or move the camera there")  # fmt: skip
     else:
         print("camera never inside gas")
+    if shot.boxes:
+        out = gas_outside_boxes(plan, shot, timeline)
+        i = int(np.argmax(out))
+        print(f"gas outside the detail boxes: median {100 * np.median(out):.3f}%, worst "
+              f"{100 * out[i]:.3f}% at video t {plan.video_t[i]:.2f} s (day "
+              f"{plan.sim_t[i] / CODE_DAY:.2f})")  # fmt: skip
     if o.get("clip", "1") != "1":
         return
     w = 2 * round(shot.width * scale / 2)

@@ -1,0 +1,64 @@
+# Trailer shot 3: after the pass all the gas is flung out together towards +x (median r 600
+# at day 99, 1,300 at day 103). The camera sits on the far side of the hole looking past it at
+# the departing gas, so the hole lenses the glowing gas behind it into arcs. The re-run
+# continues itself (dense_B192 then dense_C400), so the gas does not jump (DECISIONS
+# 2026-11-16). Draft 1 (pull back from the orbit's end looking at the hole) showed only a
+# blown-out first second and a blurry blob. Draft 2 started at day 98.9 with part of the stream
+# still 84 from the camera (bright, jumpy first second): now from day 99.3, easing in 1.5 stops.
+name = "aftermath"
+fps = 24
+duration = 6.0
+width = 640
+height = 360
+n_sub = 1
+kappa = 1e7
+
+[targets.gas]
+type = "com"
+
+[grid]
+r_max = 3000.0
+nr = 210
+
+[[boxes]]
+around = "gas"
+size = 1000.0
+n = 200
+
+[[sources]]
+run = "dense_B192"
+
+[[sources]]
+run = "dense_C400"
+
+[[camera]]
+t = 0.0
+r = 110.0
+elev = 18.0
+az = 195.0
+look_at = "gas"
+vfov = 50.0
+
+[[camera]]
+t = 6.0
+r = 170.0
+elev = 8.0
+az = 182.0
+look_at = "gas"
+vfov = 45.0
+
+[[time]]
+t = 0.0
+day = 99.3
+
+[[time]]
+t = 6.0
+day = 102.5
+
+[[exposure]]
+t = 0.0
+stops = -1.5
+
+[[exposure]]
+t = 1.5
+stops = 0.0

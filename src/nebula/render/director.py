@@ -37,9 +37,19 @@ Shot file layout (all times in video seconds unless named ``day``):
     t = 0.0
     day = 96.4
 
-    [[exposure]]                # optional: brightness change in photographic stops
+    [[exposure]]                # optional: brightness change of the gas in photographic stops
     t = 0.0
     stops = 0.0
+
+    [grid]                      # optional: the global log-spherical grid (gasgrid.py defaults)
+    r_max = 8000.0              # rays march out to r_max: must exceed the camera and the gas
+    nr = 230                    # shown (8.3: "5,000 for early shots")
+
+    [[boxes]]                   # optional, at most 2: detail boxes of fixed size whose centre
+    around = "cloud"            # follows a target (8.3 item 2); n^3 cells
+    size = 400.0                # or size_by_day = [[day, size], ...]: a box that grows with
+    n = 160                     # the gas (log size, monotone cubic in day; n fixed, so the
+                                # cells are finest while the gas is small)
 
 How the path is made smooth: r (as log r), elev, az, vfov, the time warp and the exposure are
 each interpolated through their keyframes with monotone cubic (PCHIP) curves. They are smooth
@@ -52,7 +62,9 @@ PCHIP tracks through their position at each snapshot.
 Rules checked before any rendering (8.5): camera at r >= 6 from the hole (checked on a grid 8x
 finer than the frames), never looking (nearly) straight along the z axis (the camera's up
 vector would be undefined and the picture would spin), all simulation times inside the
-sources' snapshot range, keyframe times inside the shot and strictly increasing.
+sources' snapshot range, keyframe times inside the shot and strictly increasing, the camera
+and every detail box inside the grid (rays start at the camera and end at r_max), at most two
+boxes (the GPU marcher's limit).
 """
 
 import tomllib
@@ -64,10 +76,13 @@ from scipy.interpolate import PchipInterpolator
 
 from nebula import units
 from nebula.render.camera import Camera
+from nebula.render.gasgrid import LogSphericalGrid
 
 CODE_DAY = units.DAY / units.BlackHoleUnits().time_s  # one day in code time (GM/c^3)
 R_CAMERA_MIN = 6.0  # 8.5: camera stays at r >= 6
 ELEV_MAX = 80.0  # keyframe elevation limit (degrees)
+MAX_BOXES = 2  # shaders/gas_march.wgsl samples box0 and box1
+CAMERA_GRID_FRACTION = 0.9  # camera within 0.9 r_max: rays start inside the grid
 VERTICAL_LIMIT = 0.985  # |forward . z| above this: the up vector is too close to the view
 CHECK_OVERSAMPLE = 8
 
@@ -184,6 +199,11 @@ class Shot:
     camera: list
     time: list
     exposure: list = field(default_factory=list)
+    grid: dict = field(default_factory=dict)
+    boxes: list = field(default_factory=list)
+
+    def log_grid(self) -> LogSphericalGrid:
+        return LogSphericalGrid(**self.grid)
 
     @classmethod
     def load(cls, path) -> "Shot":
@@ -193,14 +213,17 @@ class Shot:
             raise ShotError(f"{path}: not valid TOML ({e})") from e
         missing = [k for k in ("name", "duration", "sources", "camera", "time") if k not in d]
         if missing:
-            raise ShotError(f"{path}: missing {', '.join(missing)} (top-level settings must come "
-                            "before the first [section]: TOML puts later keys inside it)")
+            raise ShotError(
+                f"{path}: missing {', '.join(missing)} (top-level settings must come "
+                "before the first [section]: TOML puts later keys inside it)"
+            )
         shot = cls(
             name=d["name"], fps=int(d.get("fps", 24)), duration=float(d["duration"]),
             width=int(d.get("width", 640)), height=int(d.get("height", 360)),
             n_sub=int(d.get("n_sub", 1)), kappa=float(d.get("kappa", 1e7)),
             sources=d["sources"], targets=d.get("targets", {}), camera=d["camera"],
-            time=d["time"], exposure=d.get("exposure", []),
+            time=d["time"], exposure=d.get("exposure", []), grid=d.get("grid", {}),
+            boxes=d.get("boxes", []),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -208,6 +231,27 @@ class Shot:
     def validate(self):
         if self.duration <= 0 or self.fps <= 0:
             raise ShotError("duration and fps must be positive")
+        try:
+            self.log_grid()
+        except TypeError as e:
+            raise ShotError(f"[grid]: {e}") from e
+        if len(self.boxes) > MAX_BOXES:
+            raise ShotError(f"[[boxes]]: at most {MAX_BOXES} detail boxes")
+        for b in self.boxes:
+            tgt = b.get("around", "hole")
+            if isinstance(tgt, str) and tgt != "hole" and tgt not in self.targets:
+                raise ShotError(f"[[boxes]]: unknown target {tgt!r}")
+            if ("size" in b) == ("size_by_day" in b):
+                raise ShotError("[[boxes]]: give either size or size_by_day")
+            if "size" in b and float(b["size"]) <= 0:
+                raise ShotError("[[boxes]]: size must be positive")
+            if "size_by_day" in b:
+                keys = np.asarray(b["size_by_day"], float)
+                if keys.ndim != 2 or keys.shape[1] != 2 or len(keys) < 1:
+                    raise ShotError("[[boxes]]: size_by_day must be a list of [day, size] pairs")
+                if np.any(np.diff(keys[:, 0]) <= 0) or np.any(keys[:, 1] <= 0):
+                    raise ShotError("[[boxes]]: size_by_day needs increasing days and positive "
+                                    "sizes")  # fmt: skip
         for name, keys in (("camera", self.camera), ("time", self.time),
                            ("exposure", self.exposure)):  # fmt: skip
             if name != "exposure" and not keys:
@@ -244,18 +288,29 @@ class FramePlan:
     look_at: np.ndarray  # (n, 3)
     vfov: np.ndarray
     stops: np.ndarray
+    box_centres: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 3)))  # (n, boxes, 3)
+    box_sizes: np.ndarray | None = None  # (n, boxes); None in plans saved before size_by_day
+
+    def boxes(self, i: int, shot: "Shot") -> list[dict]:
+        """Detail boxes of frame i as gasgrid.CartesianBox keyword dicts."""
+        out = []
+        for j, b in enumerate(shot.boxes):
+            size = self.box_sizes[i, j] if self.box_sizes is not None else b["size"]
+            out.append({"centre": tuple(self.box_centres[i, j]), "size": float(size),
+                        "n": int(b.get("n", 160))})  # fmt: skip
+        return out
 
     def camera(self, i: int, width: int, height: int) -> Camera:
         return Camera(position=tuple(self.position[i]), look_at=tuple(self.look_at[i]),
                       vfov_deg=float(self.vfov[i]), width=width, height=height)  # fmt: skip
 
     def save(self, path):
-        np.savez(path, **self.__dict__)
+        np.savez(path, **{k: v for k, v in self.__dict__.items() if v is not None})
 
     @classmethod
     def load(cls, path) -> "FramePlan":
         d = np.load(path)
-        return cls(**{k: d[k] for k in cls.__dataclass_fields__})
+        return cls(**{k: d[k] for k in cls.__dataclass_fields__ if k in d})
 
 
 def _target_fn(name_or_point, tracks):
@@ -332,6 +387,40 @@ def plan_frames(shot: Shot, timeline: Timeline) -> FramePlan:
     if vert.max() > VERTICAL_LIMIT:
         raise ShotError(f"camera looks almost straight up or down at t = "
                         f"{fine[np.argmax(vert)]:.2f} s: lower the elevation")  # fmt: skip
+    r_max = shot.log_grid().r_max
+    if r.max() > CAMERA_GRID_FRACTION * r_max:
+        raise ShotError(f"camera reaches r = {r.max():.0f}, beyond {CAMERA_GRID_FRACTION} x the "
+                        f"grid's r_max = {r_max:g}: raise [grid] r_max")  # fmt: skip
+    boxes, sizes = _box_centres(shot, tracks, sim_t), box_sizes(shot, sim_t)
+    for j in range(len(shot.boxes)):
+        far = np.linalg.norm(boxes[:, j], axis=1) + 0.5 * np.sqrt(3) * sizes[:, j]
+        if far.max() > r_max:
+            raise ShotError(f"detail box {j} reaches r = {far.max():.0f}, beyond the grid's "
+                            f"r_max = {r_max:g}: rays never get there")  # fmt: skip
     vt = np.arange(n) / shot.fps
     sim_t, pos, look, vfov, stops = _sample(shot, vt, tracks)
-    return FramePlan(vt, np.clip(sim_t, t_lo, t_hi), pos, look, vfov, stops)
+    sim_t = np.clip(sim_t, t_lo, t_hi)
+    return FramePlan(vt, sim_t, pos, look, vfov, stops, _box_centres(shot, tracks, sim_t),
+                     box_sizes(shot, sim_t))  # fmt: skip
+
+
+def box_sizes(shot: Shot, sim_t) -> np.ndarray:
+    """(n, boxes): each box's edge length at the simulation times (fixed `size`, or log size
+    through the `size_by_day` keys with the same monotone cubic as the camera, so it never
+    overshoots between keys and is held at the end values outside them)."""
+    out = np.zeros((len(sim_t), len(shot.boxes)))
+    for j, b in enumerate(shot.boxes):
+        if "size_by_day" in b:
+            keys = np.asarray(b["size_by_day"], float)
+            out[:, j] = np.exp(_curve(keys[:, 0], np.log(keys[:, 1]))(sim_t / CODE_DAY))
+        else:
+            out[:, j] = float(b["size"])
+    return out
+
+
+def _box_centres(shot: Shot, tracks, sim_t) -> np.ndarray:
+    """(n, boxes, 3): each box's centre (its target's position) at the simulation times."""
+    out = np.zeros((len(sim_t), len(shot.boxes), 3))
+    for j, b in enumerate(shot.boxes):
+        out[:, j] = _target_fn(b.get("around", "hole"), tracks)(sim_t)
+    return out

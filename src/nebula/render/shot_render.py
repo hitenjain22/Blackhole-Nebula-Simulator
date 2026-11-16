@@ -16,7 +16,7 @@ from nebula.render.gas_frames import Exposure, auto_gas_exposure, auto_star_expo
 from nebula.render.gpu_march import OUT_PICTURE, render_gas, upload_scene
 from nebula.render.interpolate import load_snap, state_at
 from nebula.render.march import GreyBlackbody
-from nebula.render.snapshot_scene import run_eos_and_mass, textures_from_particles
+from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
 from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
 
 GAS_PERCENTILE, GAS_LEVEL = 99.9, 1.0  # as scripts/phase8_step4_first_frame.py
@@ -47,6 +47,23 @@ def camera_gas_clearance(plan: FramePlan, timeline: Timeline, margin: float = 1.
     return dist, inside
 
 
+def gas_outside_boxes(plan: FramePlan, shot: Shot, timeline: Timeline) -> np.ndarray:
+    """Per frame: the fraction of particles of the snapshot nearest in time that are NOT deep
+    inside a detail box (so they go to the coarse log grid). A box that follows a far cloud
+    must hold nearly all of it, or the outside part shows as a blurry fog (approach drafts).
+    0 when the shot has no boxes is meaningless: returns ones then."""
+    out = np.ones(len(plan.sim_t))
+    if not shot.boxes:
+        return out
+    k_near = np.abs(timeline.times[None, :] - plan.sim_t[:, None]).argmin(axis=1)
+    for k in np.unique(k_near):
+        d = np.load(timeline.paths[k])
+        x, h = d["x"].astype(float), d["h"].astype(float)
+        for i in np.nonzero(k_near == k)[0]:
+            out[i] = 1.0 - inside_boxes(x, h, plan.boxes(i, shot)).mean()
+    return out
+
+
 class ShotRenderer:
     def __init__(self, shot: Shot, plan: FramePlan, timeline: Timeline, width=None, height=None,
                  n_sub=None, sky=None):  # fmt: skip
@@ -54,6 +71,7 @@ class ShotRenderer:
         self.width, self.height = width or shot.width, height or shot.height
         self.n_sub = n_sub or shot.n_sub
         self.model = GreyBlackbody(kappa=shot.kappa)
+        self.grid = shot.log_grid()  # same grid settings every frame (8.8: no flicker)
         self.sky = sky if sky is not None else upload_cube_map(build_cube_map(StarFieldConfig()))
         self._snaps = {}
         self._runs = {}
@@ -82,7 +100,8 @@ class ShotRenderer:
         ids, x, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop)
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
-        texs = textures_from_particles(x, s["h"], mass, temp, np.zeros_like(x))
+        boxes = self.plan.boxes(i, self.shot)
+        texs = textures_from_particles(x, s["h"], mass, temp, np.zeros_like(x), self.grid, boxes)
         cam = self.plan.camera(i, self.width, self.height)
         pic, _ = render_gas(cam, upload_scene(texs, self.model), n_sub=self.n_sub, sky=self.sky,
                             out_mode=OUT_PICTURE)  # fmt: skip
