@@ -1,0 +1,129 @@
+"""Phase 8 step 5: gas between snapshots (phases/phase-08-gas-rendering.md 8.2; 8.6 test 8)."""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from nebula.physics.orbits import apocentre_state
+from nebula.render.interpolate import (
+    ETA_ORB,
+    FADE,
+    Snap,
+    advance,
+    fade_weight,
+    load_snap,
+    state_at,
+)
+from nebula.sim.integrator import integrate_orbit
+from tests.helpers import check
+
+ROOT = Path(__file__).resolve().parents[2]
+REAL = ROOT / "runs" / "R6.1_100k" / "snapshots" / "snap_00160.npz"
+INTERVAL = 6801.46875  # R6.1_100k snapshot spacing (code time; 1.67 days)
+
+
+def _orbits():
+    """Eccentric, close and inclined test orbits (x, p) in float64."""
+    xs, ps = [], []
+    for r_peri, r_apo, tilt in ((8.0, 300.0, 0.0), (10.0, 60.0, 0.7), (40.0, 2000.0, 1.3)):
+        x, p, _ = apocentre_state(r_peri, r_apo)
+        c, s = np.cos(tilt), np.sin(tilt)
+        rot = np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+        xs.append(rot @ x)
+        ps.append(rot @ p)
+    return np.array(xs), np.array(ps)
+
+
+def test_advance_matches_phase1_integrator():
+    """8.6 test 8a: the interpolation code fed float64 states equals the Phase 1 gravity-only
+    generalized leapfrog (sim.integrator.integrate_orbit, same eta) to 1e-12, forward and,
+    by time reversal, backward."""
+    xs, ps = _orbits()
+    for sign, name in ((1.0, "forward"), (-1.0, "backward")):
+        x, p, alive = advance(xs, ps, sign * 20000.0, eta=ETA_ORB)
+        for i in range(len(xs)):
+            o = integrate_orbit(xs[i], sign * ps[i], 20000.0, eta=ETA_ORB)
+            check(f"test 8a, orbit {i} {name}: x", o.x[-1], x[i], rtol=1e-12, per_vector=True)
+            check(f"test 8a, orbit {i} {name}: p", sign * o.p[-1], p[i], rtol=1e-12,
+                  per_vector=True)  # fmt: skip
+        check(f"test 8a, {name}: all alive", True, bool(alive.all()))
+
+
+def _two_snaps(x0, p0, dt, eta=ETA_ORB / 16):
+    """Snapshots a (t = 0) and b (t = dt) of a gravity-only 'run' (fine steps), stored in
+    float32 like real snapshots; returns (a, b, truth function t -> float64 positions)."""
+    xb, pb, alive = advance(x0, p0, dt, eta)
+    ids = np.arange(len(x0))
+
+    def f32(v):
+        return v.astype(np.float32).astype(float)
+
+    a = Snap(0.0, ids, f32(x0), f32(p0), {"h": np.full(len(x0), 1.0)})
+    b = Snap(dt, ids[alive], f32(xb[alive]), f32(pb[alive]), {"h": np.full(alive.sum(), 3.0)})
+    return a, b, lambda t: advance(x0, p0, t, eta)[0]
+
+
+def test_endpoints_scalars_and_no_jump():
+    """At the snapshot times the frame is the snapshot itself; scalars blend linearly; and the
+    cross-fade leaves no jump: the change of position between frames stays smooth up to and
+    across the next snapshot (largest step-to-step change within 1.5x of its neighbours)."""
+    xs, ps = _orbits()
+    a, b, _ = _two_snaps(xs, ps, INTERVAL)
+    ids, x, s = state_at(a, b, 0.0)
+    check("frame at snapshot a: positions", a.x, x, rtol=0.0, atol=0.0)
+    ids, x, s = state_at(a, b, INTERVAL)
+    check("frame at snapshot b: positions", b.x, x, rtol=1e-15, per_vector=True)
+    _, _, s = state_at(a, b, 0.25 * INTERVAL)
+    check("scalars at a quarter: 1 + 0.25 x (3 - 1)", np.full(3, 1.5), s["h"], rtol=1e-14)
+    check("fade weight: 0 before the last 20%, 1 at the end", (0.0, 0.0, 1.0),
+          (fade_weight(0.5), fade_weight(1 - FADE), fade_weight(1.0)))  # fmt: skip
+    ts = np.linspace(0.7, 1.0, 61) * INTERVAL
+    xs_t = np.array([state_at(a, b, t)[1] for t in ts])
+    steps = np.linalg.norm(np.diff(xs_t, axis=0), axis=2)  # (60, particles)
+    rough = steps[1:-1] / (0.5 * (steps[:-2] + steps[2:]))
+    check("no jump: largest step / mean of its neighbours", 1.0, float(np.max(np.abs(rough))),
+          atol=0.5)  # fmt: skip
+
+
+def test_swallowed_particle_is_dropped():
+    """A particle on a plunging orbit, absent from the next snapshot, follows its orbit until
+    it crosses r_drop and is then dropped; before that it is shown."""
+    x0 = np.array([[30.0, 0.0, 0.0], [100.0, 0.0, 0.0]])
+    p0 = np.array([[0.0, 0.02, 0.0], [0.0, 0.1, 0.0]])  # first one plunges
+    a, b, _ = _two_snaps(x0, p0, 2000.0)
+    check("plunging particle missing from b", 1, len(b.ids))
+    shown_early = 0 in state_at(a, b, 50.0)[0]
+    gone_late = 0 not in state_at(a, b, 1999.0)[0]
+    check("plunging particle shown early, dropped after crossing r_drop", (True, True),
+          (shown_early, gone_late))  # fmt: skip
+
+
+@pytest.mark.skipif(not REAL.exists(), reason="run R6.1_100k not on this machine")
+def test_interpolated_positions_vs_fine_run():
+    """8.6 test 8b: ~2,100 real particles (snapshot 160 of R6.1_100k, including all 136 within
+    r = 60) in a gravity-only 'run' with 16x finer steps, stored in float32 like real
+    snapshots. Interpolated positions at mid-interval match the run to 1e-5 of r (largest
+    particle), and the error falls ~4x when eta_orb is halved (second order); at 90% of the
+    interval (inside the cross-fade) the float32 snapshots set the floor.
+
+    The plan's reference is `nebula resim` writing snapshots at the frame times; between
+    snapshots the interpolation is gravity-only, so a gravity-only run with much finer steps is
+    the same reference without a resimulation tool (DECISIONS 2026-11-15)."""
+    snap = load_snap(REAL)
+    r = np.linalg.norm(snap.x, axis=1)
+    rng = np.random.default_rng(0)
+    sel = np.unique(np.r_[rng.choice(np.nonzero(r > 4.5)[0], 2000, replace=False),
+                          np.nonzero((r > 4.5) & (r < 60))[0]])  # fmt: skip
+    a, b, truth = _two_snaps(snap.x[sel], snap.p[sel], INTERVAL)
+    errs = {}
+    for frac in (0.5, 0.9):
+        xt = truth(frac * INTERVAL)
+        for k, eta in enumerate((ETA_ORB, ETA_ORB / 2)):
+            ids, x, _ = state_at(a, b, frac * INTERVAL, eta=eta)
+            e = np.linalg.norm(x - xt[ids], axis=1) / np.linalg.norm(xt[ids], axis=1)
+            errs[frac, k] = e.max()
+            check(f"test 8b, {frac:.0%} of interval, eta_orb / {2**k}: worst error / r", 0.0,
+                  e.max(), atol=1e-5)  # fmt: skip
+    check("test 8b: error ratio when eta_orb is halved (mid-interval)", 4.0,
+          errs[0.5, 0] / errs[0.5, 1], rtol=0.25)  # fmt: skip

@@ -138,6 +138,14 @@ fn one_minus_exp(x: f32) -> f32 {
     return 1.0 - exp(-x);
 }
 
+// (1 - e^-x) / x, finite for every x >= 0 (series below 0.03, as one_minus_exp).
+fn one_minus_exp_over_x(x: f32) -> f32 {
+    if (x < 0.03) {
+        return 1.0 - x * (0.5 - x * (1.0 / 6.0 - x * (1.0 / 24.0)));
+    }
+    return (1.0 - exp(-x)) / x;
+}
+
 // Mirrors physics.geodesics.schw_static_proper_length.
 fn proper_length(dl: f32, dr: f32, r: f32) -> f32 {
     return sqrt(dl * dl + dr * dr * 2.0 / (r - 2.0));
@@ -165,10 +173,6 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
         ds = min(ds, frac * cell_size(p + ds * e));
         let mid = p + 0.5 * ds * e;
         let f = sample_fields(mid);
-        var src = 0.0;
-        if (f.x > 0.0) {
-            src = gas.model.y * (f.y / f.x);
-        }
         let alpha = gas.model.x * f.x;
         let r_mid = length(mid);
         // No gas: nothing changes; also avoids 0 x infinity at r_mid = 2 exactly (march.py).
@@ -176,7 +180,11 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
             let q = p + ds * e;
             let path = proper_length(ds, length(q) - length(p), r_mid);
             let dtau = alpha * path;
-            st.intensity += st.transmission * src * one_minus_exp(dtau);
+            // S (1 - e^-dtau) with S = s_scale rho_t4 / rho and dtau = kappa rho path, written
+            // as s_scale rho_t4 kappa path (1 - e^-dtau) / dtau: no division by rho, which in
+            // float32 can be a rounding residue at the thin edge of the gas (gave inf pixels).
+            let src_dtau = gas.model.y * f.y * gas.model.x * path;
+            st.intensity += st.transmission * src_dtau * one_minus_exp_over_x(dtau);
             st.transmission *= exp(-dtau);
         }
         s += ds;

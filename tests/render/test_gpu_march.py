@@ -237,6 +237,34 @@ def test_no_invalid_pixels_at_the_horizon(uniform_scene):
     check("horizon: gas down to r = 2, all pixels finite", True, bool(np.isfinite(img).all()))
 
 
+EDGE_SNAP = 48  # R6.1_100k day 97.1: the stream arriving at the hole, thin edges everywhere
+EDGE_PIXELS = [(67, 30), (101, 211), (272, 256), (624, 319), (613, 324), (189, 355)]
+
+
+@pytest.mark.skipif(
+    not (REAL_RUN / "snapshots" / f"snap_{EDGE_SNAP:05d}.npz").exists(),
+    reason=f"run {REAL_RUN.name} not on this machine",
+)
+def test_no_invalid_pixels_at_thin_gas_edges():
+    """The emission S (1 - e^-dtau) was computed as s_scale (rho_t4 / rho) (1 - e^-dtau); at
+    the thin edge of the gas the float32 sampled rho can be a rounding residue, the ratio
+    overflowed and 577 pixels of this 640 x 360 frame were infinite (found 2026-11-15). Every
+    pixel must be finite, and the pixels that were infinite must match the CPU to 1e-3."""
+    from nebula.render.snapshot_scene import snapshot_textures
+
+    textures, _ = snapshot_textures(REAL_RUN, EDGE_SNAP)
+    model = GreyBlackbody(kappa=REAL_KAPPA)
+    e = np.radians(15.0)
+    cam = Camera(position=(150 * np.cos(e), 0.0, 150 * np.sin(e)), vfov_deg=60.0, width=640,
+                 height=360)  # fmt: skip
+    img, _ = render_gas(cam, upload_scene(textures, model), n_sub=1)
+    check("thin gas edges: all pixels finite", True, bool(np.isfinite(img).all()))
+    ref = render_reference(cam, textures, model, pixels=EDGE_PIXELS)
+    cols, rows = np.array(EDGE_PIXELS).T
+    check("thin gas edges: formerly infinite pixels, GPU vs CPU I", ref[rows, cols, 0],
+          img[rows, cols, 0], rtol=1e-3)  # fmt: skip
+
+
 # ---------------------------------------------------------------- step 4: stars, tests 9-10
 
 
