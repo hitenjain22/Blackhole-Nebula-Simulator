@@ -43,7 +43,8 @@ def main():
     run = o.get("run", "dense_B192")
     n_frames, stride = int(o.get("frames", 240)), int(o.get("stride", 1))
     r, elev, swing = float(o.get("r", 80)), float(o.get("elev", 12)), float(o.get("swing", 40))
-    vfov, n_sub, kappa = float(o.get("vfov", 60)), int(o.get("n_sub", 1)), float(o.get("kappa", 1e7))
+    vfov, n_sub = float(o.get("vfov", 60)), int(o.get("n_sub", 1))
+    kappa = float(o.get("kappa", 1e7))
     w, h = int(o.get("width", 640)), int(o.get("height", 360))
     folder = ROOT / "runs" / run
     eos, mass = run_eos_and_mass(folder)
@@ -100,12 +101,15 @@ def main():
         a.imshow(frames[k])
         a.set_title(f"frame {k}: {labels[k]}")
         a.axis("off")
-    fig.suptitle(f"{run}: preview frames (camera r = {r:g}, {elev:g} deg up, swinging {swing:g} deg)")
+    fig.suptitle(
+        f"{run}: preview frames (camera r = {r:g}, {elev:g} deg up, swinging {swing:g} deg)"
+    )
     plt.tight_layout()
     sheet = OUT / f"phase8_hero_preview_{run}{tag}.png"
     plt.savefig(sheet, dpi=80)
-    print(f"wrote {out.relative_to(ROOT)} ({n_frames} frames, "
-          f"{(time.perf_counter() - t0) / (n_frames + 5):.1f} s per frame) and {sheet.name}")  # fmt: skip
+    per_frame = (time.perf_counter() - t0) / (n_frames + 5)
+    print(f"wrote {out.relative_to(ROOT)} ({n_frames} frames, {per_frame:.1f} s per frame) "
+          f"and {sheet.name}")  # fmt: skip
 
 
 if __name__ == "__main__":
