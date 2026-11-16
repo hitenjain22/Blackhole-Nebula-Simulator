@@ -1,7 +1,8 @@
 """Convert a Phantom run (our patch) to our snapshot format, so our analysis and video scripts
 (cinematic_preview.py, cloud_metrics, ...) read it like one of our runs.
 
-    uv run --with sarracen --with scikit-learn python scripts/ph_to_snapshots.py PH_RUN_DIR NAME [every=1]
+    uv run --with sarracen --with scikit-learn python scripts/ph_to_snapshots.py \
+        PH_RUN_DIR NAME [every=1]
 
 Writes runs/NAME/snapshots/snap_NNNNN.npz (t, x, p, u, rho, h, ids, as float32 for rendering
 like our snapshots; rule 5) and runs/NAME/manifest.json (the Phantom run's manifest plus the
@@ -52,9 +53,12 @@ def main():
             rho=(s["rho"].values.astype(float) * m_ours / m_ph).astype(np.float32),
             h=s["h"].values.astype(np.float32), ids=s["iorig"].values.astype(np.int64),
         )  # fmt: skip
-    man = json.loads((src / "manifest.json").read_text()) if (src / "manifest.json").exists() else {}
+    man_path = src / "manifest.json"
+    man = json.loads(man_path.read_text()) if man_path.exists() else {}
     man["config"] = {"eos": "gasrad", "gravity": "newton" if newton else "gn", "r_acc": 4.0,
-                     "source": "Phantom run " + str(src), "every": every}  # fmt: skip
+                     "source": "Phantom run " + str(src), "every": every,
+                     "particle_mass": m_ours}  # fmt: skip  (exact; a re-run's first dump may
+    # already miss swallowed particles, so 1 / N(snapshot 0) would be wrong)
     (ROOT / "runs" / name / "manifest.json").write_text(json.dumps(man, indent=1))
     print(f"wrote {len(dumps)} snapshots to {out}")
 

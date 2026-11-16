@@ -1,0 +1,70 @@
+# Phase 8 step 6a: a slow full circle round the hole while the stream wraps round it (first
+# close pass, dense re-run dense_B192; DECISIONS 2026-11-15). Draft 1 circled at 4-25 deg and
+# passed within 7.5 of the stream (big blurry foreground, empty frames on the far side); this
+# orbit is higher (22-38 deg), looking down on the whole wrap with the lensed image.
+name = "orbit_pass"
+fps = 24
+duration = 12.0
+width = 640
+height = 360
+n_sub = 1
+kappa = 1e7
+
+[[sources]]
+run = "dense_B192"
+
+[[camera]]
+t = 0.0
+r = 80.0
+elev = 35.0
+az = -40.0
+vfov = 55.0
+
+[[camera]]
+t = 3.0
+r = 65.0
+elev = 28.0
+az = 50.0
+vfov = 58.0
+
+[[camera]]
+t = 6.0
+r = 58.0
+elev = 22.0
+az = 140.0
+vfov = 60.0
+
+[[camera]]
+t = 9.0
+r = 62.0
+elev = 26.0
+az = 230.0
+vfov = 60.0
+
+[[camera]]
+t = 12.0
+r = 75.0
+elev = 38.0
+az = 320.0
+vfov = 55.0
+
+[[time]]
+t = 0.0
+day = 96.4
+
+[[time]]
+t = 12.0
+day = 98.9
+
+# The stream cools and dims after ~day 98.5: open up 2 stops over the last 4 s to keep it visible.
+[[exposure]]
+t = 0.0
+stops = 0.0
+
+[[exposure]]
+t = 8.0
+stops = 0.0
+
+[[exposure]]
+t = 12.0
+stops = 2.0

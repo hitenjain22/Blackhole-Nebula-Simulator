@@ -31,11 +31,15 @@ def snapshot_textures(
 
 
 def run_eos_and_mass(run_dir: Path) -> tuple[str, float]:
-    """(equation of state name, particle mass = 1 / N(snapshot 0)) of a run."""
+    """(equation of state name, particle mass) of a run: the manifest's particle_mass (written
+    by scripts/ph_to_snapshots.py from Phantom's massoftype) if present, else 1 / N(snapshot 0)
+    (our runs: the cloud is 1 code mass unit split equally and snapshot 0 is the start)."""
     run_dir = Path(run_dir)
-    eos = json.loads((run_dir / "manifest.json").read_text())["config"].get("eos", "gasrad")
+    config = json.loads((run_dir / "manifest.json").read_text())["config"]
+    if "particle_mass" in config:
+        return config.get("eos", "gasrad"), float(config["particle_mass"])
     n0 = len(np.load(run_dir / "snapshots" / "snap_00000.npz")["h"])
-    return eos, 1.0 / n0
+    return config.get("eos", "gasrad"), 1.0 / n0
 
 
 def textures_from_particles(x, h, m, t, v, grid=None, boxes=()) -> list[Texture]:
