@@ -41,6 +41,10 @@ Shot file layout (all times in video seconds unless named ``day``):
     t = 0.0
     stops = 0.0
 
+    colour = "true"             # optional (top level): "true" = Phase 9 true colour (blackbody
+                                # at g T, Doppler and gravitational shifts); default "grey"
+                                # (Phase 8 placeholder fire ramp)
+
     [grid]                      # optional: the global log-spherical grid (gasgrid.py defaults)
     r_max = 8000.0              # rays march out to r_max: must exceed the camera and the gas
     nr = 230                    # shown (8.3: "5,000 for early shots")
@@ -215,6 +219,7 @@ class Shot:
     boxes: list = field(default_factory=list)
     bricks: dict | None = None
     auto_exposure: dict | None = None
+    colour: str = "grey"
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -243,6 +248,7 @@ class Shot:
             boxes=d.get("boxes", []),
             bricks=d.get("bricks"),
             auto_exposure=d.get("auto_exposure"),
+            colour=str(d.get("colour", "grey")),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -250,6 +256,8 @@ class Shot:
     def validate(self):
         if self.duration <= 0 or self.fps <= 0:
             raise ShotError("duration and fps must be positive")
+        if self.colour not in ("grey", "true"):
+            raise ShotError(f'colour = {self.colour!r}: use "grey" or "true"')
         try:
             self.log_grid()
         except TypeError as e:

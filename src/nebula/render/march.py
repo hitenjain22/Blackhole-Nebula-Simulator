@@ -57,6 +57,10 @@ T_REF = 1.0e4  # K; rho T^4 is stored as rho (T / T_REF)^4 to stay well inside f
 BLEND_CELLS = 2.0  # detail boxes fade into the log grid over this many cells at their faces
 T_STOP = 1e-4  # stop marching when the transmission falls below this (8.4)
 STEP_FRACTION = 0.5  # sub-step <= this fraction of the local cell size (8.4)
+# Largest |gamma beta| used by the colour model (beta = 0.995). Real gas stays far below it
+# (|gamma beta| ~ 1 at r ~ 4); it only guards rho_gb / rho where both are float32 rounding
+# residues at the thin edge of the gas, which on the GPU could give any value.
+GB_MAX = 10.0
 
 
 @dataclass
@@ -124,6 +128,9 @@ class RelativisticBlackbody:
         """(source (4,), optical depth) of a step at mid along the outward direction e."""
         t_em = temperature_from_sample(rho, rho_t4)
         gb = np.asarray(rho_gb, float) / rho
+        gbl = float(np.sqrt(gb @ gb))
+        if gbl > GB_MAX:
+            gb = gb * (GB_MAX / gbl)
         n_light = -static_frame_direction(mid, e)  # light travels back toward the camera
         r = float(np.sqrt(mid @ mid))
         g = float(redshift_factor(r, gb, n_light, self.r_cam))

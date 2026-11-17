@@ -9,6 +9,14 @@
 //                       via render.march.GreyBlackbody: S = (sigma T_REF^4 / pi) (rho T^4 /
 //                       rho) with rho T^4 stored as rho (T / T_REF)^4; alpha = kappa rho
 //   proper_length    -> physics.geodesics.schw_static_proper_length
+// Phase 9 colour mode (render.march.RelativisticBlackbody). The march step holds a
+// "// #if COLOUR / // #else / // #endif" block: gpu_march.shader_source keeps one branch, so
+// the grey and colour shaders are compiled separately (one shader with both branches ran
+// ~250x slower on the Iris Plus, even with the colour branch never taken: AI_LOG 2026-11-17).
+//   static_dir       -> physics.redshift.static_frame_direction
+//   g, path factor   -> physics.redshift.redshift_factor, gas_frame_path_factor
+//   lut_chroma       -> physics.colour.lut_chroma (log-log table, clamped at its ends)
+//   emission         -> physics.colour.blackbody_xyz_lut at g T_em, bolometric_intensity_si
 // Ray geometry: RK4 in phi from schw_ray.wgsl, exactly as bent_rays.ray_polyline.
 //
 // Textures are rg32float (r = rho, g = rho (T/T_REF)^4) sampled with 8 textureLoad calls
@@ -34,6 +42,8 @@ struct GasParams {
     brick_a: vec4<u32>, // atlas slots per axis (A0, A1, A2), -
     brick_lo: vec4<f32>, // box holding the bricks' home regions (BrickTexture.box_lo/hi)
     brick_hi: vec4<f32>,
+    colour: vec4<f32>,  // 1 = Phase 9 colour, LUT ln T_0, LUT d ln T, LUT entries
+    colour2: vec4<f32>, // -, max |gamma beta| (march.GB_MAX), -, -
 };
 @group(0) @binding(3) var log_tex: texture_3d<f32>;
 @group(0) @binding(4) var box0_tex: texture_3d<f32>;
@@ -43,6 +53,13 @@ struct GasParams {
 // and the atlas of 9^3-texel bricks (8^3 cells + one-cell apron on the high side).
 @group(0) @binding(9) var brick_index: texture_3d<u32>;
 @group(0) @binding(10) var brick_atlas: texture_3d<f32>;
+// Phase 9: rho x gamma beta (rgba32float, a unused) of each grid, and the colour table
+// (ln chroma XYZ per entry, physics.colour.chroma_lut). Dummies when not in colour mode.
+@group(0) @binding(11) var log_vel: texture_3d<f32>;
+@group(0) @binding(12) var box0_vel: texture_3d<f32>;
+@group(0) @binding(13) var box1_vel: texture_3d<f32>;
+@group(0) @binding(14) var brick_vel: texture_3d<f32>;
+@group(0) @binding(15) var chroma_lut: texture_2d<f32>;  // (entries x 1) rgba32float
 const BRICK_I: i32 = 8;
 const APRON_I: i32 = 9;
 const EXIT_EPS: f32 = 1e-4;  // bricks.EXIT_EPS (in cells)
@@ -233,6 +250,142 @@ fn sample_fields(p: vec3<f32>) -> vec2<f32> {
     return base;
 }
 
+// #if COLOUR
+// Colour shader: density, rho T^4 and rho x gamma beta from ONE trilinear pass per grid (the
+// same corner indices and weights for the two textures), combined exactly like sample_fields
+// (march.sample + march.sample_rho_gb). Sharing the index maths keeps the colour shader small:
+// separate samplers for the two fields made it hang the Iris Plus (AI_LOG 2026-11-17).
+struct Pair { f: vec2<f32>, v: vec3<f32> };
+
+fn trilinear_pair(t: texture_3d<f32>, tv: texture_3d<f32>, fi: f32, fj: f32, fk: f32,
+                  wrap_k: bool) -> Pair {
+    let dims = vec3<i32>(textureDimensions(t));
+    let i0 = i32(floor(fi));
+    let j0 = i32(floor(fj));
+    let k0 = i32(floor(fk));
+    let ti = fi - f32(i0);
+    let tj = fj - f32(j0);
+    let tk = fk - f32(k0);
+    var out: Pair;
+    out.f = vec2<f32>(0.0);
+    out.v = vec3<f32>(0.0);
+    for (var c = 0; c < 8; c++) {
+        let di = c & 1;
+        let dj = (c >> 1u) & 1;
+        let dk = (c >> 2u) & 1;
+        let ii = clamp(i0 + di, 0, dims.z - 1);
+        let jj = clamp(j0 + dj, 0, dims.y - 1);
+        var kk = k0 + dk;
+        if (wrap_k) {
+            kk = ((kk % dims.x) + dims.x) % dims.x;
+        } else {
+            kk = clamp(kk, 0, dims.x - 1);
+        }
+        let w = select(1.0 - ti, ti, di == 1) * select(1.0 - tj, tj, dj == 1)
+              * select(1.0 - tk, tk, dk == 1);
+        let q = vec3<i32>(kk, jj, ii);
+        out.f += w * textureLoad(t, q, 0).rg;
+        out.v += w * textureLoad(tv, q, 0).xyz;
+    }
+    return out;
+}
+
+fn sample_pair_log(p: vec3<f32>) -> Pair {
+    var out: Pair;
+    out.f = vec2<f32>(0.0);
+    out.v = vec3<f32>(0.0);
+    let r = length(p);
+    if (r < gas.grid.x || r > gas.grid.y) {
+        return out;
+    }
+    let fi = log(r / gas.grid.x) / gas.grid.z - 0.5;
+    let fj = acos(clamp(p.z / r, -1.0, 1.0)) / gas.grid.w - 0.5;
+    var ph = atan2(p.y, p.x);
+    if (ph < 0.0) {
+        ph += TWO_PI_F;
+    }
+    return trilinear_pair(log_tex, log_vel, fi, fj, ph / gas.grid2.x - 0.5, true);
+}
+
+fn sample_pair_box(t: texture_3d<f32>, tv: texture_3d<f32>, b: BoxParams, p: vec3<f32>) -> Pair {
+    let f = (p - b.lo.xyz) / b.lo.w - 0.5;
+    return trilinear_pair(t, tv, f.x, f.y, f.z, false);
+}
+
+// Bricks: rho, rho T^4 from the atlas, rho x gamma beta from the velocity atlas (same layout).
+fn sample_pair_bricks(p: vec3<f32>) -> Pair {
+    var out: Pair;
+    out.f = vec2<f32>(0.0);
+    out.v = vec3<f32>(0.0);
+    if (gas.bricks.z < 0.5) {
+        return out;
+    }
+    let f = p / gas.bricks.x - 0.5;
+    let fl = floor(f);
+    let c = vec3<i32>(fl);
+    let home = c >> vec3<u32>(3u);
+    let slot = brick_slot(home);
+    if (slot == 0u) {
+        return out;
+    }
+    let s = slot - 1u;
+    let a = gas.brick_a;
+    let blk = vec3<i32>(i32(s / (a.y * a.z)), i32((s / a.z) % a.y), i32(s % a.z));
+    let base = APRON_I * blk + (c - BRICK_I * home);
+    let t = f - fl;
+    for (var k = 0; k < 8; k++) {
+        let d = vec3<i32>(k & 1, (k >> 1u) & 1, (k >> 2u) & 1);
+        let w = select(1.0 - t.x, t.x, d.x == 1) * select(1.0 - t.y, t.y, d.y == 1)
+              * select(1.0 - t.z, t.z, d.z == 1);
+        let q = base + d;
+        let tq = vec3<i32>(q.z, q.y, q.x);
+        out.f += w * textureLoad(brick_atlas, tq, 0).rg;
+        out.v += w * textureLoad(brick_vel, tq, 0).xyz;
+    }
+    return out;
+}
+
+fn sample_pair(p: vec3<f32>) -> Pair {
+    let lg = sample_pair_log(p);
+    let bk = sample_pair_bricks(p);
+    var base: Pair;
+    base.f = lg.f + bk.f;
+    base.v = lg.v + bk.v;
+    if (gas.box0.n.y != 0u) {
+        let w = box_weight(gas.box0, p);
+        if (w > 0.0) {
+            let bx = sample_pair_box(box0_tex, box0_vel, gas.box0, p);
+            base.f = w * bx.f + (1.0 - w) * base.f;
+            base.v = w * bx.v + (1.0 - w) * base.v;
+            return base;
+        }
+    }
+    if (gas.box1.n.y != 0u) {
+        let w = box_weight(gas.box1, p);
+        if (w > 0.0) {
+            let bx = sample_pair_box(box1_tex, box1_vel, gas.box1, p);
+            base.f = w * bx.f + (1.0 - w) * base.f;
+            base.v = w * bx.v + (1.0 - w) * base.v;
+            return base;
+        }
+    }
+    return base;
+}
+// #endif
+
+// physics.colour.lut_chroma: exp of ln chroma interpolated linearly in ln T, T clamped to the
+// table (gas.colour.y = ln T_0, .z = d ln T, .w = entries).
+fn lut_chroma(t: f32) -> vec3<f32> {
+    let n = u32(gas.colour.w);
+    let lt = clamp(log(t), gas.colour.y, gas.colour.y + gas.colour.z * f32(n - 1u));
+    let pos = (lt - gas.colour.y) / gas.colour.z;
+    let i = min(u32(pos), n - 2u);
+    let f = pos - f32(i);
+    let a = textureLoad(chroma_lut, vec2<i32>(i32(i), 0), 0).xyz;
+    let b = textureLoad(chroma_lut, vec2<i32>(i32(i) + 1, 0), 0).xyz;
+    return exp(a * (1.0 - f) + b * f);
+}
+
 // Local cell size of the finest grid at p (march.cell_size).
 fn cell_size(p: vec3<f32>) -> f32 {
     if (gas.box0.n.y != 0u && box_inside(gas.box0, p)) {
@@ -270,7 +423,8 @@ fn proper_length(dl: f32, dr: f32, r: f32) -> f32 {
     return sqrt(dl * dl + dr * dr * 2.0 / (r - 2.0));
 }
 
-struct MarchState { intensity: f32, transmission: f32, steps: u32 };
+// intensity: grey I in .x (Phase 8), or X, Y, Z, bolometric (Phase 9 colour mode)
+struct MarchState { intensity: vec4<f32>, transmission: f32, steps: u32 };
 
 // March the chord a -> b front to back (march.march_segment with curved = True).
 fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
@@ -292,20 +446,55 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
         ds = min(ds, frac * cell_size(p + ds * e));
         ds = min(ds, brick_step_limit(p, e));
         let mid = p + 0.5 * ds * e;
+        // #if COLOUR
+        let pr = sample_pair(mid);
+        let f = pr.f;
+        // #else
         let f = sample_fields(mid);
+        // #endif
         let alpha = gas.model.x * f.x;
         let r_mid = length(mid);
         // No gas: nothing changes; also avoids 0 x infinity at r_mid = 2 exactly (march.py).
         if (alpha > 0.0 && r_mid > 2.0) {
             let q = p + ds * e;
             let path = proper_length(ds, length(q) - length(p), r_mid);
-            let dtau = alpha * path;
-            // S (1 - e^-dtau) with S = s_scale rho_t4 / rho and dtau = kappa rho path, written
-            // as s_scale rho_t4 kappa path (1 - e^-dtau) / dtau: no division by rho, which in
-            // float32 can be a rounding residue at the thin edge of the gas (gave inf pixels).
-            let src_dtau = gas.model.y * f.y * gas.model.x * path;
-            st.intensity += st.transmission * src_dtau * one_minus_exp_over_x(dtau);
-            st.transmission *= exp(-dtau);
+            // #if COLOUR
+            {
+                // Phase 9 (march.RelativisticBlackbody): blackbody at g T_em, optical depth
+                // kappa rho path (gamma - gamma beta . n). S dtau is written without dividing
+                // by rho (see the grey case): sigma (g T)^4 / pi = g^4 s_scale rho_t4 / rho.
+                var gb = pr.v / f.x;
+                let gbl = length(gb);
+                if (gbl > gas.colour2.y) {
+                    gb *= gas.colour2.y / gbl;  // march.GB_MAX: float32 residue guard
+                }
+                let rh = mid / r_mid;
+                let er = dot(e, rh);
+                let lapse = sqrt(1.0 - 2.0 / r_mid);
+                let n_light = -normalize(e + (er / lapse - er) * rh);
+                let doppler = sqrt(1.0 + dot(gb, gb)) - dot(gb, n_light);
+                // camera factor sqrt(1 - 2/r_cam) from the camera itself (it moves per frame)
+                let g = lapse / sqrt(1.0 - 2.0 / length(cam.pos.xyz)) / doppler;
+                let dtau = alpha * path * doppler;
+                let t_em = T_REF_F * sqrt(sqrt(f.y / f.x));
+                let g2 = g * g;
+                let bol_dtau = g2 * g2 * gas.model.y * f.y * gas.model.x * path * doppler;
+                let w = st.transmission * bol_dtau * one_minus_exp_over_x(dtau);
+                st.intensity += w * vec4<f32>(lut_chroma(g * t_em), 1.0);
+                st.transmission *= exp(-dtau);
+            }
+            // #else
+            {
+                let dtau = alpha * path;
+                // S (1 - e^-dtau) with S = s_scale rho_t4 / rho and dtau = kappa rho path,
+                // written as s_scale rho_t4 kappa path (1 - e^-dtau) / dtau: no division by
+                // rho, which in float32 can be a rounding residue at the thin edge of the gas
+                // (gave inf pixels).
+                let src_dtau = gas.model.y * f.y * gas.model.x * path;
+                st.intensity.x += st.transmission * src_dtau * one_minus_exp_over_x(dtau);
+                st.transmission *= exp(-dtau);
+            }
+            // #endif
         }
         s += ds;
         st.steps += 1u;
@@ -314,7 +503,7 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
 }
 
 struct RayOut {
-    intensity: f32,
+    intensity: vec4<f32>,
     transmission: f32,
     status: u32,
     steps: u32,
@@ -367,7 +556,7 @@ fn march_ray(d: vec3<f32>) -> RayOut {
     let perp = d + cos_psi * e1;
     let sin_psi = length(perp);
     var st: MarchState;
-    st.intensity = 0.0;
+    st.intensity = vec4<f32>(0.0);
     st.transmission = 1.0;
     st.steps = 0u;
     var res: RayOut;
@@ -453,6 +642,14 @@ fn march_ray(d: vec3<f32>) -> RayOut {
 const OUT_DIAGNOSTIC: u32 = 0u;
 const OUT_PICTURE: u32 = 1u;
 const OUT_SKY_DIR: u32 = 2u;
+//   OUT_COLOUR:     two vec4 per pixel: mean (X, Y, Z, bolometric) of the gas, then (mean T of
+//                   escaped sub-rays, captured fraction, mean sub-steps, 0)
+//                   (bent_rays.render_reference_colour; Phase 9 test 13)
+//   OUT_COLOUR_PICTURE: two vec4 per pixel: mean (X, Y, Z, bolometric), then (mean of T x
+//                   star radiance RGB, 0)
+const OUT_COLOUR: u32 = 3u;
+const OUT_COLOUR_PICTURE: u32 = 4u;
+const T_REF_F: f32 = 1.0e4;  // march.T_REF
 const MAX_SUB: u32 = 16u;  // n_sub <= 4
 const TEXEL_ANGLE_FACE0: f32 = 0.000766990;  // as render_stars.wgsl
 
@@ -469,6 +666,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = min(cam.dims.z, 4u);
     let total = f32(n * n);
     var acc = vec4<f32>(0.0);
+    var col = vec4<f32>(0.0);
     var dirs: array<vec3<f32>, MAX_SUB>;
     var trans: array<f32, MAX_SUB>;
     var n_esc = 0u;
@@ -480,8 +678,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                               f32(pix.y) + (f32(b) + 0.5) / f32(n));
             let r = march_ray(d);
             let escaped = r.status == RAY_ESCAPED;
-            acc += vec4<f32>(r.intensity, select(0.0, r.transmission, escaped),
+            acc += vec4<f32>(r.intensity.x, select(0.0, r.transmission, escaped),
                              select(1.0, 0.0, escaped), f32(r.steps));
+            col += r.intensity;
             last = vec4<f32>(r.sky_dir, select(0.0, 1.0, escaped));
             if (escaped) {
                 dirs[n_esc] = r.sky_dir;
@@ -493,6 +692,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if (cam.dims.w == OUT_DIAGNOSTIC) {
         out[idx] = acc / total;
+        return;
+    }
+    if (cam.dims.w == OUT_COLOUR) {
+        out[2u * idx] = col / total;
+        out[2u * idx + 1u] = vec4<f32>(acc.y / total, acc.z / total, acc.w / total, 0.0);
         return;
     }
     if (cam.dims.w == OUT_SKY_DIR) {
@@ -513,6 +717,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var k = 0u; k < n_esc; k++) {
             rgb += trans[k] * textureSampleLevel(sky, sky_sampler, dirs[k], lod).rgb;
         }
+    }
+    if (cam.dims.w == OUT_COLOUR_PICTURE) {
+        out[2u * idx] = col / total;
+        out[2u * idx + 1u] = vec4<f32>(rgb * cam.lens.z / total, 0.0);
+        return;
     }
     out[idx] = vec4<f32>(acc.x / total, rgb * cam.lens.z / total);
 }

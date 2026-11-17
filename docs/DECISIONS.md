@@ -674,3 +674,10 @@ Hiten wants the video to continue past the first swing into the return, crash an
 ## 2026-11-17: Phase 9 approved; true colour only (Hiten)
 
 Hiten approved the Phase 9 breakdown (9a colour tables, 9b hue-preserving tone curve, 9c 4-velocity and g, 9d CPU relativistic colour transfer, 9e GPU twin, 9f multi-band, 9g looks for review) and chose **true colour (blue-white)** for the videos: "keep the realistic colors", no orange. So the cinematic grade of phase-09 §9.6 item 3 is dropped (not built); multi-band (§9.6 item 2, test 14) is kept as science output at lower priority, after the true-colour pipeline is in the video. 9g becomes a true-colour review sheet (exposure/star-brightness choices) instead of three looks.
+
+## 2026-11-17: Phase 9 steps 9d-9e choices ("Go Attack!")
+
+- **Opacity:** the colour model keeps Phase 8's grey constant kappa per shot (phase-09 9.4 option 2, "a documented constant"), now applied in the gas frame (kappa rho ds_static (gamma - gamma beta . n)). Reason: the look (how deep into the gas the camera sees) was tuned in Phase 8 with this kappa and Hiten approved those frames; the free-free option 1 changes the look a lot and needs its textbook coefficient re-checked (phase-09). Revisit after the true-colour frames are reviewed.
+- **Velocity field:** each grid stores rho x mass-weighted gamma beta (static frame, from the GN momenta: physics.redshift.gn_static_frame_velocity), interpolated linearly like rho T^4; the gas velocity at a sample is rho_gb / rho. |gamma beta| is capped at GB_MAX = 10 in both CPU and GPU (only float32 residues at thin edges can exceed ~1).
+- **Bricks:** velocity deposition in passes of fields (PASS_BYTES 1.2 GB of accumulators) so memory stays at the Phase 8 level; without velocities only the two old fields are deposited.
+- **GPU:** one shader for grey and colour (gas.colour.x flag); the colour table is a storage buffer of ln chroma; the camera factor sqrt(1 - 2/r_cam) comes from the camera position in the shader. Tone mapping stays in NumPy (render.tone) on the downloaded XYZ image: no second copy to keep in step.

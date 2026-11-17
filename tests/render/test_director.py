@@ -518,3 +518,15 @@ def test_auto_exposure_setting(runs):
         with pytest.raises(ShotError, match=msg):
             Shot.load(write_shot(tmp, body))
     check("auto exposure setting: bad settings refused", True, True)
+
+
+def test_colour_setting(runs):
+    """Phase 9: colour = "true" selects true colour (default grey); other values are refused."""
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    check("colour default", "grey", Shot.load(write_shot(tmp, plain)).colour)
+    head, rest = plain.split("\n", 1)
+    shot = Shot.load(write_shot(tmp, head + '\ncolour = "true"\n' + rest))
+    check("colour = true read", "true", shot.colour)
+    with pytest.raises(ShotError, match="colour"):
+        Shot.load(write_shot(tmp, head + '\ncolour = "orange"\n' + rest))

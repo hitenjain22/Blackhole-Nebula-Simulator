@@ -55,3 +55,19 @@ def compose(picture: np.ndarray, exposure: Exposure) -> np.ndarray:
     gas = gas_display_linear(picture[..., 0], exposure.gas)
     stars = tone_map(picture[..., 1:4], exposure.stars)
     return to_uint8(srgb_encode(np.clip(gas + stars, 0.0, 1.0)))
+
+
+def compose_colour(picture: np.ndarray, exposure: Exposure) -> np.ndarray:
+    """Phase 9 GPU picture (H, W, 8) = (X, Y, Z, bolometric, T x star RGB, 0) -> uint8 sRGB.
+
+    Gas: CIE XYZ -> linear sRGB (physics.colour.xyz_to_linear_srgb), times the exposure, then
+    the hue-preserving tone curve and gamut step of render.tone (true colour, phase-09 9.5).
+    Stars: as in Phase 8 (frames.tone_map, already dimmed by the gas on the GPU), added in
+    linear light; their brightness is an artistic multiplier (9.5)."""
+    from nebula.physics.colour import xyz_to_linear_srgb
+    from nebula.render.tone import to_gamut
+    from nebula.render.tone import tone_map as tone_luminance
+
+    gas = to_gamut(tone_luminance(xyz_to_linear_srgb(picture[..., 0:3]) * exposure.gas))
+    stars = tone_map(picture[..., 4:7], exposure.stars)
+    return to_uint8(srgb_encode(np.clip(gas + stars, 0.0, 1.0)))

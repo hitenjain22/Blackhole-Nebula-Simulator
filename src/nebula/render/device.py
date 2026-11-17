@@ -128,16 +128,19 @@ def run_tiled(
     height: int,
     tile: int = 256,
     extra: list[dict] | None = None,
+    vec4_per_pixel: int = 1,
 ) -> tuple[np.ndarray, TileTimings]:
-    """Run a compute shader over a width x height image in tiles; return (H, W, 4) float32.
+    """Run a compute shader over a width x height image in tiles; return (H, W, 4 k) float32
+    with k = ``vec4_per_pixel`` (the shader writes out[k idx + j], j < k).
 
     ``extra``: further bind-group entries (binding >= 2), e.g. a camera uniform buffer or a
     texture view and sampler, shared by all tiles.
     """
+    k = int(vec4_per_pixel)
     device = get_device()
     pipeline = get_pipeline(shader_code)
     out_buf = device.create_buffer(
-        size=tile * tile * 16, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+        size=tile * tile * 16 * k, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
     )
     uni_buf = device.create_buffer(
         size=32, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
@@ -150,7 +153,7 @@ def run_tiled(
             *(extra or []),
         ],
     )
-    image = np.empty((height, width, 4), dtype=np.float32)
+    image = np.empty((height, width, 4 * k), dtype=np.float32)
     timings = TileTimings()
     for y0 in range(0, height, tile):
         for x0 in range(0, width, tile):
@@ -166,7 +169,9 @@ def run_tiled(
             cpass.end()
             device.queue.submit([encoder.finish()])
             # read_buffer waits for the GPU, so the timing covers the whole tile.
-            data = device.queue.read_buffer(out_buf, 0, tw * th * 16)
+            data = device.queue.read_buffer(out_buf, 0, tw * th * 16 * k)
             timings.per_tile.append(time.perf_counter() - t0)
-            image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(th, tw, 4)
+            image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(
+                th, tw, 4 * k
+            )
     return image, timings

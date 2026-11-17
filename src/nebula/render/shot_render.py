@@ -11,11 +11,20 @@ from pathlib import Path
 import numpy as np
 
 from nebula.analysis.cloud_metrics import snapshot_temperature
+from nebula.physics.colour import chroma_lut
+from nebula.physics.redshift import gn_static_frame_velocity
+from nebula.render.colour_data import load_cmf
 from nebula.render.director import FramePlan, Shot, Timeline
-from nebula.render.gas_frames import Exposure, auto_gas_exposure, auto_star_exposure, compose
-from nebula.render.gpu_march import OUT_PICTURE, render_gas, upload_scene
+from nebula.render.gas_frames import (
+    Exposure,
+    auto_gas_exposure,
+    auto_star_exposure,
+    compose,
+    compose_colour,
+)
+from nebula.render.gpu_march import OUT_COLOUR_PICTURE, OUT_PICTURE, render_gas, upload_scene
 from nebula.render.interpolate import load_snap, state_at
-from nebula.render.march import GreyBlackbody
+from nebula.render.march import GreyBlackbody, RelativisticBlackbody
 from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
 from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
 
@@ -94,7 +103,14 @@ class ShotRenderer:
         self.shot, self.plan, self.timeline = shot, plan, timeline
         self.width, self.height = width or shot.width, height or shot.height
         self.n_sub = n_sub or shot.n_sub
-        self.model = GreyBlackbody(kappa=shot.kappa)
+        self.colour = shot.colour == "true"
+        if self.colour:  # Phase 9 true colour; r_cam is the GPU's own camera distance
+            lam, cmf = load_cmf()
+            lt, lc = chroma_lut(1e3, 1e8, 4096, lam, cmf)
+            self.model = RelativisticBlackbody(kappa=shot.kappa, r_cam=float("inf"), log_t=lt,
+                                               log_chroma=lc)  # fmt: skip
+        else:
+            self.model = GreyBlackbody(kappa=shot.kappa)
         self.grid = shot.log_grid()  # same grid settings every frame (8.8: no flicker)
         self.sky = sky if sky is not None else upload_cube_map(build_cube_map(StarFieldConfig()))
         self._snaps = {}
@@ -116,21 +132,28 @@ class ShotRenderer:
         return self._runs[run_dir]
 
     def picture(self, i: int) -> np.ndarray:
-        """Linear GPU picture (H, W, 4) of frame i: (gas I, T x star RGB)."""
+        """Linear GPU picture of frame i: grey (H, W, 4) = (gas I, T x star RGB); true colour
+        (H, W, 8) = (X, Y, Z, bolometric, T x star RGB, 0)."""
         t = float(self.plan.sim_t[i])
         times = self.timeline.times
         k = min(max(int(np.searchsorted(times, t, side="right")) - 1, 0), len(times) - 2)
         a, b = self._snap(k), self._snap(k + 1)
         r_drop = 4.0  # accretion radius of every run so far (manifest config r_acc)
-        ids, x, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop)
+        if self.colour:  # the gas velocity (gamma beta) feeds the Doppler colours
+            ids, x, p, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop, with_p=True)
+            v = gn_static_frame_velocity(x, p)[1]
+        else:
+            ids, x, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop)
+            v = np.zeros_like(x)
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
-        texs = textures_from_particles(x, s["h"], mass, temp, np.zeros_like(x), self.grid, boxes,
+        texs = textures_from_particles(x, s["h"], mass, temp, v, self.grid, boxes,
                                        self.shot.brick_lattice())  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
+        mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE
         pic, _ = render_gas(cam, upload_scene(texs, self.model), n_sub=self.n_sub, sky=self.sky,
-                            out_mode=OUT_PICTURE)  # fmt: skip
+                            out_mode=mode)  # fmt: skip
         if not np.isfinite(pic).all():
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
         return pic
@@ -140,10 +163,17 @@ class ShotRenderer:
         n = len(self.plan.video_t)
         idx = np.linspace(0, n - 1, N_PROBES).astype(int) if probes is None else probes
         pics = [self.picture(int(i)) for i in idx]
-        gas = [auto_gas_exposure(p[..., 0], GAS_PERCENTILE, GAS_LEVEL) for p in pics]
-        stars = [auto_star_exposure(p[..., 1:4]) for p in pics]
+        gas = [auto_gas_exposure(self._gas_level(p), GAS_PERCENTILE, GAS_LEVEL) for p in pics]
+        stars = [auto_star_exposure(self._stars(p)) for p in pics]
         self.base = Exposure(float(np.median(gas)), float(np.median(stars)))
         return self.base
+
+    def _gas_level(self, pic):
+        """The gas brightness the exposure is set on: grey I, or luminance Y in true colour."""
+        return pic[..., 1] if self.colour else pic[..., 0]
+
+    def _stars(self, pic):
+        return pic[..., 4:7] if self.colour else pic[..., 1:4]
 
     def adapt_exposure(self, every_s=1.0, smooth_s=4.0, strength=0.75, probe_size=(320, 180)):
         """Base exposure (median of the probes) plus a smooth automatic exposure curve
@@ -159,8 +189,9 @@ class ShotRenderer:
             pics = [self.picture(int(i)) for i in idx]
         finally:
             (self.width, self.height), self.n_sub = size, n_sub
-        gas = np.array([auto_gas_exposure(p[..., 0], GAS_PERCENTILE, GAS_LEVEL) for p in pics])
-        stars = [auto_star_exposure(p[..., 1:4]) for p in pics]
+        gas = np.array([auto_gas_exposure(self._gas_level(p), GAS_PERCENTILE, GAS_LEVEL)
+                        for p in pics])  # fmt: skip
+        stars = [auto_star_exposure(self._stars(p)) for p in pics]
         self.base = Exposure(float(np.median(gas)), float(np.median(stars)))
         self.adapt = adaptation_stops(self.plan.video_t[idx], gas, self.plan.video_t, smooth_s,
                                       strength)  # fmt: skip
@@ -174,4 +205,4 @@ class ShotRenderer:
         # the cooling stream made the star field noisy and over-bright; orbit_pass draft 3).
         stops = float(self.plan.stops[i]) + float(self.adapt[i])
         exp = Exposure(self.base.gas * 2.0**stops, self.base.stars)
-        return compose(self.picture(i), exp)
+        return (compose_colour if self.colour else compose)(self.picture(i), exp)
