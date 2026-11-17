@@ -82,6 +82,19 @@ class BrickTexture:
     rho: np.ndarray
     rho_t4: np.ndarray
 
+    def __post_init__(self):
+        self.keys_list = self.keys.tolist()  # for bisect in the readable samplers
+        # radius beyond which no brick reaches (the marcher's brick rule applies inside it)
+        if len(self.keys):
+            bi, bj, bk = unpack_keys(self.keys)
+            lo = np.stack([bi, bj, bk], axis=1) * BRICK * self.lattice.dx
+            # farthest corner on each axis, with a cell to spare for the home-brick regions
+            # (shifted half a cell from the bricks)
+            far = np.abs(lo) + (BRICK + 1) * self.lattice.dx
+            self.r_reach = float(np.linalg.norm(far, axis=1).max())
+        else:
+            self.r_reach = 0.0
+
 
 # ---------------------------------------------------------------- keys and selection
 
@@ -349,7 +362,7 @@ def _cell_value(tex: BrickTexture, keys_list, ci, cj, ck):
 def sample_bricks(tex: BrickTexture, p, keys_list=None):
     """(rho, rho (T/T_REF)^4) at p: trilinear between lattice cell centres; absent cells are
     empty (0)."""
-    keys_list = tex.keys.tolist() if keys_list is None else keys_list
+    keys_list = tex.keys_list if keys_list is None else keys_list
     f = np.asarray(p, float) / tex.lattice.dx - 0.5
     i0 = np.floor(f).astype(int)
     tt = f - i0
@@ -372,7 +385,7 @@ def home_brick(p, dx):
 
 
 def home_allocated(tex: BrickTexture, p, keys_list=None) -> bool:
-    keys_list = tex.keys.tolist() if keys_list is None else keys_list
+    keys_list = tex.keys_list if keys_list is None else keys_list
     b = home_brick(p, tex.lattice.dx)
     key = int(pack_keys(b[0], b[1], b[2]))
     s = bisect_left(keys_list, key)

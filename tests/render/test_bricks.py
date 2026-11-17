@@ -143,3 +143,127 @@ def test_fine_particle_selection(x, h, want):
     got = bool(fine_particles(np.array([x]), np.array([h]), lat, g)[0])
     check(f"fine particle at r {np.linalg.norm(x):g}, h {h:g} (r_in {lat.r_in(g):.1f})", want,
           got)  # fmt: skip
+
+
+def _tau_fine(tex, a, b, kappa, n=20000):
+    """Optical depth along a -> b by brute force: sample_bricks every 1/n of the segment."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    ts = (np.arange(n) + 0.5) / n
+    rho = [sample_bricks(tex, a + t * (b - a))[0] for t in ts]
+    return kappa * np.sum(rho) * np.linalg.norm(b - a) / n
+
+
+def test_march_through_bricks_misses_nothing():
+    """The readable marcher with bricks: optical depth along straight rays (some crossing
+    long stretches of empty bricks before thin gas) equals a brute-force integral of the
+    brick field (midpoint steps <= dx / 2 vs 20,000 samples: 1e-3)."""
+    from nebula.render.march import GreyBlackbody, march_segment, texture_from_fields
+
+    rng = np.random.default_rng(23)
+    x = np.concatenate([rng.normal([60.0, 0, 0], 1.5, (150, 3)),
+                        rng.normal([-40.0, 25, 0], 0.6, (60, 3))])  # fmt: skip
+    h = np.concatenate([np.full(150, 0.8), np.full(60, 0.35)])
+    lat = BrickLattice(dx=0.5)
+    tex = texture_from_bricks(deposit_bricks(x, h, 1e-3, np.full(len(h), 2e4), lat), T_REF)
+    g = LogSphericalGrid(r_max=500.0)
+    empty = texture_from_fields(g, np.zeros(g.shape), np.zeros(g.shape))
+    kappa = 30.0
+    model = GreyBlackbody(kappa=kappa)
+    rays = [([200.0, 3.0, 1.0], [-200.0, -1.0, -0.5]), ([60.0, -150.0, 0.4], [60.5, 150.0, 0.0]),
+            ([-40.0, 25.2, -100.0], [-39.8, 24.9, 100.0]), ([100.0, 80.0, 2.0], [-90.0, -10, 0])]
+    for a, b in rays:
+        _, trans, n = march_segment([empty, tex], model, a, b)
+        want = _tau_fine(tex, a, b, kappa)
+        check(f"brick march: optical depth, ray {a} ({n} steps)", want, -np.log(trans), rtol=1e-3,
+              atol=1e-6)  # fmt: skip
+
+
+@pytest.fixture(scope="module")
+def stream_scene():
+    """A thin curved stream (fine particles -> bricks) plus a few big particles (-> log grid)
+    near the hole, for the GPU-vs-CPU comparison."""
+    from nebula.render.march import GreyBlackbody
+    from nebula.render.snapshot_scene import textures_from_particles
+
+    rng = np.random.default_rng(29)
+    ang = rng.uniform(-1.2, 1.2, 3000)
+    rad = 45.0 + 8.0 * ang**2
+    x = np.stack([rad * np.cos(ang), rad * np.sin(ang), rng.normal(0, 0.6, 3000)], axis=1)
+    x[:, :2] += rng.normal(0, 0.6, (3000, 2))
+    h = np.full(3000, 0.7)
+    big = rng.normal([-60.0, 10.0, 0.0], 8.0, (100, 3))
+    x = np.concatenate([x, big])
+    h = np.concatenate([h, np.full(100, 40.0)])  # support 80 > 4 bricks: log grid
+    t = np.concatenate([rng.uniform(1e4, 3e5, 3000), np.full(100, 2e4)])
+    g = LogSphericalGrid(r_max=400.0)
+    texs = textures_from_particles(x, h, 3e-5, t, np.zeros_like(x), g, bricks=BrickLattice(0.5))
+    return texs, GreyBlackbody(kappa=40.0)
+
+
+def test_scene_splits_particles_and_keeps_mass(stream_scene):
+    texs, _ = stream_scene
+    check("brick scene: log grid + brick texture", ("Texture", "BrickTexture"),
+          tuple(type(t).__name__ for t in texs))  # fmt: skip
+
+
+SHIFT_PX = 0.02  # GPU ray aim precision allowance, in pixels (see the docstring below)
+
+
+def test_gpu_matches_cpu_with_bricks(stream_scene):
+    """Rule 2 / 8.6 test 7 for bricks: the WGSL brick sampler and step rule against the
+    readable reference (bent rays, camera 150 from the hole), on pixels crossing the stream,
+    the big log-grid particles and empty sky.
+
+    Where the gas is seen (I > 1e-6 of the frame's peak) each pixel must agree to 1e-3, or lie
+    within the CPU values for the camera turned by SHIFT_PX pixels either way (x and y). Why:
+    the GPU traces rays in float32 (test_sky_directions_match_exact_rays allows 2e-4 rad, here
+    0.008 px), and the bricks resolve the stream's edges finely enough that so small a shift
+    changes I there by up to 0.7%; the difference did not shrink with 5x finer steps, and all
+    33 lit pixels fit a 0.02 px shift (the one exception, a brightness maximum, agrees to
+    1.4e-4) (measured 2026-11-16; AI_LOG). Fainter pixels are the far tails of kernels (I down
+    to 1e-16 of the peak): there the check is absolute, |dI| < 1e-9 of the peak."""
+    from nebula.render.bent_rays import render_reference
+    from nebula.render.camera import Camera
+    from nebula.render.gpu_march import render_gas, upload_scene
+
+    texs, model = stream_scene
+    base = dict(position=(20.0, -140.0, 45.0), look_at=(0.0, 0.0, 0.0), vfov_deg=50.0,
+                width=64, height=36)  # fmt: skip
+    cam = Camera(**base)
+    gpu, timings = render_gas(cam, upload_scene(texs, model), n_sub=1)
+    peak = gpu[..., 0].max()
+    rng = np.random.default_rng(31)
+    seen = np.argwhere(gpu[..., 0] > 1e-6 * peak)
+    faint = np.argwhere((gpu[..., 0] > 0) & (gpu[..., 0] <= 1e-6 * peak))
+    dark = np.argwhere(gpu[..., 0] == 0)
+    pick = np.concatenate([seen,
+                           faint[rng.choice(len(faint), min(15, len(faint)), replace=False)],
+                           dark[rng.choice(len(dark), min(10, len(dark)), replace=False)]])
+    pixels = [(int(c), int(r)) for r, c in pick]
+    cpu = render_reference(cam, texs, model, pixels=pixels)
+    rows, cols = pick[:, 0], pick[:, 1]
+    g, c = gpu[rows, cols], cpu[rows, cols]
+    ns = len(seen)
+    seen_px = pixels[:ns]
+    dist = np.linalg.norm(np.asarray(base["position"]) - np.asarray(base["look_at"]))
+    turn = dist * 2.0 * cam.tan_half_vfov / cam.height * SHIFT_PX
+    shifted = []
+    for sx, sy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        la = np.asarray(base["look_at"]) + turn * (sx * cam.right + sy * cam.up_cam)
+        ref = render_reference(Camera(**{**base, "look_at": tuple(la)}), texs, model,
+                               pixels=seen_px)  # fmt: skip
+        shifted.append(ref[rows[:ns], cols[:ns], 0])
+    shifted = np.array(shifted)
+    gi, ci = g[:ns, 0], c[:ns, 0]
+    close = np.abs(gi - ci) <= 1e-3 * ci
+    bracket = (gi >= shifted.min(0) * (1 - 1e-3)) & (gi <= shifted.max(0) * (1 + 1e-3))
+    rel = np.abs(gi - ci) / ci
+    check(f"bricks GPU vs CPU: {ns} seen pixels within 1e-3 or a {SHIFT_PX} px ray shift "
+          f"(within 1e-3: {close.sum()}; largest difference {rel.max():.1e})", ns,
+          int((close | bracket).sum()))  # fmt: skip
+    check("bricks GPU vs CPU: |dI| / peak, faint and dark pixels", np.zeros(len(pick) - ns),
+          np.abs(g[ns:, 0] - c[ns:, 0]) / peak, atol=1e-9)  # fmt: skip
+    check("bricks GPU vs CPU: transmission", c[:, 1], g[:, 1], atol=1e-3)
+    check("bricks GPU vs CPU: mean steps per ray within 2%", c[:, 3].mean(), g[:, 3].mean(),
+          rtol=0.02)  # fmt: skip
+    check("bricks: slowest GPU tile < 1 s", True, timings.max < 1.0)

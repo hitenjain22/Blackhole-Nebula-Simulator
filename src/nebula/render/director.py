@@ -56,7 +56,9 @@ each interpolated through their keyframes with monotone cubic (PCHIP) curves. Th
 (continuous slope, so no sudden turns) and never overshoot: between two keyframes a value
 stays between their values. So r never dips below the smaller keyframe r, and the time warp is
 increasing when its keyframes are. When `around` or `look_at` changes between two keyframes the
-two targets are blended with a smoothstep weight (zero slope at both ends). Moving targets are
+two targets are blended with a smoothstep weight (zero slope at both ends); when all of a
+shot's look-at (or around) targets are fixed points, they are joined by one monotone cubic
+instead (no pause at each keyframe). Moving targets are
 PCHIP tracks through their position at each snapshot.
 
 Rules checked before any rendering (8.5): camera at r >= 6 from the hole (checked on a grid 8x
@@ -327,8 +329,15 @@ def _target_fn(name_or_point, tracks):
 
 def _blended(keys, role, tracks, vt, sim_t):
     """Position of the `role` target at video times vt: each key's target, smoothstep-blended
-    across each keyframe interval where the target changes."""
+    across each keyframe interval where the target changes. When every key's target is fixed
+    (a point or the hole), the points are joined by one monotone cubic per axis instead, so in
+    a long shot the aim keeps moving through the keyframes rather than pausing at each one."""
     kt = np.array([float(k["t"]) for k in keys])
+    names = [k.get(role, "hole") for k in keys]
+    if len(keys) > 1 and all(not isinstance(n, str) or n == "hole" for n in names):
+        pts = np.array([np.zeros(3) if isinstance(n, str) else _target_fn(n, tracks)(0.0)[0]
+                        for n in names])  # fmt: skip
+        return np.stack([_curve(kt, pts[:, a])(vt) for a in range(3)], axis=-1)
     fns = [_target_fn(k.get(role, "hole"), tracks) for k in keys]
     out = fns[0](sim_t)
     for i in range(1, len(keys)):

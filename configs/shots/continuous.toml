@@ -1,0 +1,122 @@
+# The final video (Hiten 2026-11-16: "one final video that shows everything nicely and
+# beautifully and cinematically"; no cuts, no fades, time never skips). One camera path:
+# a wide opening view of the hole and the far cloud (like the web demo), a slow push in as the
+# cloud stretches into a stream, a slow arc round the hole a little above the orbital plane
+# (the x-y plane) while the stream whips round behind it (lensed arcs over and under the
+# shadow, the Interstellar look), then a pull back as the gas flies out. Draft 1: path only
+# (designed with scripts/path_preview.py); sources switch to dense_P188 when it is on the Mac.
+name = "continuous"
+fps = 24
+duration = 50.0
+width = 640
+height = 360
+n_sub = 1
+kappa = 1e7
+
+# rays must reach the far cloud (r 5,000) and start inside the grid (camera <= 0.9 r_max)
+[grid]
+r_max = 8000.0
+nr = 230
+
+[[sources]]
+run = "R6.1_100k_ph_approach"
+to_day = 96.385
+
+[[sources]]
+run = "dense_B192"
+from_day = 96.385
+to_day = 99.66
+
+[[sources]]
+run = "dense_C400"
+from_day = 99.66
+
+# draft 2: camera higher during the U-turn (the hairpin reads clearly), no push in while the
+# stream whips round, the cloud mid-frame in the opening
+[[camera]]
+t = 0.0
+r = 7000.0
+elev = 20.0
+az = -95.0
+look_at = [2500.0, 0.0, 0.0]
+vfov = 38.0
+
+[[camera]]
+t = 10.0
+r = 2600.0
+elev = 22.0
+az = -85.0
+look_at = [800.0, 50.0, 0.0]
+vfov = 42.0
+
+[[camera]]
+t = 17.0
+r = 900.0
+elev = 28.0
+az = -75.0
+look_at = [150.0, 40.0, 0.0]
+vfov = 48.0
+
+[[camera]]
+t = 22.0
+r = 420.0
+elev = 35.0
+az = -65.0
+look_at = [60.0, 40.0, 0.0]
+vfov = 52.0
+
+[[camera]]
+t = 33.0
+r = 480.0
+elev = 30.0
+az = -40.0
+look_at = [170.0, -20.0, 0.0]
+vfov = 55.0
+
+[[camera]]
+t = 41.0
+r = 800.0
+elev = 25.0
+az = -45.0
+look_at = [380.0, -30.0, 0.0]
+vfov = 50.0
+
+[[camera]]
+t = 50.0
+r = 1500.0
+elev = 24.0
+az = -40.0
+look_at = [800.0, -30.0, 0.0]
+vfov = 48.0
+
+[[time]]
+t = 0.0
+day = 0.0
+
+[[time]]
+t = 6.0
+day = 70.0
+
+[[time]]
+t = 12.0
+day = 90.0
+
+[[time]]
+t = 18.0
+day = 95.6
+
+[[time]]
+t = 21.0
+day = 96.4
+
+[[time]]
+t = 33.0
+day = 98.6
+
+[[time]]
+t = 41.0
+day = 100.6
+
+[[time]]
+t = 50.0
+day = 103.9

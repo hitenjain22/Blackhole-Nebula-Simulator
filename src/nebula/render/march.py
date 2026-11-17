@@ -36,6 +36,7 @@ from nebula.physics.radiative_transfer import (
     grey_absorption,
     transfer_step,
 )
+from nebula.render.bricks import BrickTexture, exit_distance, home_allocated, sample_bricks
 from nebula.render.gasgrid import CartesianBox, GasGrid, LogSphericalGrid
 
 T_REF = 1.0e4  # K; rho T^4 is stored as rho (T / T_REF)^4 to stay well inside float32
@@ -136,11 +137,25 @@ def sample_box(tex: Texture, p):
     )
 
 
+def _split(textures):
+    """(log-grid texture, boxes, brick texture or None) of a texture list."""
+    bricks = [t for t in textures[1:] if isinstance(t, BrickTexture)]
+    boxes = [t for t in textures[1:] if not isinstance(t, BrickTexture)]
+    if len(bricks) > 1:
+        raise ValueError("at most one brick texture")
+    return textures[0], boxes, (bricks[0] if bricks else None)
+
+
 def sample(textures, p):
     """Fields at p from the finest grid there: boxes (listed finest first) blended into the log
-    grid. ``textures``: the log-grid texture first (or None), then box textures."""
-    base, boxes = textures[0], textures[1:]
+    grid, plus the sparse bricks if present. ``textures``: the log-grid texture first (or
+    None), then box textures and/or one bricks.BrickTexture. Bricks hold particles the log grid
+    does not (each particle is deposited once), so their fields simply add (no blending)."""
+    base, boxes, bricks = _split(textures)
     lr, lt = sample_log(base, p) if base is not None else (0.0, 0.0)
+    if bricks is not None:
+        br, bt = sample_bricks(bricks, p)
+        lr, lt = lr + br, lt + bt
     for tb in boxes:
         w = _box_weight(tb.grid, p)
         if w > 0.0:
@@ -150,8 +165,9 @@ def sample(textures, p):
 
 
 def cell_size(textures, p):
-    """Local cell size of the finest grid at p (box dx, or r min(dln r, dth) on the log grid)."""
-    base, boxes = textures[0], textures[1:]
+    """Local cell size of the finest grid at p (box dx; the bricks' dx where p's home brick is
+    allocated, if finer; else r min(dln r, dth) on the log grid)."""
+    base, boxes, bricks = _split(textures)
     for tb in boxes:
         b = tb.grid
         c, half = b.centre, 0.5 * b.size
@@ -159,7 +175,22 @@ def cell_size(textures, p):
             return b.dx
     g = base.grid
     r = max(math.sqrt(float(p[0]) ** 2 + float(p[1]) ** 2 + float(p[2]) ** 2), g.r_min)
-    return r * min(g.dlnr, g.dth)
+    size = r * min(g.dlnr, g.dth)
+    if bricks is not None and home_allocated(bricks, p):
+        size = min(size, bricks.lattice.dx)
+    return size
+
+
+def brick_step_limit(textures, p, e):
+    """Longest step from p along e allowed by the bricks: inside the bricks' reach, a point
+    whose home brick is empty steps no further than just past that brick's far face, so no
+    allocated brick is jumped over (bricks.py). inf where there are no bricks."""
+    bricks = _split(textures)[2]
+    if bricks is None or float(np.sqrt(p @ p)) > bricks.r_reach:
+        return math.inf
+    if home_allocated(bricks, p):
+        return math.inf  # cell_size already holds the step to STEP_FRACTION dx
+    return exit_distance(p, e, bricks.lattice.dx)
 
 
 # ---------------------------------------------------------------- marching
@@ -186,6 +217,7 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved
         p = a + s * e
         ds = min(STEP_FRACTION * cell_size(textures, p), length - s)
         ds = min(ds, STEP_FRACTION * cell_size(textures, p + ds * e))
+        ds = min(ds, brick_step_limit(textures, p, e))
         mid = p + 0.5 * ds * e
         lr, lt = sample(textures, mid)
         src, alpha = model.source_and_absorption(lr, lt)

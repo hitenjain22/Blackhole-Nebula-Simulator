@@ -15,7 +15,8 @@ from nebula.render.gasgrid import (
     deposit_box,
     deposit_log,
 )
-from nebula.render.march import BLEND_CELLS, Texture, texture_from_gasgrid
+from nebula.render.bricks import deposit_bricks, fine_particles, texture_from_bricks
+from nebula.render.march import BLEND_CELLS, T_REF, Texture, texture_from_gasgrid
 
 
 def snapshot_textures(
@@ -61,8 +62,11 @@ def inside_boxes(x, h, boxes) -> np.ndarray:
     return deep
 
 
-def textures_from_particles(x, h, m, t, v, grid=None, boxes=()) -> list[Texture]:
-    """[log-grid texture, box textures...] from particle arrays (code units; t in K).
+def textures_from_particles(x, h, m, t, v, grid=None, boxes=(), bricks=None) -> list:
+    """[log-grid texture, box textures...] from particle arrays (code units; t in K); with
+    ``bricks`` (a bricks.BrickLattice; not together with boxes) [log-grid texture, brick
+    texture]: the fine particles (bricks.fine_particles) go to the bricks only, the rest to the
+    log grid only, so each particle is deposited exactly once.
 
     Particles deep inside a detail box go into the box only. In the log grid their mass would
     be spread over its cells, which far from the hole are hundreds of units wide, so a cloud at
@@ -71,6 +75,14 @@ def textures_from_particles(x, h, m, t, v, grid=None, boxes=()) -> list[Texture]
     alone is sampled there); outside, those particles have no mass."""
     grid = grid or LogSphericalGrid()
     m = np.broadcast_to(np.asarray(m, float), (len(h),)).copy()
+    if bricks is not None:
+        if boxes:
+            raise ValueError("a scene uses detail boxes or bricks, not both")
+        fine = fine_particles(x, h, bricks, grid)
+        rest = ~fine
+        log = deposit_log(x[rest], h[rest], m[rest], t[rest], v[rest], grid)
+        bg = deposit_bricks(x[fine], h[fine], m[fine], t[fine], bricks)
+        return [texture_from_gasgrid(log), texture_from_bricks(bg, T_REF)]
     keep = ~inside_boxes(x, h, boxes) if boxes else np.ones(len(h), bool)
     texs = [texture_from_gasgrid(deposit_log(x[keep], h[keep], m[keep], t[keep], v[keep], grid))]
     for b in boxes:

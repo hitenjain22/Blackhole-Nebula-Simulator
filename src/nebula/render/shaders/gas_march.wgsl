@@ -28,11 +28,22 @@ struct GasParams {
     ngrid: vec4<u32>,   // nr, ntheta, nphi, -
     box0: BoxParams,
     box1: BoxParams,
+    bricks: vec4<f32>,  // cell size dx, reach radius, active (1/0), -
+    brick_o: vec4<i32>, // index origin (brick coordinates), -
+    brick_n: vec4<u32>, // index dimensions (bricks), -
+    brick_a: vec4<u32>, // atlas slots per axis (A0, A1, A2), -
 };
 @group(0) @binding(3) var log_tex: texture_3d<f32>;
 @group(0) @binding(4) var box0_tex: texture_3d<f32>;
 @group(0) @binding(5) var box1_tex: texture_3d<f32>;
 @group(0) @binding(6) var<uniform> gas: GasParams;
+// Sparse bricks (render/bricks.py, gpu_march.brick_arrays): slot + 1 per brick (0 = empty)
+// and the atlas of 9^3-texel bricks (8^3 cells + one-cell apron on the high side).
+@group(0) @binding(9) var brick_index: texture_3d<u32>;
+@group(0) @binding(10) var brick_atlas: texture_3d<f32>;
+const BRICK_I: i32 = 8;
+const APRON_I: i32 = 9;
+const EXIT_EPS: f32 = 1e-4;  // bricks.EXIT_EPS (in cells)
 
 const TWO_PI_F: f32 = 6.28318531;
 const U_HORIZON: f32 = 0.5;
@@ -100,9 +111,89 @@ fn sample_box(t: texture_3d<f32>, b: BoxParams, p: vec3<f32>) -> vec2<f32> {
     return trilinear(t, f.x, f.y, f.z, false);
 }
 
-// Fields at p: the first active box covering p, blended into the log grid (march.sample).
+// Home brick of p: the brick of cell floor(p / dx - 1/2) (bricks.home_brick). WGSL >> on i32
+// is an arithmetic shift, i.e. floor division by 8 for negative indices too.
+fn brick_home(p: vec3<f32>) -> vec3<i32> {
+    let c = vec3<i32>(floor(p / gas.bricks.x - 0.5));
+    return c >> vec3<u32>(3u);
+}
+
+// Slot + 1 of brick b, 0 if absent (bricks.home_allocated).
+fn brick_slot(b: vec3<i32>) -> u32 {
+    let q = b - gas.brick_o.xyz;
+    let n = vec3<i32>(gas.brick_n.xyz);
+    if (any(q < vec3<i32>(0)) || any(q >= n)) {
+        return 0u;
+    }
+    return textureLoad(brick_index, vec3<i32>(q.z, q.y, q.x), 0).r;
+}
+
+fn brick_allocated(p: vec3<f32>) -> bool {
+    return gas.bricks.z > 0.5 && brick_slot(brick_home(p)) != 0u;
+}
+
+// Trilinear between lattice cell centres (bricks.sample_bricks), all 8 corners read from the
+// home brick's atlas block (the apron holds the neighbours' first cells). A point whose home
+// brick is empty samples 0, which is exact: bricks are allocated so that a non-zero sample
+// always has an allocated home brick.
+fn sample_bricks(p: vec3<f32>) -> vec2<f32> {
+    if (gas.bricks.z < 0.5) {
+        return vec2<f32>(0.0);
+    }
+    let f = p / gas.bricks.x - 0.5;
+    let fl = floor(f);
+    let c = vec3<i32>(fl);
+    let home = c >> vec3<u32>(3u);
+    let slot = brick_slot(home);
+    if (slot == 0u) {
+        return vec2<f32>(0.0);
+    }
+    let s = slot - 1u;
+    let a = gas.brick_a;
+    let blk = vec3<i32>(i32(s / (a.y * a.z)), i32((s / a.z) % a.y), i32(s % a.z));
+    let base = APRON_I * blk + (c - BRICK_I * home);
+    let t = f - fl;
+    var acc = vec2<f32>(0.0);
+    for (var di = 0; di < 2; di++) {
+        let wi = select(1.0 - t.x, t.x, di == 1);
+        for (var dj = 0; dj < 2; dj++) {
+            let wj = select(1.0 - t.y, t.y, dj == 1);
+            for (var dk = 0; dk < 2; dk++) {
+                let wk = select(1.0 - t.z, t.z, dk == 1);
+                let q = base + vec3<i32>(di, dj, dk);
+                acc += wi * wj * wk * textureLoad(brick_atlas, vec3<i32>(q.z, q.y, q.x), 0).rg;
+            }
+        }
+    }
+    return acc;
+}
+
+// Step limit from the bricks (march.brick_step_limit): inside the bricks' reach, from a point
+// whose home brick is empty, step only to just past that brick's far face (bricks.exit_distance).
+fn brick_step_limit(p: vec3<f32>, e: vec3<f32>) -> f32 {
+    if (gas.bricks.z < 0.5 || length(p) > gas.bricks.y) {
+        return 3.0e38;
+    }
+    let b = brick_home(p);
+    if (brick_slot(b) != 0u) {
+        return 3.0e38;
+    }
+    let dx = gas.bricks.x;
+    var best = 3.0e38;
+    for (var k = 0; k < 3; k++) {
+        if (e[k] > 0.0) {
+            best = min(best, ((f32(b[k] + 1) * 8.0 + 0.5) * dx - p[k]) / e[k]);
+        } else if (e[k] < 0.0) {
+            best = min(best, ((f32(b[k]) * 8.0 + 0.5) * dx - p[k]) / e[k]);
+        }
+    }
+    return max(best, 0.0) + EXIT_EPS * dx;
+}
+
+// Fields at p: the first active box covering p, blended into the log grid plus the bricks
+// (march.sample: the bricks hold particles the log grid does not, so their fields add).
 fn sample_fields(p: vec3<f32>) -> vec2<f32> {
-    let base = sample_log(p);
+    let base = sample_log(p) + sample_bricks(p);
     if (gas.box0.n.y != 0u) {
         let w = box_weight(gas.box0, p);
         if (w > 0.0) {
@@ -126,7 +217,11 @@ fn cell_size(p: vec3<f32>) -> f32 {
     if (gas.box1.n.y != 0u && box_inside(gas.box1, p)) {
         return gas.box1.lo.w;
     }
-    return max(length(p), gas.grid.x) * min(gas.grid.z, gas.grid.w);
+    var size = max(length(p), gas.grid.x) * min(gas.grid.z, gas.grid.w);
+    if (brick_allocated(p)) {
+        size = min(size, gas.bricks.x);
+    }
+    return size;
 }
 
 // 1 - e^-x without float32 cancellation for small x (series to x^4: relative error < 1e-8
@@ -171,6 +266,7 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
         let p = a + s * e;
         var ds = min(frac * cell_size(p), len - s);
         ds = min(ds, frac * cell_size(p + ds * e));
+        ds = min(ds, brick_step_limit(p, e));
         let mid = p + 0.5 * ds * e;
         let f = sample_fields(mid);
         let alpha = gas.model.x * f.x;
