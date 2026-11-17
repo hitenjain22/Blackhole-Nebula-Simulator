@@ -1,0 +1,140 @@
+# The final video (Hiten 2026-11-16: "one final video that shows everything nicely and
+# beautifully and cinematically"; no cuts, no fades, time never skips). One camera path:
+# a wide opening view of the hole and the far cloud (like the web demo), a slow push in as the
+# cloud stretches into a stream, a slow arc round the hole a little above the orbital plane
+# (the x-y plane) while the stream whips round behind it (lensed arcs over and under the
+# shadow, the Interstellar look), then a pull back as the gas flies out. Draft 1: path only
+# (designed with scripts/path_preview.py); sources switch to dense_P188 when it is on the Mac.
+name = "continuous_colour"
+colour = "true"  # Phase 9 true colour; otherwise identical to continuous.toml
+fps = 24
+duration = 50.0
+width = 640
+height = 360
+n_sub = 1
+kappa = 1e7
+
+# rays must reach the far cloud (r 5,000) and start inside the grid (camera <= 0.9 r_max)
+[grid]
+r_max = 8000.0
+nr = 230
+
+# sparse fine grid for all compact gas, from the far cloud (r 5,000) to the thin stream
+# (render/bricks.py; replaces the trailer's growing detail box)
+[bricks]
+dx = 1.0
+r_fine = 8000.0
+
+# One consistent run through the pass: the original run to its dump 188 (day 94.385, where the
+# gas is still > 280 from the hole and half-day dumps are fine), then dense_P188 (restarted
+# exactly from that dump, dumps every 64). After day 99.65 (gas > 300 from the hole) the older
+# dense_C400 for now (a different run: a small jump there) until dense_P188 part 2 is done.
+# the gas brightens by orders of magnitude from the cool cloud to the hot pass: a smooth
+# automatic exposure (an eye adapting over ~2 s), compensating 90% so the pass still blazes.
+# 4 s / 75% let the cloud fade 2.3 stops in its first 3 s (its outer skin cools from 9,700 K
+# to 6,000 K by day 45 and is all the camera sees at kappa 1e7; first low-res render)
+[auto_exposure]
+every = 1.0
+smooth = 2.0
+strength = 0.9
+
+[[sources]]
+run = "R6.1_100k_ph_approach"
+to_day = 94.385
+
+[[sources]]
+run = "dense_P188a"
+from_day = 94.385
+to_day = 99.65
+
+[[sources]]
+run = "dense_C400"
+from_day = 99.65
+
+[[camera]]
+t = 0.0
+r = 7000.0
+elev = 20.0
+az = -95.0
+look_at = [2500.0, 0.0, 0.0]
+vfov = 38.0
+
+[[camera]]
+t = 10.0
+r = 2600.0
+elev = 22.0
+az = -85.0
+look_at = [800.0, 50.0, 0.0]
+vfov = 42.0
+
+[[camera]]
+t = 17.0
+r = 900.0
+elev = 28.0
+az = -75.0
+look_at = [150.0, 40.0, 0.0]
+vfov = 48.0
+
+[[camera]]
+t = 22.0
+r = 420.0
+elev = 35.0
+az = -65.0
+look_at = [60.0, 40.0, 0.0]
+vfov = 52.0
+
+[[camera]]
+t = 33.0
+r = 480.0
+elev = 30.0
+az = -40.0
+look_at = [170.0, -20.0, 0.0]
+vfov = 55.0
+
+[[camera]]
+t = 41.0
+r = 800.0
+elev = 25.0
+az = -45.0
+look_at = [380.0, -30.0, 0.0]
+vfov = 50.0
+
+[[camera]]
+t = 50.0
+r = 1500.0
+elev = 24.0
+az = -40.0
+look_at = [800.0, -30.0, 0.0]
+vfov = 48.0
+
+[[time]]
+t = 0.0
+day = 0.0
+
+[[time]]
+t = 6.0
+day = 70.0
+
+[[time]]
+t = 12.0
+day = 90.0
+
+[[time]]
+t = 18.0
+day = 95.6
+
+[[time]]
+t = 21.0
+day = 96.4
+
+[[time]]
+t = 33.0
+day = 98.6
+
+[[time]]
+t = 41.0
+day = 100.6
+
+[[time]]
+t = 50.0
+day = 103.9

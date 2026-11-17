@@ -1,0 +1,4 @@
+# The final video in Phase 9 true colour (Hiten 2026-11-17): same shot as final.toml.
+name = "final_colour_v1"
+dissolve = 0.0
+shots = ["continuous_colour.toml"]
