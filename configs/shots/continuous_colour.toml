@@ -138,3 +138,14 @@ day = 100.6
 [[time]]
 t = 50.0
 day = 103.9
+
+# True colour is 1 stop darker than the automatic exposure (Hiten 2026-11-17, from
+# outputs/checks/phase9_colour_exposure_options.png): the sRGB curve lifts dim gas far more
+# than Phase 8's fire ramp, so at 0 stops the bright stream washed out to white.
+[[exposure]]
+t = 0.0
+stops = -1.0
+
+[[exposure]]
+t = 50.0
+stops = -1.0
