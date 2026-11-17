@@ -61,6 +61,12 @@ STEP_FRACTION = 0.5  # sub-step <= this fraction of the local cell size (8.4)
 # (|gamma beta| ~ 1 at r ~ 4); it only guards rho_gb / rho where both are float32 rounding
 # residues at the thin edge of the gas, which on the GPU could give any value.
 GB_MAX = 10.0
+# Smallest density the colour model treats as gas (code units; real gas here is ~1e-6 and
+# above). The colour model divides by rho (temperature, velocity); deposited float32 grids
+# can hold subnormal residues (~1e-45) that GPUs flush to zero in some operations but not
+# others, giving 0/0 (AI_LOG 2026-11-17). Absorption at 1e-30 is ~1e-23 per unit length:
+# nothing visible is lost. The GPU uses the same value (GasParams.colour2.z).
+RHO_MIN_COLOUR = 1e-30
 
 
 @dataclass
@@ -338,7 +344,7 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved
         # A step with no gas changes nothing; skipping it also avoids 0 x infinity when a
         # captured ray's last step ends exactly on the horizon, where the proper length
         # diverges (r_mid = 2 happens in float32 on the GPU).
-        if lr > 0.0 and (not curved or r_mid > 2.0):
+        if lr > (RHO_MIN_COLOUR if rel else 0.0) and (not curved or r_mid > 2.0):
             path = ds
             if curved:
                 q = p + ds * e

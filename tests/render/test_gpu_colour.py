@@ -2,6 +2,7 @@
 reference (bent_rays.render_reference_colour with march.RelativisticBlackbody); test 13 of
 phase-09 9.7 (CLAUDE.md rule 2)."""
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -123,3 +124,27 @@ def test_13_gpu_matches_cpu_spinning_ring(lut):
     )
     check("test 13 ring: colour GPU-CPU gap minus grey gap", np.zeros(lit.sum()),
           gap_colour - gap_grey, atol=1e-3)  # fmt: skip
+
+
+def test_colour_subnormal_density_residues(lut):
+    """Deposited float32 grids can hold subnormal densities (~1e-45, seen in the continuous
+    shot's bricks, frame 312) that the GPU flushes to zero in some operations but not others:
+    rho_gb / rho and rho_t4 / rho became 0/0 and whole pixels NaN (AI_LOG 2026-11-17). Below
+    march.RHO_MIN_COLOUR a sample is empty in both CPU and GPU: every pixel stays finite and
+    the image matches the same scene without the residues."""
+    tex, _ = ring_textures(10.0, 2.0, 1.5, nr=120, nth=64, nph=256, r_lo=6.0, r_hi=16.0)
+    rho = np.asarray(tex.rho, np.float32).copy()
+    sub = np.float32(1e-45)  # smallest float32 subnormal
+    rho_t4 = np.asarray(tex.rho_t4, np.float32).copy()
+    rho_gb = np.asarray(tex.rho_gb, np.float32).copy()
+    empty = rho == 0
+    rho[empty], rho_t4[empty] = sub, sub
+    rho_gb[empty] = sub
+    dirty = dataclasses.replace(tex, rho=rho, rho_t4=rho_t4, rho_gb=rho_gb)
+    cam = Camera(position=(50.0, 0.0, 20.0), vfov_deg=40.0, width=48, height=32)
+    model = _model(lut, 1.0, cam)
+    clean, _ = render_gas(cam, upload_scene([tex], model), n_sub=1, out_mode=OUT_COLOUR)
+    gpu, _ = render_gas(cam, upload_scene([dirty], model), n_sub=1, out_mode=OUT_COLOUR)
+    check("subnormal residues: every pixel finite", True, bool(np.all(np.isfinite(gpu))))
+    check("subnormal residues: same image as without them", clean[..., :5], gpu[..., :5],
+          rtol=1e-6, atol=0.0)  # fmt: skip

@@ -43,7 +43,7 @@ struct GasParams {
     brick_lo: vec4<f32>, // box holding the bricks' home regions (BrickTexture.box_lo/hi)
     brick_hi: vec4<f32>,
     colour: vec4<f32>,  // 1 = Phase 9 colour, LUT ln T_0, LUT d ln T, LUT entries
-    colour2: vec4<f32>, // -, max |gamma beta| (march.GB_MAX), -, -
+    colour2: vec4<f32>, // -, max |gamma beta| (march.GB_MAX), min rho (RHO_MIN_COLOUR), -
 };
 @group(0) @binding(3) var log_tex: texture_3d<f32>;
 @group(0) @binding(4) var box0_tex: texture_3d<f32>;
@@ -459,7 +459,8 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
             let q = p + ds * e;
             let path = proper_length(ds, length(q) - length(p), r_mid);
             // #if COLOUR
-            {
+            // march.RHO_MIN_COLOUR: subnormal float32 residues would give 0/0 below
+            if (f.x > gas.colour2.z) {
                 // Phase 9 (march.RelativisticBlackbody): blackbody at g T_em, optical depth
                 // kappa rho path (gamma - gamma beta . n). S dtau is written without dividing
                 // by rho (see the grey case): sigma (g T)^4 / pi = g^4 s_scale rho_t4 / rho.

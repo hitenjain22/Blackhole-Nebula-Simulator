@@ -23,6 +23,7 @@ from nebula.render.device import TileTimings, get_device, load_shader, run_tiled
 from nebula.render.march import (
     BLEND_CELLS,
     GB_MAX,
+    RHO_MIN_COLOUR,
     STEP_FRACTION,
     T_REF,
     T_STOP,
@@ -201,12 +202,13 @@ def _box_params(tex: Texture | None) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _colour_params(model) -> bytes:
-    """GasParams.colour, .colour2: colour mode on/off and the colour table's ln T grid."""
+    """GasParams.colour, .colour2: colour mode on/off, the colour table's ln T grid, the
+    |gamma beta| cap and the smallest density treated as gas (march.GB_MAX, RHO_MIN_COLOUR)."""
     c = np.zeros(8, np.float32)
     if isinstance(model, RelativisticBlackbody):
         lt = np.asarray(model.log_t, float)
         c[0], c[1], c[2], c[3] = 1.0, lt[0], (lt[-1] - lt[0]) / (len(lt) - 1), len(lt)
-        c[5] = GB_MAX
+        c[5], c[6] = GB_MAX, RHO_MIN_COLOUR
     return c.tobytes()
 
 
