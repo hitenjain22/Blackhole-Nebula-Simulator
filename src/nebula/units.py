@@ -26,6 +26,9 @@ SIGMA_SB = 5.670374419e-8  # W m^-2 K^-4
 A_RAD = 4.0 * SIGMA_SB / C  # J m^-3 K^-4, radiation constant
 SIGMA_T = 6.6524587321e-29  # m^2, Thomson cross-section (CODATA 2018)
 YEAR_S = 365.25 * 86_400.0  # Julian year (s), for accretion rates in M_sun/yr
+# maximum photopic luminous efficacy for the CIE 1931 ybar (lm/W): 683 lm/W at 540 THz
+# (SI candela definition) divided by ybar(555.016 nm); CIE 018:2019. Phase 9 test 3.
+K_M_LUMEN = 683.002
 
 # --- conventions (expected-values header; PLAN.md §3) ---
 MU = 0.6  # mean molecular weight, fully ionized solar-composition gas
