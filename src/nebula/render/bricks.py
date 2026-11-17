@@ -84,16 +84,16 @@ class BrickTexture:
 
     def __post_init__(self):
         self.keys_list = self.keys.tolist()  # for bisect in the readable samplers
-        # radius beyond which no brick reaches (the marcher's brick rule applies inside it)
+        # box holding every allocated brick's home-brick region (on each axis brick B's region
+        # is [(B BRICK + 1/2) dx, ((B + 1) BRICK + 1/2) dx)); the marcher's brick rule applies
+        # inside it, and a ray from outside first steps to its face
+        dx = self.lattice.dx
         if len(self.keys):
-            bi, bj, bk = unpack_keys(self.keys)
-            lo = np.stack([bi, bj, bk], axis=1) * BRICK * self.lattice.dx
-            # farthest corner on each axis, with a cell to spare for the home-brick regions
-            # (shifted half a cell from the bricks)
-            far = np.abs(lo) + (BRICK + 1) * self.lattice.dx
-            self.r_reach = float(np.linalg.norm(far, axis=1).max())
+            b = np.stack(unpack_keys(self.keys), axis=1)
+            self.box_lo = (b.min(axis=0) * BRICK + 0.5) * dx
+            self.box_hi = ((b.max(axis=0) + 1) * BRICK + 0.5) * dx
         else:
-            self.r_reach = 0.0
+            self.box_lo = self.box_hi = np.zeros(3)
 
 
 # ---------------------------------------------------------------- keys and selection
@@ -390,6 +390,21 @@ def home_allocated(tex: BrickTexture, p, keys_list=None) -> bool:
     key = int(pack_keys(b[0], b[1], b[2]))
     s = bisect_left(keys_list, key)
     return s < len(keys_list) and keys_list[s] == key
+
+
+def entry_distance(p, e, lo, hi) -> float:
+    """Distance along unit vector e from p (outside the box [lo, hi)) to just inside the box,
+    or inf if the ray misses it (slab method)."""
+    t0, t1 = -math.inf, math.inf
+    for a in range(3):
+        if e[a] != 0.0:
+            u, v = (lo[a] - p[a]) / e[a], (hi[a] - p[a]) / e[a]
+            t0, t1 = max(t0, min(u, v)), min(t1, max(u, v))
+        elif not lo[a] <= p[a] < hi[a]:
+            return math.inf
+    if t1 < max(t0, 0.0):
+        return math.inf
+    return max(t0, 0.0)
 
 
 def exit_distance(p, e, dx):

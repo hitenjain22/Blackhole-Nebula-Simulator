@@ -169,8 +169,13 @@ def test_march_through_bricks_misses_nothing():
     empty = texture_from_fields(g, np.zeros(g.shape), np.zeros(g.shape))
     kappa = 30.0
     model = GreyBlackbody(kappa=kappa)
-    rays = [([200.0, 3.0, 1.0], [-200.0, -1.0, -0.5]), ([60.0, -150.0, 0.4], [60.5, 150.0, 0.0]),
-            ([-40.0, 25.2, -100.0], [-39.8, 24.9, 100.0]), ([100.0, 80.0, 2.0], [-90.0, -10, 0])]
+    rays = [
+        ([200.0, 3.0, 1.0], [-200.0, -1.0, -0.5]),
+        ([60.0, -150.0, 0.4], [60.5, 150.0, 0.0]),
+        ([-40.0, 25.2, -100.0], [-39.8, 24.9, 100.0]),
+        ([100.0, 80.0, 2.0], [-90.0, -10, 0]),
+        ([3000.0, 40.0, 1.0], [-100.0, -1.3, 0.0]),
+    ]  # from far outside the bricks' box
     for a, b in rays:
         _, trans, n = march_segment([empty, tex], model, a, b)
         want = _tau_fine(tex, a, b, kappa)
@@ -236,9 +241,13 @@ def test_gpu_matches_cpu_with_bricks(stream_scene):
     seen = np.argwhere(gpu[..., 0] > 1e-6 * peak)
     faint = np.argwhere((gpu[..., 0] > 0) & (gpu[..., 0] <= 1e-6 * peak))
     dark = np.argwhere(gpu[..., 0] == 0)
-    pick = np.concatenate([seen,
-                           faint[rng.choice(len(faint), min(15, len(faint)), replace=False)],
-                           dark[rng.choice(len(dark), min(10, len(dark)), replace=False)]])
+    pick = np.concatenate(
+        [
+            seen,
+            faint[rng.choice(len(faint), min(15, len(faint)), replace=False)],
+            dark[rng.choice(len(dark), min(10, len(dark)), replace=False)],
+        ]
+    )
     pixels = [(int(c), int(r)) for r, c in pick]
     cpu = render_reference(cam, texs, model, pixels=pixels)
     rows, cols = pick[:, 0], pick[:, 1]
@@ -267,3 +276,21 @@ def test_gpu_matches_cpu_with_bricks(stream_scene):
     check("bricks GPU vs CPU: mean steps per ray within 2%", c[:, 3].mean(), g[:, 3].mean(),
           rtol=0.02)  # fmt: skip
     check("bricks: slowest GPU tile < 1 s", True, timings.max < 1.0)
+
+
+def test_entry_distance():
+    """Ray-box entry (slab method): hits, a miss, a ray pointing away, and a ray along a face
+    plane outside the box."""
+    from nebula.render.bricks import entry_distance
+
+    lo, hi = np.array([0.0, 0.0, 0.0]), np.array([10.0, 10.0, 10.0])
+    cases = [([-5.0, 5.0, 5.0], [1.0, 0.0, 0.0], 5.0),
+             ([-5.0, -5.0, 5.0], [np.sqrt(0.5), np.sqrt(0.5), 0.0], 5.0 * np.sqrt(2.0)),
+             ([-5.0, 20.0, 5.0], [1.0, 0.0, 0.0], np.inf),
+             ([-5.0, 5.0, 5.0], [-1.0, 0.0, 0.0], np.inf),
+             ([-5.0, 12.0, 5.0], [1.0, 0.0, 0.0], np.inf)]  # fmt: skip
+    got = np.array([entry_distance(np.array(p), np.array(e), lo, hi) for p, e, _ in cases])
+    want = np.array([c[2] for c in cases])
+    check("entry distance: hits", want[:2], got[:2], rtol=1e-12)
+    check("entry distance: miss, pointing away, outside a face plane (inf)", [True] * 3,
+          list(np.isinf(got[2:])))  # fmt: skip

@@ -36,7 +36,14 @@ from nebula.physics.radiative_transfer import (
     grey_absorption,
     transfer_step,
 )
-from nebula.render.bricks import BrickTexture, exit_distance, home_allocated, sample_bricks
+from nebula.render.bricks import (
+    EXIT_EPS,
+    BrickTexture,
+    entry_distance,
+    exit_distance,
+    home_allocated,
+    sample_bricks,
+)
 from nebula.render.gasgrid import CartesianBox, GasGrid, LogSphericalGrid
 
 T_REF = 1.0e4  # K; rho T^4 is stored as rho (T / T_REF)^4 to stay well inside float32
@@ -182,15 +189,20 @@ def cell_size(textures, p):
 
 
 def brick_step_limit(textures, p, e):
-    """Longest step from p along e allowed by the bricks: inside the bricks' reach, a point
-    whose home brick is empty steps no further than just past that brick's far face, so no
-    allocated brick is jumped over (bricks.py). inf where there are no bricks."""
+    """Longest step from p along e allowed by the bricks (inf where there are none): inside the
+    box holding the bricks, a point whose home brick is empty steps no further than just past
+    that brick's far face, so no allocated brick is jumped over (bricks.py); from outside the
+    box, the step ends just inside its face."""
     bricks = _split(textures)[2]
-    if bricks is None or float(np.sqrt(p @ p)) > bricks.r_reach:
+    if bricks is None or not len(bricks.keys):
         return math.inf
-    if home_allocated(bricks, p):
-        return math.inf  # cell_size already holds the step to STEP_FRACTION dx
-    return exit_distance(p, e, bricks.lattice.dx)
+    dx = bricks.lattice.dx
+    if np.all(p >= bricks.box_lo) and np.all(p < bricks.box_hi):
+        if home_allocated(bricks, p):
+            return math.inf  # cell_size already holds the step to STEP_FRACTION dx
+        return exit_distance(p, e, dx)
+    t = entry_distance(p, e, bricks.box_lo, bricks.box_hi)
+    return t + EXIT_EPS * dx if math.isfinite(t) else math.inf
 
 
 # ---------------------------------------------------------------- marching

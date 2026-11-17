@@ -17,9 +17,9 @@ import numpy as np
 import wgpu
 
 from nebula import units
+from nebula.render.bricks import BRICK, BrickTexture, pack_keys, unpack_keys
 from nebula.render.camera import Camera
 from nebula.render.device import TileTimings, get_device, load_shader, run_tiled, uniform_buffer
-from nebula.render.bricks import BRICK, BrickTexture, pack_keys, unpack_keys
 from nebula.render.march import (
     BLEND_CELLS,
     STEP_FRACTION,
@@ -93,7 +93,9 @@ def brick_arrays(tex: BrickTexture):
     a = int(np.ceil(nb ** (1.0 / 3.0)))
     slots = np.array([int(np.ceil(nb / (a * a))), a, a])
     if dims.max() > MAX_TEX_3D or (slots * APRON).max() > MAX_TEX_3D:
-        raise ValueError(f"brick textures too large ({dims} index, {slots * APRON} atlas): raise dx")
+        raise ValueError(
+            f"brick textures too large ({dims} index, {slots * APRON} atlas): raise dx"
+        )
     index = np.zeros(dims, np.uint32)
     index[bi - origin[0], bj - origin[1], bk - origin[2]] = np.arange(1, nb + 1)
     data = np.stack([tex.rho, tex.rho_t4], axis=-1)  # (nb, 8, 8, 8, 2)
@@ -123,10 +125,14 @@ def _brick_params(bricks: BrickTexture | None, slots=None, origin=None, dims=Non
     i = np.zeros(4, np.int32)
     u = np.zeros(4, np.uint32)
     a = np.zeros(4, np.uint32)
+    lo = np.zeros(4, np.float32)
+    hi = np.zeros(4, np.float32)
     if bricks is not None:
-        f[0], f[1], f[2] = bricks.lattice.dx, bricks.r_reach, 1.0
+        f[0], f[2] = bricks.lattice.dx, 1.0
         i[:3], u[:3], a[:3] = origin, dims, slots
-    return f.tobytes() + i.tobytes() + u.tobytes() + a.tobytes()
+        lo[:3], hi[:3] = bricks.box_lo, bricks.box_hi
+    return (f.tobytes() + i.tobytes() + u.tobytes() + a.tobytes() + lo.tobytes()
+            + hi.tobytes())  # fmt: skip
 
 
 def _box_params(tex: Texture | None) -> tuple[np.ndarray, np.ndarray]:

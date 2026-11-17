@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from nebula.analysis.cloud_metrics import snapshot_temperature
+from nebula.render.bricks import deposit_bricks, fine_particles, texture_from_bricks
 from nebula.render.gasgrid import (
     R_SUPPORT,
     CartesianBox,
@@ -15,7 +16,6 @@ from nebula.render.gasgrid import (
     deposit_box,
     deposit_log,
 )
-from nebula.render.bricks import deposit_bricks, fine_particles, texture_from_bricks
 from nebula.render.march import BLEND_CELLS, T_REF, Texture, texture_from_gasgrid
 
 

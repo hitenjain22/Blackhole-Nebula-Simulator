@@ -28,10 +28,12 @@ struct GasParams {
     ngrid: vec4<u32>,   // nr, ntheta, nphi, -
     box0: BoxParams,
     box1: BoxParams,
-    bricks: vec4<f32>,  // cell size dx, reach radius, active (1/0), -
+    bricks: vec4<f32>,  // cell size dx, -, active (1/0), -
     brick_o: vec4<i32>, // index origin (brick coordinates), -
     brick_n: vec4<u32>, // index dimensions (bricks), -
     brick_a: vec4<u32>, // atlas slots per axis (A0, A1, A2), -
+    brick_lo: vec4<f32>, // box holding the bricks' home regions (BrickTexture.box_lo/hi)
+    brick_hi: vec4<f32>,
 };
 @group(0) @binding(3) var log_tex: texture_3d<f32>;
 @group(0) @binding(4) var box0_tex: texture_3d<f32>;
@@ -168,26 +170,48 @@ fn sample_bricks(p: vec3<f32>) -> vec2<f32> {
     return acc;
 }
 
-// Step limit from the bricks (march.brick_step_limit): inside the bricks' reach, from a point
-// whose home brick is empty, step only to just past that brick's far face (bricks.exit_distance).
+// Step limit from the bricks (march.brick_step_limit): inside the box holding the bricks, from
+// a point whose home brick is empty, step only to just past that brick's far face
+// (bricks.exit_distance); from outside the box, only to just inside its face
+// (bricks.entry_distance).
 fn brick_step_limit(p: vec3<f32>, e: vec3<f32>) -> f32 {
-    if (gas.bricks.z < 0.5 || length(p) > gas.bricks.y) {
-        return 3.0e38;
-    }
-    let b = brick_home(p);
-    if (brick_slot(b) != 0u) {
+    if (gas.bricks.z < 0.5) {
         return 3.0e38;
     }
     let dx = gas.bricks.x;
-    var best = 3.0e38;
+    let lo = gas.brick_lo.xyz;
+    let hi = gas.brick_hi.xyz;
+    if (all(p >= lo) && all(p < hi)) {
+        let b = brick_home(p);
+        if (brick_slot(b) != 0u) {
+            return 3.0e38;
+        }
+        var best = 3.0e38;
+        for (var k = 0; k < 3; k++) {
+            if (e[k] > 0.0) {
+                best = min(best, ((f32(b[k] + 1) * 8.0 + 0.5) * dx - p[k]) / e[k]);
+            } else if (e[k] < 0.0) {
+                best = min(best, ((f32(b[k]) * 8.0 + 0.5) * dx - p[k]) / e[k]);
+            }
+        }
+        return max(best, 0.0) + EXIT_EPS * dx;
+    }
+    var t0 = -3.0e38;
+    var t1 = 3.0e38;
     for (var k = 0; k < 3; k++) {
-        if (e[k] > 0.0) {
-            best = min(best, ((f32(b[k] + 1) * 8.0 + 0.5) * dx - p[k]) / e[k]);
-        } else if (e[k] < 0.0) {
-            best = min(best, ((f32(b[k]) * 8.0 + 0.5) * dx - p[k]) / e[k]);
+        if (e[k] != 0.0) {
+            let u = (lo[k] - p[k]) / e[k];
+            let v = (hi[k] - p[k]) / e[k];
+            t0 = max(t0, min(u, v));
+            t1 = min(t1, max(u, v));
+        } else if (p[k] < lo[k] || p[k] >= hi[k]) {
+            return 3.0e38;
         }
     }
-    return max(best, 0.0) + EXIT_EPS * dx;
+    if (t1 < max(t0, 0.0)) {
+        return 3.0e38;
+    }
+    return max(t0, 0.0) + EXIT_EPS * dx;
 }
 
 // Fields at p: the first active box covering p, blended into the log grid plus the bricks

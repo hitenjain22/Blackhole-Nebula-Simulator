@@ -45,6 +45,10 @@ Shot file layout (all times in video seconds unless named ``day``):
     r_max = 8000.0              # rays march out to r_max: must exceed the camera and the gas
     nr = 230                    # shown (8.3: "5,000 for early shots")
 
+    [bricks]                    # optional (not with boxes): sparse fine grid for thin gas
+    dx = 1.0                    # (render/bricks.py); cell size and outer radius of the fine
+    r_fine = 1000.0             # region
+
     [[boxes]]                   # optional, at most 2: detail boxes of fixed size whose centre
     around = "cloud"            # follows a target (8.3 item 2); n^3 cells
     size = 400.0                # or size_by_day = [[day, size], ...]: a box that grows with
@@ -77,6 +81,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from nebula import units
+from nebula.render.bricks import BrickLattice
 from nebula.render.camera import Camera
 from nebula.render.gasgrid import LogSphericalGrid
 
@@ -203,9 +208,13 @@ class Shot:
     exposure: list = field(default_factory=list)
     grid: dict = field(default_factory=dict)
     boxes: list = field(default_factory=list)
+    bricks: dict | None = None
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
+
+    def brick_lattice(self) -> BrickLattice | None:
+        return BrickLattice(**self.bricks) if self.bricks is not None else None
 
     @classmethod
     def load(cls, path) -> "Shot":
@@ -226,6 +235,7 @@ class Shot:
             sources=d["sources"], targets=d.get("targets", {}), camera=d["camera"],
             time=d["time"], exposure=d.get("exposure", []), grid=d.get("grid", {}),
             boxes=d.get("boxes", []),
+            bricks=d.get("bricks"),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -237,6 +247,15 @@ class Shot:
             self.log_grid()
         except TypeError as e:
             raise ShotError(f"[grid]: {e}") from e
+        if self.bricks is not None:
+            if self.boxes:
+                raise ShotError("[bricks] and [[boxes]]: use one or the other")
+            try:
+                lat = self.brick_lattice()
+            except TypeError as e:
+                raise ShotError(f"[bricks]: {e}") from e
+            if lat.dx <= 0 or lat.r_fine <= 0:
+                raise ShotError("[bricks]: dx and r_fine must be positive")
         if len(self.boxes) > MAX_BOXES:
             raise ShotError(f"[[boxes]]: at most {MAX_BOXES} detail boxes")
         for b in self.boxes:

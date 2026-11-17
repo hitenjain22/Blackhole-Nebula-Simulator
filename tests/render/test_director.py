@@ -439,7 +439,9 @@ def test_fixed_look_points_join_smoothly(runs):
     exactly and the aim does not stop at the middle key (smoothstep blending would)."""
     tmp, _ = runs
     body = BOXED.split("[grid]")[0].replace('look_at = "gas"', "look_at = [100.0, 0.0, 0.0]")
-    body = body.replace("[[time]]", """[[camera]]
+    body = body.replace(
+        "[[time]]",
+        """[[camera]]
 t = 1.0
 r = 300.0
 elev = 20.0
@@ -453,7 +455,9 @@ elev = 20.0
 az = 0.0
 around = "gas"
 look_at = [250.0, 40.0, 0.0]
-[[time]]""", 1)
+[[time]]""",
+        1,
+    )
     shot = Shot.load(write_shot(tmp, body))
     plan = plan_frames(shot, Timeline.from_sources(shot.sources, tmp))
     i1 = int(np.argmin(np.abs(plan.video_t - 1.0)))
@@ -461,3 +465,18 @@ look_at = [250.0, 40.0, 0.0]
     speed = np.linalg.norm(np.diff(plan.look_at, axis=0), axis=1)
     check("fixed look points: aim still moving at the middle key (step > 0.3 x mean)", True,
           bool(speed[i1 - 1:i1 + 1].min() > 0.3 * speed.mean()))  # fmt: skip
+
+
+def test_bricks_setting(runs):
+    """[bricks] in a shot gives the lattice; refused together with boxes or with bad values."""
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    shot = Shot.load(write_shot(tmp, plain + "[bricks]\ndx = 0.5\nr_fine = 800.0\n"))
+    check("bricks setting: lattice (dx, r_fine)", (0.5, 800.0),
+          (shot.brick_lattice().dx, shot.brick_lattice().r_fine))  # fmt: skip
+    for body, msg in ((BOXED + "[bricks]\ndx = 1.0\n", "one or the other"),
+                      (plain + "[bricks]\ndx = -1.0\n", "positive"),
+                      (plain + "[bricks]\nsize = 3.0\n", r"\[bricks\]")):  # fmt: skip
+        with pytest.raises(ShotError, match=msg):
+            Shot.load(write_shot(tmp, body))
+    check("bricks setting: bad settings refused", True, True)

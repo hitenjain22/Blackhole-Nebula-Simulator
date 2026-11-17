@@ -101,7 +101,8 @@ class ShotRenderer:
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
-        texs = textures_from_particles(x, s["h"], mass, temp, np.zeros_like(x), self.grid, boxes)
+        texs = textures_from_particles(x, s["h"], mass, temp, np.zeros_like(x), self.grid, boxes,
+                                       self.shot.brick_lattice())  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
         pic, _ = render_gas(cam, upload_scene(texs, self.model), n_sub=self.n_sub, sky=self.sky,
                             out_mode=OUT_PICTURE)  # fmt: skip

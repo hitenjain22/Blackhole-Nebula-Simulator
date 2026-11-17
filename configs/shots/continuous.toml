@@ -18,21 +18,29 @@ kappa = 1e7
 r_max = 8000.0
 nr = 230
 
+# sparse fine grid for all compact gas, from the far cloud (r 5,000) to the thin stream
+# (render/bricks.py; replaces the trailer's growing detail box)
+[bricks]
+dx = 1.0
+r_fine = 8000.0
+
+# One consistent run through the pass: the original run to its dump 188 (day 94.385, where the
+# gas is still > 280 from the hole and half-day dumps are fine), then dense_P188 (restarted
+# exactly from that dump, dumps every 64). After day 99.65 (gas > 300 from the hole) the older
+# dense_C400 for now (a different run: a small jump there) until dense_P188 part 2 is done.
 [[sources]]
 run = "R6.1_100k_ph_approach"
-to_day = 96.385
+to_day = 94.385
 
 [[sources]]
-run = "dense_B192"
-from_day = 96.385
-to_day = 99.66
+run = "dense_P188a"
+from_day = 94.385
+to_day = 99.65
 
 [[sources]]
 run = "dense_C400"
-from_day = 99.66
+from_day = 99.65
 
-# draft 2: camera higher during the U-turn (the hairpin reads clearly), no push in while the
-# stream whips round, the cloud mid-frame in the opening
 [[camera]]
 t = 0.0
 r = 7000.0

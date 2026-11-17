@@ -172,7 +172,7 @@ def main():
     tag = f"_{o['tag']}" if o.get("tag") else ""
     out = OUT / f"path_{shot.name}{tag}.mp4"
     write_video(frames, out, fps=int(round(shot.fps / every)))
-    rows = [np.concatenate(sheet[r:r + 4], axis=1) for r in range(0, len(sheet) - 3, 4)]
+    rows = [np.concatenate(sheet[r : r + 4], axis=1) for r in range(0, len(sheet) - 3, 4)]
     iio.imwrite(OUT / f"path_{shot.name}{tag}_sheet.png", np.concatenate(rows, axis=0))
     print(f"wrote {out.relative_to(ROOT)} ({len(frames)} frames) and the frame sheet")
 
