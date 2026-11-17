@@ -1,0 +1,4 @@
+# The final video (Hiten 2026-11-16): one continuous shot, no cuts or fades.
+name = "final_v1"
+dissolve = 0.0
+shots = ["continuous.toml"]

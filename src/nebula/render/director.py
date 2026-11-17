@@ -49,6 +49,11 @@ Shot file layout (all times in video seconds unless named ``day``):
     dx = 1.0                    # (render/bricks.py); cell size and outer radius of the fine
     r_fine = 1000.0             # region
 
+    [auto_exposure]             # optional: smooth automatic exposure over the shot
+    every = 1.0                 # probe frames every this many seconds
+    smooth = 4.0                # Gaussian smoothing width (s): no sudden changes
+    strength = 0.75             # fraction of the change compensated (1 = fully)
+
     [[boxes]]                   # optional, at most 2: detail boxes of fixed size whose centre
     around = "cloud"            # follows a target (8.3 item 2); n^3 cells
     size = 400.0                # or size_by_day = [[day, size], ...]: a box that grows with
@@ -209,6 +214,7 @@ class Shot:
     grid: dict = field(default_factory=dict)
     boxes: list = field(default_factory=list)
     bricks: dict | None = None
+    auto_exposure: dict | None = None
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -236,6 +242,7 @@ class Shot:
             time=d["time"], exposure=d.get("exposure", []), grid=d.get("grid", {}),
             boxes=d.get("boxes", []),
             bricks=d.get("bricks"),
+            auto_exposure=d.get("auto_exposure"),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -256,6 +263,12 @@ class Shot:
                 raise ShotError(f"[bricks]: {e}") from e
             if lat.dx <= 0 or lat.r_fine <= 0:
                 raise ShotError("[bricks]: dx and r_fine must be positive")
+        if self.auto_exposure is not None:
+            bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
+            if bad:
+                raise ShotError(f"[auto_exposure]: unknown settings {sorted(bad)}")
+            if any(float(v) <= 0 for v in self.auto_exposure.values()):
+                raise ShotError("[auto_exposure]: settings must be positive")
         if len(self.boxes) > MAX_BOXES:
             raise ShotError(f"[[boxes]]: at most {MAX_BOXES} detail boxes")
         for b in self.boxes:

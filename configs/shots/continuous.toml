@@ -28,6 +28,15 @@ r_fine = 8000.0
 # gas is still > 280 from the hole and half-day dumps are fine), then dense_P188 (restarted
 # exactly from that dump, dumps every 64). After day 99.65 (gas > 300 from the hole) the older
 # dense_C400 for now (a different run: a small jump there) until dense_P188 part 2 is done.
+# the gas brightens by orders of magnitude from the cool cloud to the hot pass: a smooth
+# automatic exposure (an eye adapting over ~2 s), compensating 90% so the pass still blazes.
+# 4 s / 75% let the cloud fade 2.3 stops in its first 3 s (its outer skin cools from 9,700 K
+# to 6,000 K by day 45 and is all the camera sees at kappa 1e7; first low-res render)
+[auto_exposure]
+every = 1.0
+smooth = 2.0
+strength = 0.9
+
 [[sources]]
 run = "R6.1_100k_ph_approach"
 to_day = 94.385

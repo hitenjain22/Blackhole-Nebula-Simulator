@@ -131,14 +131,24 @@ def main():
             update(folder, reused={name: str(old.relative_to(ROOT))})
             print(f"  {name}: {n} frames reused from {old.name}", flush=True)
         if name in exposures:
-            rend.base = Exposure(*exposures[name])
+            rend.base = Exposure(*exposures[name][:2])
+            if len(exposures[name]) > 2:
+                rend.adapt = np.asarray(exposures[name][2])
         elif name in match:
             if match[name] not in exposures:
                 raise SystemExit(f"{name}: match_exposure {match[name]!r} must be rendered first")
             rend.base = Exposure(*exposures[match[name]])
+        elif shot.auto_exposure is not None:
+            a = shot.auto_exposure
+            rend.adapt_exposure(float(a.get("every", 1.0)), float(a.get("smooth", 4.0)),
+                                float(a.get("strength", 0.75)))  # fmt: skip
+            print(f"  {name}: automatic exposure from probes, stops "
+                  f"{rend.adapt.min():+.1f} to {rend.adapt.max():+.1f}", flush=True)  # fmt: skip
         else:
             rend.calibrate()
         exposures[name] = [rend.base.gas, rend.base.stars]
+        if shot.auto_exposure is not None:
+            exposures[name].append([float(v) for v in rend.adapt])
         exp_path.write_text(json.dumps(exposures, indent=2))
         for i in range(n):
             out = fdir / f"{i:05d}.png"

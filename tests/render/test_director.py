@@ -480,3 +480,41 @@ def test_bricks_setting(runs):
         with pytest.raises(ShotError, match=msg):
             Shot.load(write_shot(tmp, body))
     check("bricks setting: bad settings refused", True, True)
+
+
+def test_adaptation_stops():
+    """Automatic exposure curve: flat probes give no change; a sudden 64x brightness jump
+    becomes a smooth change (no frame-to-frame step over 0.1 stop at 24 fps, no overshoot)
+    compensating `strength` of the 6 stops; bad [auto_exposure] settings are refused."""
+    from nebula.render.shot_render import adaptation_stops
+
+    pt = np.arange(0.0, 50.0, 1.0)
+    ft = np.arange(0.0, 50.0, 1.0 / 24.0)
+    flat = adaptation_stops(pt, np.full(len(pt), 3.0), ft, 4.0, 0.75)
+    check("auto exposure: flat probes, no change", np.zeros(len(ft)), flat, atol=1e-12)
+    e = np.where(pt < 25.0, 64.0, 1.0)  # gas 64x brighter after t = 25 s: exposure 64x lower
+    s = adaptation_stops(pt, e, ft, 4.0, 0.75)
+    check("auto exposure: total change = 0.75 x 6 stops (ends of a 50 s shot)", -4.5,
+          s[ft > 45].mean() - s[ft < 5].mean(), rtol=0.01)  # fmt: skip
+    check("auto exposure: largest step between frames < 0.1 stop", True,
+          bool(np.abs(np.diff(s)).max() < 0.1))  # fmt: skip
+    check("auto exposure: no overshoot beyond the probes' range", True,
+          bool(s.max() - s.min() <= 4.5 + 1e-9))  # fmt: skip
+    ramp = 2.0 ** (-0.3 * pt)  # gas brightening steadily: 0.3 stop per second
+    sr = adaptation_stops(pt, ramp, ft, 2.0, 1.0)
+    want = -0.3 * ft - np.median(-0.3 * pt)
+    # 1e-6 stop: the reflection spans 6 smoothing widths (Gaussian tail beyond: ~1e-8)
+    check("auto exposure: a steady trend is followed, up to both ends (1e-6 stop)", want, sr,
+          atol=1e-6)  # fmt: skip
+
+
+def test_auto_exposure_setting(runs):
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    shot = Shot.load(write_shot(tmp, plain + "[auto_exposure]\nsmooth = 3.0\n"))
+    check("auto exposure setting read", {"smooth": 3.0}, shot.auto_exposure)
+    for body, msg in ((plain + "[auto_exposure]\nspeed = 1.0\n", "unknown"),
+                      (plain + "[auto_exposure]\nstrength = 0.0\n", "positive")):  # fmt: skip
+        with pytest.raises(ShotError, match=msg):
+            Shot.load(write_shot(tmp, body))
+    check("auto exposure setting: bad settings refused", True, True)

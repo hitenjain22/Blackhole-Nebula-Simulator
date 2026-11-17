@@ -23,6 +23,30 @@ GAS_PERCENTILE, GAS_LEVEL = 99.9, 1.0  # as scripts/phase8_step4_first_frame.py
 N_PROBES = 5
 
 
+def adaptation_stops(probe_t, probe_gas_exposure, frame_t, smooth_s: float, strength: float):
+    """Exposure change per frame, in stops, from automatic exposures measured at probe times:
+    strength x log2(probe exposure / median probe exposure), smoothed by a Gaussian of width
+    smooth_s seconds of video time (an eye adapting: no sudden changes) and read at the frame
+    times. strength < 1 adapts only partly, so very hot gas still looks brighter than cool."""
+    pt = np.asarray(probe_t, float)
+    stops = strength * np.log2(np.asarray(probe_gas_exposure, float))
+    stops -= np.median(stops)
+    # Odd reflection at both ends (t -> 2 t_end - t, s -> 2 s_end - s): a plain Gaussian mean
+    # near an end only sees one side and flattens a trend there (first low-res final render:
+    # half the needed correction in the first 3 s); with the reflection a steady trend is
+    # followed exactly up to the ends.
+    # reflected over 6 widths: a steady trend is then followed to ~1e-8 of a stop, and steps
+    # farther away than that are not mirrored back in (no overshoot)
+    near0 = pt[1:] <= pt[0] + 6.0 * smooth_s
+    near1 = pt[:-1] >= pt[-1] - 6.0 * smooth_s
+    t_all = np.concatenate([2 * pt[0] - pt[1:][near0], pt, 2 * pt[-1] - pt[:-1][near1]])
+    s_all = np.concatenate([2 * stops[0] - stops[1:][near0], stops,
+                            2 * stops[-1] - stops[:-1][near1]])  # fmt: skip
+    ft = np.asarray(frame_t, float)
+    w = np.exp(-0.5 * ((ft[:, None] - t_all[None, :]) / smooth_s) ** 2)
+    return (w @ s_all) / w.sum(axis=1)
+
+
 def camera_in_gas(plan: FramePlan, timeline: Timeline, margin: float = 1.5) -> np.ndarray:
     """Frames whose camera sits inside gas: within `margin` x h of a particle of the snapshot
     nearest in time. A ray then starts inside the gas, and nearby gas fills the frame as a
@@ -76,6 +100,7 @@ class ShotRenderer:
         self._snaps = {}
         self._runs = {}
         self.base = None
+        self.adapt = np.zeros(len(plan.video_t))  # automatic exposure stops (adapt_exposure)
 
     def _snap(self, k):
         if k not in self._snaps:
@@ -120,11 +145,33 @@ class ShotRenderer:
         self.base = Exposure(float(np.median(gas)), float(np.median(stars)))
         return self.base
 
+    def adapt_exposure(self, every_s=1.0, smooth_s=4.0, strength=0.75, probe_size=(320, 180)):
+        """Base exposure (median of the probes) plus a smooth automatic exposure curve
+        (adaptation_stops) from low-resolution probe frames every ``every_s`` seconds; for long
+        shots whose gas brightness changes by orders of magnitude (cool cloud -> hot pass)."""
+        n = len(self.plan.video_t)
+        idx = np.unique(np.round(np.arange(0.0, self.shot.duration, every_s) * self.shot.fps)
+                        .astype(int).clip(0, n - 1))  # fmt: skip
+        size, n_sub = (self.width, self.height), self.n_sub
+        self.width, self.height = probe_size
+        self.n_sub = 1
+        try:
+            pics = [self.picture(int(i)) for i in idx]
+        finally:
+            (self.width, self.height), self.n_sub = size, n_sub
+        gas = np.array([auto_gas_exposure(p[..., 0], GAS_PERCENTILE, GAS_LEVEL) for p in pics])
+        stars = [auto_star_exposure(p[..., 1:4]) for p in pics]
+        self.base = Exposure(float(np.median(gas)), float(np.median(stars)))
+        self.adapt = adaptation_stops(self.plan.video_t[idx], gas, self.plan.video_t, smooth_s,
+                                      strength)  # fmt: skip
+        return self.base, self.adapt
+
     def frame(self, i: int) -> np.ndarray:
         """uint8 sRGB frame i."""
         if self.base is None:
             self.calibrate()
         # Stops change the gas only: the stars stay a steady backdrop (opening up 2 stops for
         # the cooling stream made the star field noisy and over-bright; orbit_pass draft 3).
-        exp = Exposure(self.base.gas * 2.0 ** float(self.plan.stops[i]), self.base.stars)
+        stops = float(self.plan.stops[i]) + float(self.adapt[i])
+        exp = Exposure(self.base.gas * 2.0**stops, self.base.stars)
         return compose(self.picture(i), exp)
