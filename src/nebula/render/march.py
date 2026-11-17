@@ -30,11 +30,17 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from nebula.physics.colour import blackbody_xyz_lut, bolometric_intensity_si
 from nebula.physics.geodesics import schw_static_proper_length
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
     grey_absorption,
     transfer_step,
+)
+from nebula.physics.redshift import (
+    gas_frame_path_factor,
+    redshift_factor,
+    static_frame_direction,
 )
 from nebula.render.bricks import (
     EXIT_EPS,
@@ -43,6 +49,7 @@ from nebula.render.bricks import (
     exit_distance,
     home_allocated,
     sample_bricks,
+    sample_bricks_rho_gb,
 )
 from nebula.render.gasgrid import CartesianBox, GasGrid, LogSphericalGrid
 
@@ -59,15 +66,18 @@ class Texture:
     grid: LogSphericalGrid | CartesianBox
     rho: np.ndarray
     rho_t4: np.ndarray
+    rho_gb: np.ndarray | None = None  # (..., 3): rho x mass-weighted gamma beta (Phase 9)
 
 
-def texture_from_fields(grid, rho, t_em) -> Texture:
-    """Texture from cell fields (rho in code units, T_em in K; empty cells rho = 0)."""
+def texture_from_fields(grid, rho, t_em, vel=None) -> Texture:
+    """Texture from cell fields (rho in code units, T_em in K, optional mass-weighted velocity
+    (..., 3) (Phase 9: gamma beta); empty cells rho = 0)."""
     rho = np.asarray(rho, float)
     rt4 = rho * (np.asarray(t_em, float) / T_REF) ** 4
     if not (np.all(np.isfinite(rt4)) and rt4.max(initial=0.0) < 1e37 and rho.max() < 1e37):
         raise OverflowError("texture values would overflow float32; change T_REF or units")
-    return Texture(grid, rho.astype(np.float32), rt4.astype(np.float32))
+    rgb = None if vel is None else (rho[..., None] * np.asarray(vel, float)).astype(np.float32)
+    return Texture(grid, rho.astype(np.float32), rt4.astype(np.float32), rgb)
 
 
 def temperature_from_sample(rho, rho_t4):
@@ -76,7 +86,7 @@ def temperature_from_sample(rho, rho_t4):
 
 
 def texture_from_gasgrid(gg: GasGrid) -> Texture:
-    return texture_from_fields(gg.grid, gg.rho, gg.t_em)
+    return texture_from_fields(gg.grid, gg.rho, gg.t_em, gg.vel)
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,44 @@ class GreyBlackbody:
         """(S, alpha) from the sampled texture values."""
         t = temperature_from_sample(rho, rho_t4)
         return blackbody_intensity_si(t), grey_absorption(rho, self.kappa)
+
+
+@dataclass(frozen=True)
+class RelativisticBlackbody:
+    """Phase 9 emission (phase-09 9.4): gas emits as a blackbody at its temperature T_em in its
+    own frame, with grey absorption alpha_gas = kappa rho in its own frame. Seen from a static
+    camera at r_cam, a step contributes the blackbody at the observed temperature g T_em
+    (physics.redshift.redshift_factor; no extra g^4) and has optical depth
+    kappa rho ds_static (gamma - gamma beta . n) (physics.redshift.gas_frame_path_factor).
+    Channels: CIE X, Y, Z and the bolometric intensity sigma (g T)^4 / pi [W m^-2 sr^-1].
+
+    log_t, log_chroma: the colour table of physics.colour.chroma_lut."""
+
+    kappa: float
+    r_cam: float
+    log_t: np.ndarray
+    log_chroma: np.ndarray
+    relativistic = True  # march_segment: sample velocities and pass the light direction
+    channels = 4
+
+    def source_and_dtau(self, mid, e, rho, rho_t4, rho_gb, path_static):
+        """(source (4,), optical depth) of a step at mid along the outward direction e."""
+        t_em = temperature_from_sample(rho, rho_t4)
+        gb = np.asarray(rho_gb, float) / rho
+        n_light = -static_frame_direction(mid, e)  # light travels back toward the camera
+        r = float(np.sqrt(mid @ mid))
+        g = float(redshift_factor(r, gb, n_light, self.r_cam))
+        t_obs = g * t_em
+        src = np.zeros(4)
+        if t_obs > 0.0:
+            src[:3] = blackbody_xyz_lut(t_obs, self.log_t, self.log_chroma)
+            src[3] = bolometric_intensity_si(t_obs)
+        dtau = (
+            grey_absorption(rho, self.kappa)
+            * path_static
+            * float(gas_frame_path_factor(gb, n_light))
+        )
+        return src, dtau
 
 
 # ---------------------------------------------------------------- sampling
@@ -171,6 +219,46 @@ def sample(textures, p):
     return lr, lt
 
 
+def _trilinear_vec(arr, fi, fj, fk, wrap_k):
+    """_trilinear of each component of arr (..., 3)."""
+    return np.array([_trilinear(arr[..., c], fi, fj, fk, wrap_k) for c in range(arr.shape[-1])])
+
+
+def sample_log_rho_gb(tex: Texture, p):
+    g = tex.grid
+    if tex.rho_gb is None:
+        return np.zeros(3)
+    x, y, z = float(p[0]), float(p[1]), float(p[2])
+    r = math.sqrt(x * x + y * y + z * z)
+    if not (g.r_min <= r <= g.r_max):
+        return np.zeros(3)
+    fi = math.log(r / g.r_min) / g.dlnr - 0.5
+    fj = math.acos(min(max(z / r, -1.0), 1.0)) / g.dth - 0.5
+    fk = (math.atan2(y, x) % (2.0 * math.pi)) / g.dph - 0.5
+    return _trilinear_vec(tex.rho_gb, fi, fj, fk, True)
+
+
+def sample_box_rho_gb(tex: Texture, p):
+    if tex.rho_gb is None:
+        return np.zeros(3)
+    f = (p - tex.grid.lo) / tex.grid.dx - 0.5
+    return _trilinear_vec(tex.rho_gb, f[0], f[1], f[2], False)
+
+
+def sample_rho_gb(textures, p):
+    """rho x gamma beta (3,) at p, combined from the grids exactly as ``sample`` combines rho
+    (so rho_gb / rho is the mass-weighted gamma beta of the gas there)."""
+    base, boxes, bricks = _split(textures)
+    lv = sample_log_rho_gb(base, p) if base is not None else np.zeros(3)
+    if bricks is not None:
+        lv = lv + sample_bricks_rho_gb(bricks, p)
+    for tb in boxes:
+        w = _box_weight(tb.grid, p)
+        if w > 0.0:
+            return w * sample_box_rho_gb(tb, p) + (1.0 - w) * lv
+    return lv
+
+
 def cell_size(textures, p):
     """Local cell size of the finest grid at p (box dx; the bricks' dx where p's home brick is
     allocated, if finer; else r min(dln r, dth) on the log grid)."""
@@ -215,7 +303,14 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved
     end (cells shrink toward the hole), sampled at its midpoint. ``curved``: optical depth
     uses the static observer's proper length of each sub-step around the hole
     (physics.geodesics.schw_static_proper_length) instead of its flat length.
+
+    With a Phase 9 model (``model.relativistic``) the intensity is an array of
+    ``model.channels`` (start it at zeros), and each step also samples the gas velocity and
+    passes the step's direction to the model.
     """
+    rel = getattr(model, "relativistic", False)
+    if rel and np.ndim(intensity) == 0:
+        intensity = np.full(model.channels, float(intensity))
     a = np.asarray(a, float)
     b = np.asarray(b, float)
     seg = b - a
@@ -232,20 +327,28 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved
         ds = min(ds, brick_step_limit(textures, p, e))
         mid = p + 0.5 * ds * e
         lr, lt = sample(textures, mid)
-        src, alpha = model.source_and_absorption(lr, lt)
         r_mid = float(np.sqrt(mid @ mid))
         # A step with no gas changes nothing; skipping it also avoids 0 x infinity when a
         # captured ray's last step ends exactly on the horizon, where the proper length
         # diverges (r_mid = 2 happens in float32 on the GPU).
-        if alpha > 0.0 and (not curved or r_mid > 2.0):
+        if lr > 0.0 and (not curved or r_mid > 2.0):
             path = ds
             if curved:
                 q = p + ds * e
                 dr = float(np.sqrt(q @ q) - np.sqrt(p @ p))
                 path = float(schw_static_proper_length(ds, dr, r_mid))
-            intensity, transmission = transfer_step(intensity, transmission, src, alpha * path)
+            if rel:
+                src, dtau = model.source_and_dtau(mid, e, lr, lt, sample_rho_gb(textures, mid),
+                                                  path)  # fmt: skip
+            else:
+                src, alpha = model.source_and_absorption(lr, lt)
+                dtau = alpha * path
+            if dtau > 0.0:
+                intensity, transmission = transfer_step(intensity, transmission, src, dtau)
         s += ds
         n += 1
+    if rel:
+        return np.asarray(intensity, float), float(transmission), n
     return float(intensity), float(transmission), n
 
 

@@ -71,16 +71,19 @@ class BrickGrid:
     rho: np.ndarray  # float32
     t_em: np.ndarray  # float32, K: (mass-weighted mean of T^4)^(1/4)
     n_trilinear: int = 0
+    vel: np.ndarray | None = None  # float32 (n_bricks, B, B, B, 3): mass-weighted velocity
 
 
 @dataclass
 class BrickTexture:
-    """What the renderer samples (float32): rho and rho (T_em/T_REF)^4 per brick cell."""
+    """What the renderer samples (float32): rho and rho (T_em/T_REF)^4 per brick cell, and
+    optionally rho x mass-weighted velocity (Phase 9: rho gamma beta, (n, B, B, B, 3))."""
 
     lattice: BrickLattice
     keys: np.ndarray
     rho: np.ndarray
     rho_t4: np.ndarray
+    rho_gb: np.ndarray | None = None
 
     def __post_init__(self):
         self.keys_list = self.keys.tolist()  # for bisect in the readable samplers
@@ -153,18 +156,23 @@ def _cell_slot(keys_list, ci, cj, ck):
     return s, ci % BRICK, cj % BRICK, ck % BRICK
 
 
-def deposit_bricks_reference(x, h, m, t, lattice: BrickLattice, kernel: str = "wendland_c4"):
+def deposit_bricks_reference(
+    x, h, m, t, lattice: BrickLattice, kernel: str = "wendland_c4", v=None
+):
     """Readable deposition of (fine) particles onto the brick lattice (module docstring).
-    x [code lengths], h, m [code masses] (scalar or per particle), t [K]."""
+    x [code lengths], h, m [code masses] (scalar or per particle), t [K]; v (N, 3) optional
+    velocities (Phase 9: gamma beta), deposited mass-weighted like t (zero if not given)."""
     f = get_kernel(kernel).f
     x = np.asarray(x, float)
     h = np.asarray(h, float)
     m = np.broadcast_to(np.asarray(m, float), h.shape)
     t = np.asarray(t, float)
+    nf = 2 if v is None else 5
+    v = np.zeros((len(h), 3)) if v is None else np.asarray(v, float)
     dx = lattice.dx
     keys = brick_keys(x, h, dx)
     keys_list = keys.tolist()
-    acc = np.zeros((len(keys), BRICK, BRICK, BRICK, 2))  # m, m T^4
+    acc = np.zeros((len(keys), BRICK, BRICK, BRICK, nf))  # m, m T^4 (, m v)
     n_tri = 0
 
     def add(ci, cj, ck, w, p):
@@ -173,6 +181,8 @@ def deposit_bricks_reference(x, h, m, t, lattice: BrickLattice, kernel: str = "w
             raise AssertionError("deposit outside the allocated bricks")  # allocation bug
         acc[s, a, b, c, 0] += w * m[p]
         acc[s, a, b, c, 1] += w * m[p] * t[p] ** 4
+        if nf == 5:
+            acc[s, a, b, c, 2:5] += w * m[p] * v[p]
 
     for p in range(len(h)):
         big = R_SUPPORT * h[p]
@@ -211,9 +221,12 @@ def _finish(lattice, keys, acc, n_tri) -> BrickGrid:
     has = mass > 0
     safe = np.where(has, mass, 1.0)
     t_em = np.where(has, np.maximum(acc[..., 1] / safe, 0.0) ** 0.25, 0.0)
+    vel = None
+    if acc.shape[-1] == 5:  # velocities deposited
+        vel = np.where(has[..., None], acc[..., 2:5] / safe[..., None], 0.0).astype(np.float32)
     rho = mass / lattice.dx**3
     return BrickGrid(lattice, keys, mass, rho.astype(np.float32), t_em.astype(np.float32),
-                     int(n_tri))  # fmt: skip
+                     int(n_tri), vel)  # fmt: skip
 
 
 # ---------------------------------------------------------------- fast (Numba)
@@ -281,8 +294,8 @@ def _nb_brick_chunk(x, h, vals, lo, hi, dx, kid, keys, acc):
                                 if s < 0:
                                     bad += 1
                                 else:
-                                    acc[s, a & 7, b & 7, c & 7, 0] += w * vals[p, 0]
-                                    acc[s, a & 7, b & 7, c & 7, 1] += w * vals[p, 1]
+                                    for ch in range(vals.shape[1]):
+                                        acc[s, a & 7, b & 7, c & 7, ch] += w * vals[p, ch]
             continue
         n_tri += 1
         fa, fb, fc = xp / dx - 0.5, yp / dx - 0.5, zp / dx - 0.5
@@ -300,8 +313,8 @@ def _nb_brick_chunk(x, h, vals, lo, hi, dx, kid, keys, acc):
                     if s < 0:
                         bad += 1
                     else:
-                        acc[s, a & 7, b & 7, c & 7, 0] += w * vals[p, 0]
-                        acc[s, a & 7, b & 7, c & 7, 1] += w * vals[p, 1]
+                        for ch in range(vals.shape[1]):
+                            acc[s, a & 7, b & 7, c & 7, ch] += w * vals[p, ch]
     return n_tri, bad
 
 
@@ -313,43 +326,67 @@ def _nb_bricks(x, h, vals, bounds, dx, kid, keys, acc, res):
         res[c, 1] = bad
 
 
-def deposit_bricks(x, h, m, t, lattice: BrickLattice, kernel: str = "wendland_c4") -> BrickGrid:
+PASS_BYTES = 1.2e9  # accumulator memory per deposition pass (CLAUDE.md: stay under ~4 GB)
+
+
+def deposit_bricks(
+    x, h, m, t, lattice: BrickLattice, kernel: str = "wendland_c4", v=None
+) -> BrickGrid:
     """Fast (Numba) brick deposition; matches deposit_bricks_reference (same chunking rule as
-    gasgrid: fixed chunks summed in a fixed order, so the result is deterministic)."""
+    gasgrid: fixed chunks summed in a fixed order, so the result is deterministic).
+
+    Without v only m and m T^4 are deposited (vel None). The accumulated fields (m, m T^4,
+    m v) are deposited in passes of as many fields as
+    fit in PASS_BYTES of per-chunk float64 accumulators (each pass repeats the same kernel
+    sums for its fields, so the result does not depend on the grouping)."""
     x = np.ascontiguousarray(x, dtype=np.float64)
     h = np.ascontiguousarray(h, dtype=np.float64)
     m = np.broadcast_to(np.asarray(m, float), h.shape)
     t = np.asarray(t, float)
+    nf = 2 if v is None else 5
     keys = brick_keys(x, h, lattice.dx)
-    need = N_CHUNKS * len(keys) * BRICK**3 * 2 * 8
-    if need > 2.5e9:  # CLAUDE.md: keep memory under ~4 GB
-        raise MemoryError(f"brick buffers would need {need / 1e9:.1f} GB; raise dx")
+    per_field = N_CHUNKS * len(keys) * BRICK**3 * 8
+    if per_field > PASS_BYTES:
+        raise MemoryError(f"brick buffers would need {per_field / 1e9:.1f} GB; raise dx")
+    group = max(1, min(nf, int(PASS_BYTES // max(per_field, 1))))
     vals = np.stack([m, m * t**4], axis=1)
+    if v is not None:
+        vals = np.concatenate([vals, m[:, None] * np.asarray(v, float)], axis=1)
     order = np.concatenate([np.arange(c, len(h), N_CHUNKS) for c in range(N_CHUNKS)])
     bounds = np.cumsum([0] + [len(range(c, len(h), N_CHUNKS)) for c in range(N_CHUNKS)])
-    acc = np.zeros((N_CHUNKS, len(keys), BRICK, BRICK, BRICK, 2))
-    res = np.zeros((N_CHUNKS, 2), np.int64)
-    _nb_bricks(x[order], h[order], np.ascontiguousarray(vals[order]), bounds.astype(np.int64),
-               lattice.dx, KERNEL_IDS[kernel], keys, acc, res)  # fmt: skip
-    if res[:, 1].sum():
-        raise AssertionError("deposit outside the allocated bricks")  # allocation bug
-    total = acc[0].copy()
-    for c in range(1, N_CHUNKS):  # fixed order: deterministic
-        total += acc[c]
-    del acc
-    return _finish(lattice, keys, total, int(res[:, 0].sum()))
+    xo, ho, vo = x[order], h[order], vals[order]
+    total = np.zeros((len(keys), BRICK, BRICK, BRICK, nf))
+    n_tri = 0
+    for f0 in range(0, nf, group):
+        f1 = min(f0 + group, nf)
+        acc = np.zeros((N_CHUNKS, len(keys), BRICK, BRICK, BRICK, f1 - f0))
+        res = np.zeros((N_CHUNKS, 2), np.int64)
+        _nb_bricks(xo, ho, np.ascontiguousarray(vo[:, f0:f1]), bounds.astype(np.int64),
+                   lattice.dx, KERNEL_IDS[kernel], keys, acc, res)  # fmt: skip
+        if res[:, 1].sum():
+            raise AssertionError("deposit outside the allocated bricks")  # allocation bug
+        part = acc[0].copy()
+        for c in range(1, N_CHUNKS):  # fixed order: deterministic
+            part += acc[c]
+        del acc
+        total[..., f0:f1] = part
+        n_tri = int(res[:, 0].sum())
+    return _finish(lattice, keys, total, n_tri)
 
 
 # ---------------------------------------------------------------- sampling (readable)
 
 
 def texture_from_bricks(bg: BrickGrid, t_ref: float) -> BrickTexture:
-    """rho and rho (T_em / t_ref)^4 as float32 (march.T_REF is passed in: no import cycle)."""
+    """rho, rho (T_em / t_ref)^4 and rho v as float32 (march.T_REF is passed in: no import
+    cycle)."""
     rho = bg.rho.astype(float)
     rt4 = rho * (bg.t_em.astype(float) / t_ref) ** 4
     if not (np.all(np.isfinite(rt4)) and rt4.max(initial=0.0) < 1e37):
         raise OverflowError("brick texture values would overflow float32")
-    return BrickTexture(bg.lattice, bg.keys, bg.rho.astype(np.float32), rt4.astype(np.float32))
+    rgb = None if bg.vel is None else (rho[..., None] * bg.vel).astype(np.float32)
+    return BrickTexture(bg.lattice, bg.keys, bg.rho.astype(np.float32), rt4.astype(np.float32),
+                        rgb)  # fmt: skip
 
 
 def _cell_value(tex: BrickTexture, keys_list, ci, cj, ck):
@@ -376,6 +413,26 @@ def sample_bricks(tex: BrickTexture, p, keys_list=None):
                 out_r += w * r_
                 out_t += w * t_
     return out_r, out_t
+
+
+def sample_bricks_rho_gb(tex: BrickTexture, p, keys_list=None):
+    """rho x velocity (3,) at p, trilinear like sample_bricks (zero if the texture has none)."""
+    if tex.rho_gb is None:
+        return np.zeros(3)
+    keys_list = tex.keys_list if keys_list is None else keys_list
+    f = np.asarray(p, float) / tex.lattice.dx - 0.5
+    i0 = np.floor(f).astype(int)
+    tt = f - i0
+    out = np.zeros(3)
+    for di in (0, 1):
+        for dj in (0, 1):
+            for dk in (0, 1):
+                w = ((tt[0] if di else 1 - tt[0]) * (tt[1] if dj else 1 - tt[1])
+                     * (tt[2] if dk else 1 - tt[2]))  # fmt: skip
+                s, a, b, c = _cell_slot(keys_list, i0[0] + di, i0[1] + dj, i0[2] + dk)
+                if s >= 0:
+                    out += w * tex.rho_gb[s, a, b, c].astype(float)
+    return out
 
 
 def home_brick(p, dx):

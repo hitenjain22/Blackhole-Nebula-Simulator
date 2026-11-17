@@ -138,3 +138,23 @@ def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=Non
             acc += (intensity, transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)
         out[j, i] = acc / len(offs)
     return out
+
+
+def render_reference_colour(camera: Camera, textures, model, n_sub: int = 1, pixels=None):
+    """CPU reference image for a Phase 9 model (march.RelativisticBlackbody): per pixel the mean
+    over sub-rays of (X, Y, Z, bolometric) followed by (mean T of escaped sub-rays, captured
+    fraction, mean sub-steps); shape (height, width, model.channels + 3). Slow: for tests."""
+    offs = sub_pixel_offsets(n_sub)
+    nc = model.channels
+    out = np.full((camera.height, camera.width, nc + 3), np.nan)
+    todo = pixels if pixels is not None else np.ndindex(camera.width, camera.height)
+    for i, j in todo:
+        acc = np.zeros(nc + 3)
+        for ox, oy in offs:
+            d = camera.directions(i + ox, j + oy)
+            intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d)
+            escaped = status == RAY_ESCAPED
+            acc[:nc] += intensity
+            acc[nc:] += (transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)
+        out[j, i] = acc / len(offs)
+    return out

@@ -65,3 +65,32 @@ def circular_orbit_redshift(r, b):
     0 for light leaving radially). phase-09 9.3; Bardeen, Press & Teukolsky 1972 (a = 0)."""
     r = np.asarray(r, float)
     return np.sqrt(1.0 - 3.0 / r) / (1.0 - r**-1.5 * np.asarray(b, float))
+
+
+def static_frame_direction(x, e):
+    """Unit direction, in the static observer's orthonormal frame at x, of a step along the
+    coordinate direction e (Cartesian components, radial along r_hat):
+
+        n proportional to (e . r_hat) / sqrt(1 - 2/r) r_hat + (e - (e . r_hat) r_hat)
+
+    The static frame measures radial lengths dr / sqrt(1 - 2/r) and angular lengths r dOmega
+    (phase-09 9.3: components proportional to (dr / sqrt(1 - 2/r), r dphi)). The light reaching
+    the camera travels along minus this direction for a step traced outward from the camera.
+    """
+    x = np.asarray(x, float)
+    e = np.asarray(e, float)
+    r = np.linalg.norm(x, axis=-1)
+    r_hat = x / r[..., None]
+    er = np.sum(e * r_hat, axis=-1)
+    n = e + (er / np.sqrt(1.0 - 2.0 / r) - er)[..., None] * r_hat
+    return n / np.linalg.norm(n, axis=-1)[..., None]
+
+
+def gas_frame_path_factor(gamma_beta, n_hat):
+    """ds_gas / ds_static = gamma (1 - beta . n_hat) = gamma - (gamma beta) . n_hat for a light
+    path travelling along n_hat (static frame) through gas moving with gamma beta (phase-09 9.4:
+    the optical depth of a step is alpha_gas ds_gas, alpha_gas in the gas's own frame). It is
+    the Doppler factor of redshift_factor: ds_gas = ds_static x (gravitational factor / g)."""
+    gb = np.asarray(gamma_beta, float)
+    gamma = np.sqrt(1.0 + np.sum(gb * gb, axis=-1))
+    return gamma - np.sum(gb * np.asarray(n_hat, float), axis=-1)

@@ -127,3 +127,28 @@ def test_interpolated_positions_vs_fine_run():
                   e.max(), atol=1e-5)  # fmt: skip
     check("test 8b: error ratio when eta_orb is halved (mid-interval)", 4.0,
           errs[0.5, 0] / errs[0.5, 1], rtol=0.25)  # fmt: skip
+
+
+def test_momenta_at_endpoints_and_smooth():
+    """Phase 9 (Doppler colours): state_at(with_p=True) gives snapshot a's momenta at a.t,
+    snapshot b's at b.t, the same positions as without p, and through the cross-fade momenta
+    that follow the true (16x finer, float64) orbit to 1e-5 of |p| with no jump (the frame-to-
+    frame change of the error stays below 1e-5 of |p|; the limit of test 8b for positions).
+    A step-ratio test as for positions does not apply: at r = 8 the true momentum's own steps
+    vary by 1.63x between frames (pericentre)."""
+    xs, ps = _orbits()
+    a, b, _ = _two_snaps(xs, ps, INTERVAL)
+    _, x, p, _ = state_at(a, b, 0.0, with_p=True)
+    check("momenta at snapshot a", a.p, p, rtol=0.0, atol=0.0)
+    check("positions unchanged by with_p", state_at(a, b, 0.0)[1], x, rtol=0.0, atol=0.0)
+    _, _, p, _ = state_at(a, b, INTERVAL, with_p=True)
+    check("momenta at snapshot b", b.p, p, rtol=1e-13, per_vector=True)
+    ts = np.linspace(0.7, 1.0, 61) * INTERVAL
+    ps_t = np.array([state_at(a, b, t, with_p=True)[2] for t in ts])
+    truth = np.array([advance(xs, ps, t, ETA_ORB / 16)[1] for t in ts])
+    norm = np.linalg.norm(truth, axis=2)
+    err = np.linalg.norm(ps_t - truth, axis=2) / norm
+    check("momenta vs true orbit through the fade (max rel)", 0.0, float(err.max()), atol=1e-5)
+    jump = np.linalg.norm(np.diff(ps_t - truth, axis=0), axis=2) / norm[1:]
+    check("momenta: no jump (largest frame-to-frame error change / |p|)", 0.0,
+          float(jump.max()), atol=1e-5)  # fmt: skip

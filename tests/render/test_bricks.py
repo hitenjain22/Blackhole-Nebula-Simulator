@@ -294,3 +294,36 @@ def test_entry_distance():
     check("entry distance: hits", want[:2], got[:2], rtol=1e-12)
     check("entry distance: miss, pointing away, outside a face plane (inf)", [True] * 3,
           list(np.isinf(got[2:])))  # fmt: skip
+
+
+def test_velocity_deposit_matches_reference_box_and_momentum(monkeypatch):
+    """Phase 9: the bricks also carry mass-weighted velocity (gamma beta). Rule 2: Numba matches
+    the readable deposition; it equals gasgrid's box deposition on an aligned box; total
+    momentum sum(cell mass x velocity) = sum(m v); the pass grouping (memory) changes nothing."""
+    import nebula.render.bricks as bricks_mod
+
+    x, h, m, t = particles(300, seed=11)
+    v = np.random.default_rng(12).normal(0.0, 0.3, (len(h), 3))
+    lat = BrickLattice(dx=DX)
+    ref = deposit_bricks_reference(x, h, m, t, lat, v=v)
+    fast = deposit_bricks(x, h, m, t, lat, v=v)
+    check("bricks velocity: fast vs reference", ref.vel, fast.vel, rtol=1e-6, atol=1e-7)
+    p_ref = (ref.mass[..., None] * ref.vel.astype(float)).reshape(-1, 3).sum(axis=0)
+    check("bricks velocity: momentum conserved (float32 cells)", (m[:, None] * v).sum(axis=0),
+          p_ref, rtol=1e-5, atol=1e-5)  # fmt: skip
+    gg = deposit_box_reference(x, h, m, t, v, BOX)
+    mv = np.zeros((*BOX.shape, 3))
+    off = int(round(-BOX.lo[0] / DX))
+    bi, bj, bk = unpack_keys(ref.keys)
+    for s in range(len(ref.keys)):
+        a, b, c = (int(q) * BRICK + off for q in (bi[s], bj[s], bk[s]))
+        cell_mv = ref.mass[s][..., None] * ref.vel[s]
+        mv[a:a + BRICK, b:b + BRICK, c:c + BRICK] += cell_mv  # fmt: skip
+    check("bricks velocity = aligned box (mass x velocity per cell)",
+          gg.mass[..., None] * gg.vel.astype(float), mv, rtol=1e-5, atol=1e-6)  # fmt: skip
+    monkeypatch.setattr(bricks_mod, "PASS_BYTES", 1.0 * bricks_mod.N_CHUNKS * len(fast.keys)
+                        * BRICK**3 * 8)  # one field per pass  # fmt: skip
+    one = bricks_mod.deposit_bricks(x, h, m, t, lat, v=v)
+    check("bricks: one field per pass = all at once (mass)", fast.mass, one.mass, rtol=0, atol=0)
+    check("bricks: one field per pass = all at once (velocity)", fast.vel, one.vel, rtol=0,
+          atol=0)  # fmt: skip

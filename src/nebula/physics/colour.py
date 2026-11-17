@@ -132,3 +132,11 @@ def lut_chroma(t_k, log_t, log_chroma):
     i = np.minimum(pos.astype(int), len(log_t) - 2)
     f = (pos - i)[..., None]
     return np.exp(log_chroma[i] * (1.0 - f) + log_chroma[i + 1] * f)
+
+
+def blackbody_xyz_lut(t_k, log_t, log_chroma):
+    """XYZ of a blackbody [W m^-2 sr^-1] from the lookup table: chroma(T) sigma T^4 / pi
+    (phase-09 9.1). With T the observed temperature g T_em this is the observed light of gas
+    emitting as a blackbody at T_em (9.4: g^3 B_(nu/g)(T) = B_nu(g T), so no extra g^4)."""
+    t = np.asarray(t_k, float)
+    return lut_chroma(t, log_t, log_chroma) * bolometric_intensity_si(t)[..., None]

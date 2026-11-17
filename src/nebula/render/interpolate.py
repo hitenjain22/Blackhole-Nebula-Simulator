@@ -122,8 +122,12 @@ def load_snap(path, scalars=("h", "rho", "u")) -> Snap:
     )  # fmt: skip
 
 
-def state_at(a: Snap, b: Snap, t: float, eta: float = ETA_ORB, r_drop: float = 4.0):
-    """Gas at time t between snapshots a and b (a.t <= t <= b.t): (ids, x, scalars), float64.
+def state_at(
+    a: Snap, b: Snap, t: float, eta: float = ETA_ORB, r_drop: float = 4.0, with_p: bool = False
+):
+    """Gas at time t between snapshots a and b (a.t <= t <= b.t): (ids, x, scalars), float64;
+    with ``with_p`` (Phase 9: the gas velocity for Doppler colours) (ids, x, p, scalars), the
+    momenta advanced and cross-faded exactly like the positions.
 
     t = a.t returns snapshot a exactly; t = b.t returns b's positions for every particle still
     present in b."""
@@ -131,20 +135,25 @@ def state_at(a: Snap, b: Snap, t: float, eta: float = ETA_ORB, r_drop: float = 4
         raise ValueError(f"t = {t} not between {a.t} and {b.t}")
     frac = (t - a.t) / (b.t - a.t)
     w = fade_weight(frac)
-    xf, _, alive = advance(a.x, a.p, t - a.t, eta, r_drop)
+    xf, pf, alive = advance(a.x, a.p, t - a.t, eta, r_drop)
     pos = {k: j for j, k in enumerate(b.ids)}
     jb = np.array([pos.get(k, -1) for k in a.ids])
     both = jb >= 0
     x = xf
+    p = pf
     scal = {k: v.copy() for k, v in a.scalars.items()}
     for k in scal:
         scal[k][both] = (1.0 - frac) * a.scalars[k][both] + frac * b.scalars[k][jb[both]]
     if w > 0.0:
-        xb, _, alive_b = advance(b.x[jb[both]], b.p[jb[both]], t - b.t, eta, r_drop)
+        xb, pb, alive_b = advance(b.x[jb[both]], b.p[jb[both]], t - b.t, eta, r_drop)
         idx = np.nonzero(both)[0]
         use = alive_b
         x = x.copy()
         x[idx[use]] = (1.0 - w) * xf[idx[use]] + w * xb[use]
+        p = p.copy()
+        p[idx[use]] = (1.0 - w) * pf[idx[use]] + w * pb[use]
         alive[idx[use]] = True  # present in b: shown even if its forward path fell in
     keep = alive
+    if with_p:
+        return a.ids[keep], x[keep], p[keep], {k: v[keep] for k, v in scal.items()}
     return a.ids[keep], x[keep], {k: v[keep] for k, v in scal.items()}

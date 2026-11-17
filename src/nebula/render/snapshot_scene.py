@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from nebula.analysis.cloud_metrics import snapshot_temperature
+from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.bricks import deposit_bricks, fine_particles, texture_from_bricks
 from nebula.render.gasgrid import (
     R_SUPPORT,
@@ -32,7 +33,8 @@ def snapshot_textures(
     x, h = d["x"].astype(float), d["h"].astype(float)
     t = snapshot_temperature(eos, d["rho"].astype(float), d["u"].astype(float))
     m = np.full(len(h), mass)
-    v = d["p"].astype(float)
+    # Phase 9: grids carry the gas velocity as gamma beta in the static frame (phase-09 9.2)
+    v = gn_static_frame_velocity(x, d["p"].astype(float))[1]
     texs = textures_from_particles(x, h, m, t, v, grid, boxes)
     return texs, float(d["t"])
 
@@ -81,7 +83,9 @@ def textures_from_particles(x, h, m, t, v, grid=None, boxes=(), bricks=None) -> 
         fine = fine_particles(x, h, bricks, grid)
         rest = ~fine
         log = deposit_log(x[rest], h[rest], m[rest], t[rest], v[rest], grid)
-        bg = deposit_bricks(x[fine], h[fine], m[fine], t[fine], bricks)
+        # velocities only when there are any (Phase 9 colour); zeros skip the extra passes
+        vf = v[fine] if np.any(v) else None
+        bg = deposit_bricks(x[fine], h[fine], m[fine], t[fine], bricks, v=vf)
         return [texture_from_gasgrid(log), texture_from_bricks(bg, T_REF)]
     keep = ~inside_boxes(x, h, boxes) if boxes else np.ones(len(h), bool)
     texs = [texture_from_gasgrid(deposit_log(x[keep], h[keep], m[keep], t[keep], v[keep], grid))]
