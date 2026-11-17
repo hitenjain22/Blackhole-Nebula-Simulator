@@ -11,10 +11,11 @@ from pathlib import Path
 import numpy as np
 
 from nebula.analysis.cloud_metrics import snapshot_temperature
-from nebula.physics.colour import chroma_lut
+from nebula.physics.colour import chroma_lut, srgb_decode, srgb_encode
 from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.colour_data import load_cmf
-from nebula.render.director import FramePlan, Shot, Timeline
+from nebula.render.director import FramePlan, Shot, Timeline, fade_factor
+from nebula.render.frames import to_uint8
 from nebula.render.gas_frames import (
     Exposure,
     auto_gas_exposure,
@@ -23,7 +24,8 @@ from nebula.render.gas_frames import (
     compose_colour,
 )
 from nebula.render.gpu_march import OUT_COLOUR_PICTURE, OUT_PICTURE, render_gas, upload_scene
-from nebula.render.interpolate import load_snap, state_at
+from nebula.render.interpolate import load_snap
+from nebula.render.junctions import JunctionEaser, eased_state
 from nebula.render.march import GreyBlackbody, RelativisticBlackbody
 from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
 from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
@@ -115,6 +117,7 @@ class ShotRenderer:
         self.sky = sky if sky is not None else upload_cube_map(build_cube_map(StarFieldConfig()))
         self._snaps = {}
         self._runs = {}
+        self.easer = JunctionEaser(shot.sources, timeline, load_snap)  # joins between runs
         self.base = None
         self.adapt = np.zeros(len(plan.video_t))  # automatic exposure stops (adapt_exposure)
 
@@ -139,12 +142,10 @@ class ShotRenderer:
         k = min(max(int(np.searchsorted(times, t, side="right")) - 1, 0), len(times) - 2)
         a, b = self._snap(k), self._snap(k + 1)
         r_drop = 4.0  # accretion radius of every run so far (manifest config r_acc)
-        if self.colour:  # the gas velocity (gamma beta) feeds the Doppler colours
-            ids, x, p, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop, with_p=True)
-            v = gn_static_frame_velocity(x, p)[1]
-        else:
-            ids, x, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=r_drop)
-            v = np.zeros_like(x)
+        tc = min(max(t, a.t), b.t)
+        ids, x, p, s = eased_state(a, b, tc, self.easer.at(tc), r_drop=r_drop, with_p=True)
+        # the gas velocity (gamma beta) feeds the Doppler colours; grey ignores it
+        v = gn_static_frame_velocity(x, p)[1] if self.colour else np.zeros_like(x)
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
@@ -205,4 +206,8 @@ class ShotRenderer:
         # the cooling stream made the star field noisy and over-bright; orbit_pass draft 3).
         stops = float(self.plan.stops[i]) + float(self.adapt[i])
         exp = Exposure(self.base.gas * 2.0**stops, self.base.stars)
-        return (compose_colour if self.colour else compose)(self.picture(i), exp)
+        img = (compose_colour if self.colour else compose)(self.picture(i), exp)
+        fade = float(fade_factor(self.plan.video_t[i], self.plan.video_t[-1], self.shot.fade_out))
+        if fade < 1.0:  # end fade, in linear light so it darkens evenly (stars too)
+            img = to_uint8(srgb_encode(srgb_decode(img / 255.0) * fade))
+        return img

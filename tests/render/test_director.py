@@ -11,6 +11,7 @@ from nebula.render.director import (
     Shot,
     ShotError,
     Timeline,
+    fade_factor,
     plan_frames,
     smoothstep,
     spherical,
@@ -530,3 +531,32 @@ def test_colour_setting(runs):
     check("colour = true read", "true", shot.colour)
     with pytest.raises(ShotError, match="colour"):
         Shot.load(write_shot(tmp, head + '\ncolour = "orange"\n' + rest))
+
+
+def test_fade_out(runs):
+    """The end fade (Hiten 2026-11-17): brightness 1 until fade_out seconds before the last
+    frame, a smooth step down to exactly 0 on the last frame, never rising; fade_out = 0 (the
+    default) changes nothing; a negative or too long fade is refused."""
+    t = np.arange(0, 108 * 24) / 24.0
+    f = fade_factor(t, t[-1], 6.0)
+    start = t[-1] - 6.0
+    check("fade: 1 before it starts", np.ones(np.sum(t <= start)), f[t <= start])
+    check("fade: 0 on the last frame", 0.0, float(f[-1]))
+    check("fade: half way at the middle", 0.5, float(fade_factor(start + 3.0, t[-1], 6.0)),
+          atol=1e-12)  # fmt: skip
+    check("fade: never rises", True, bool(np.all(np.diff(f) <= 0)))
+    check("fade: smooth (largest frame-to-frame drop < 1/(fps x fade) x 1.5)", True,
+          bool(np.max(-np.diff(f)) < 1.5 / (24 * 6.0)))  # fmt: skip
+    check("fade: none when fade_out = 0", np.ones_like(t), fade_factor(t, t[-1], 0.0))
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    check("fade_out default", 0.0, Shot.load(write_shot(tmp, plain)).fade_out)
+    head, rest = plain.split("\n", 1)
+    check(
+        "fade_out read",
+        1.5,
+        Shot.load(write_shot(tmp, head + "\nfade_out = 1.5\n" + rest)).fade_out,
+    )
+    for bad in ("-1.0", "2.5"):  # negative, or longer than the 2 s test shot
+        with pytest.raises(ShotError, match="fade_out"):
+            Shot.load(write_shot(tmp, head + f"\nfade_out = {bad}\n" + rest))

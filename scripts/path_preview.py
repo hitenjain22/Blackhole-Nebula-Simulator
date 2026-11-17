@@ -4,7 +4,10 @@ fraction of a second per frame, so a path can be tried and changed in minutes). 
 camera paths only; the real look comes from scripts/render_trailer.py.
 
     uv run python scripts/path_preview.py configs/shots/continuous.toml [scale=1] [every=1]
-        [tag=]
+        [tag=] [from=SECONDS] [adapt=1]
+
+from: start the preview at this video time; adapt=1: the brightness scale follows the gas
+slowly (~1 s) instead of being fixed by the first frame (long shots whose gas spreads out).
 
 Writes outputs/checks/path_<shot>[_tag].mp4, a frame sheet path_<shot>[_tag]_sheet.png, and
 prints the director's camera checks (nearest gas, camera inside gas)."""
@@ -20,6 +23,7 @@ from scipy.ndimage import gaussian_filter
 from nebula.analysis.cloud_metrics import snapshot_temperature
 from nebula.render.director import CODE_DAY, Shot, Timeline, plan_frames
 from nebula.render.interpolate import load_snap, state_at
+from nebula.render.junctions import JunctionEaser, eased_state
 from nebula.render.shot_render import camera_gas_clearance
 from nebula.render.snapshot_scene import run_eos_and_mass
 from nebula.render.video import write_video
@@ -104,7 +108,11 @@ def frame(cam, x, temp, w, h, level):
 
 def _blend(a, b, t):
     """Positions blended linearly between snapshots a and b for particles in both (others from
-    a); scalars from a. Preview only: gas swinging round the hole moves on curves."""
+    a); scalars from a. Preview only: gas swinging round the hole moves on curves. Gas going
+    most of an orbit between snapshots (the ring at r ~50: period 0.54 day, dumps every 0.5
+    day) is cut across the circle, so the ring seems to shrink by ~14% and spring back at every
+    snapshot (2026-11-17); the renderer's state_at follows the orbits and has no such pulse
+    (exact=1 shows that here, slowly)."""
     f = min(max((t - a.t) / (b.t - a.t), 0.0), 1.0)
     pos = {k: j for j, k in enumerate(b.ids)}
     jb = np.array([pos.get(k, -1) for k in a.ids])
@@ -129,9 +137,12 @@ def main():
               "frames")  # fmt: skip
     w, h = 2 * round(shot.width * scale / 2), 2 * round(shot.height * scale / 2)
     snaps, eos_mass = {}, {}
+    easer = JunctionEaser(shot.sources, timeline, load_snap)
     level = None
     frames, sheet, low_frames = [], [], []
-    idx = range(0, len(plan.video_t), every)
+    start = int(round(float(o.get("from", 0)) * shot.fps))
+    adapt = o.get("adapt", "0") == "1"
+    idx = range(start, len(plan.video_t), every)
     t0 = time.perf_counter()
     for n, i in enumerate(idx):
         t = float(plan.sim_t[i])
@@ -143,7 +154,10 @@ def main():
         for old in [kk for kk in snaps if kk < k]:
             del snaps[old]
         a, b = snaps[k], snaps[k + 1]
-        if o.get("exact", "0") == "1":  # orbit-advanced in-betweens (slow near the hole)
+        junction = easer.at(t)
+        if junction is not None:  # eased join between two runs (render.junctions)
+            _, x, s = eased_state(a, b, min(max(t, a.t), b.t), junction, r_drop=4.0)
+        elif o.get("exact", "0") == "1":  # orbit-advanced in-betweens (slow near the hole)
             _, x, s = state_at(a, b, min(max(t, a.t), b.t), r_drop=4.0)
         else:  # straight blend between the two snapshots: enough to judge a camera path
             x, s = _blend(a, b, t)
@@ -157,7 +171,12 @@ def main():
         gx, gy = cam.pixel_of_direction(rel[fr] / np.linalg.norm(rel[fr], axis=1)[:, None])
         if ((gx >= 0) & (gx < w) & (gy >= 0) & (gy < h)).sum() < 0.1 * len(x) and n % 6 == 0:
             low_frames.append(f"{plan.video_t[i]:.1f}")
-        if level is None:  # one brightness scale for the whole video (no pumping)
+        if adapt:  # the scale follows the gas slowly (~1 s), for long shots whose gas spreads
+            _, peak = frame(cam, x, temp, w, h, 0.0)
+            want = np.log10(max(peak, 1.0)) + 0.3
+            k_ema = 1.0 - np.exp(-every / shot.fps)  # 1 s time constant
+            level = want if level is None else level + k_ema * (want - level)
+        elif level is None:  # one brightness scale for the whole video (no pumping)
             _, peak = frame(cam, x, temp, w, h, 0.0)
             level = np.log10(peak) + 0.3
         img, _ = frame(cam, x, temp, w, h, level)

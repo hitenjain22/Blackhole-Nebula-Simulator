@@ -17,6 +17,8 @@ Shot file layout (all times in video seconds unless named ``day``):
     [[sources]]
     run = "dense_B192"          # e.g. a dense re-run of the hero stretch
     from_day = 96.385
+    ease_days = 0.3             # optional: a different run from the one before; spread the
+                                # jump between them over this many days (render.junctions)
 
     [targets.stream]            # named moving targets (besides "hole" and [x, y, z] points)
     type = "group"              # centre of the n particles nearest the hole at pick_day
@@ -220,6 +222,7 @@ class Shot:
     bricks: dict | None = None
     auto_exposure: dict | None = None
     colour: str = "grey"
+    fade_out: float = 0.0  # seconds: the whole picture fades to black at the end (fade_factor)
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -249,6 +252,7 @@ class Shot:
             bricks=d.get("bricks"),
             auto_exposure=d.get("auto_exposure"),
             colour=str(d.get("colour", "grey")),
+            fade_out=float(d.get("fade_out", 0.0)),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -258,6 +262,11 @@ class Shot:
             raise ShotError("duration and fps must be positive")
         if self.colour not in ("grey", "true"):
             raise ShotError(f'colour = {self.colour!r}: use "grey" or "true"')
+        for src in self.sources:
+            if float(src.get("ease_days", 0.0)) < 0:
+                raise ShotError(f"[[sources]] {src.get('run')!r}: ease_days must be >= 0")
+        if not 0.0 <= self.fade_out <= self.duration:
+            raise ShotError(f"fade_out = {self.fade_out}: must be between 0 and the duration")
         try:
             self.log_grid()
         except TypeError as e:
@@ -318,6 +327,16 @@ class Shot:
                 tgt = k.get(role, "hole")
                 if isinstance(tgt, str) and tgt != "hole" and tgt not in self.targets:
                     raise ShotError(f"[[camera]] at t = {k['t']}: unknown target {tgt!r}")
+
+
+def fade_factor(video_t, t_last: float, fade_out: float) -> np.ndarray:
+    """Brightness multiplier of the end fade (Hiten 2026-11-17: the video ends by fading to
+    black): 1 until t_last - fade_out, then a smooth step (3u^2 - 2u^3) down to 0 at t_last,
+    the last frame's time. fade_out = 0: no fade."""
+    t = np.asarray(video_t, float)
+    if fade_out <= 0:
+        return np.ones_like(t)
+    return smoothstep((t_last - t) / fade_out)
 
 
 @dataclass
