@@ -223,6 +223,7 @@ class Shot:
     auto_exposure: dict | None = None
     colour: str = "grey"
     fade_out: float = 0.0  # seconds: the whole picture fades to black at the end (fade_factor)
+    opacity: str = "constant"  # true colour: "constant" (kappa) or "thermal" (march.py)
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -253,6 +254,7 @@ class Shot:
             auto_exposure=d.get("auto_exposure"),
             colour=str(d.get("colour", "grey")),
             fade_out=float(d.get("fade_out", 0.0)),
+            opacity=str(d.get("opacity", "constant")),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -265,6 +267,10 @@ class Shot:
         for src in self.sources:
             if float(src.get("ease_days", 0.0)) < 0:
                 raise ShotError(f"[[sources]] {src.get('run')!r}: ease_days must be >= 0")
+        if self.opacity not in ("constant", "thermal"):
+            raise ShotError(f'opacity = {self.opacity!r}: use "constant" or "thermal"')
+        if self.opacity == "thermal" and self.colour != "true":
+            raise ShotError('opacity = "thermal" needs colour = "true"')
         if not 0.0 <= self.fade_out <= self.duration:
             raise ShotError(f"fade_out = {self.fade_out}: must be between 0 and the duration")
         try:

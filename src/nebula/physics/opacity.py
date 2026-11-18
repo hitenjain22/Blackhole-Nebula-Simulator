@@ -51,3 +51,38 @@ def kappa_eff_si(kappa_abs, kappa_es):
 def optical_depth(kappa, rho_si, length_m):
     """tau = kappa rho L (dimensionless)."""
     return np.asarray(kappa) * np.asarray(rho_si) * np.asarray(length_m)
+
+
+def thermal_absorption_si(rho_si, t_k, x_h: float = units.X_HYDROGEN, z: float = units.Z_METALS):
+    """Thermalizing absorption coefficient of hot gas [1/m] (phase-09 9.4 option 1):
+
+        alpha = kappa_eff rho,  kappa_eff = sqrt(kappa_ff (kappa_ff + kappa_es)),
+        kappa_ff = Kramers free-free (kappa_ff_si), kappa_es = 0.02 (1 + X) m^2/kg
+
+    rho in kg/m^3, T in K (the gas's own frame). kappa_ff grows as rho T^(-7/2), so thin hot
+    gas is nearly transparent while dense gas stays opaque. Sources as the module docstring
+    (Carroll & Ostlie §9.2; Rybicki & Lightman 1979 §1.7 for the effective opacity)."""
+    rho = np.asarray(rho_si, float)
+    return kappa_eff_si(kappa_ff_si(rho, t_k, x_h, z), kappa_es_si(x_h)) * rho
+
+
+def thermal_absorption_code(rho_code, t_k, gas_units: units.GasUnits | None = None):
+    """thermal_absorption_si in code units: rho in code density, T in K, alpha in 1 / (GM/c^2).
+    The rule-4 wrapper (units.GasUnits converts density in and length out; default: the runs'
+    gas units, units.GasUnits())."""
+    gas_units = gas_units or units.GasUnits()
+    return thermal_absorption_si(gas_units.density_to_si(rho_code), t_k) * gas_units.bh.length_m
+
+
+def thermal_absorption_constants(gas_units: units.GasUnits | None = None):
+    """(c_es, q_ff) of the same alpha in the form the renderer evaluates (march.py and the WGSL
+    colour shader mirror thermal_absorption_code with them):
+
+        alpha = c_es rho sqrt(q (1 + q)),  q = kappa_ff / kappa_es = q_ff rho T^(-7/2)
+
+    with rho in code density and alpha in 1 / (GM/c^2). Both constants fit float32."""
+    gas_units = gas_units or units.GasUnits()
+    d, length = gas_units.density_kg_m3, gas_units.bh.length_m
+    k_es = kappa_es_si()
+    k_ff = float(kappa_ff_si(d, 1.0))  # kappa_ff at rho = 1 code density, T = 1 K
+    return k_es * d * length, k_ff / k_es

@@ -43,7 +43,7 @@ struct GasParams {
     brick_lo: vec4<f32>, // box holding the bricks' home regions (BrickTexture.box_lo/hi)
     brick_hi: vec4<f32>,
     colour: vec4<f32>,  // 1 = Phase 9 colour, LUT ln T_0, LUT d ln T, LUT entries
-    colour2: vec4<f32>, // -, max |gamma beta| (march.GB_MAX), min rho (RHO_MIN_COLOUR), -
+    colour2: vec4<f32>, // q_ff (0: constant kappa), max |gamma beta| (march.GB_MAX), min rho (RHO_MIN_COLOUR), c_es
 };
 @group(0) @binding(3) var log_tex: texture_3d<f32>;
 @group(0) @binding(4) var box0_tex: texture_3d<f32>;
@@ -476,10 +476,18 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
                 let doppler = sqrt(1.0 + dot(gb, gb)) - dot(gb, n_light);
                 // camera factor sqrt(1 - 2/r_cam) from the camera itself (it moves per frame)
                 let g = lapse / sqrt(1.0 - 2.0 / length(cam.pos.xyz)) / doppler;
-                let dtau = alpha * path * doppler;
                 let t_em = T_REF_F * sqrt(sqrt(f.y / f.x));
                 let g2 = g * g;
-                let bol_dtau = g2 * g2 * gas.model.y * f.y * gas.model.x * path * doppler;
+                // opacity "thermal" when gas.colour2.x > 0: physics.opacity.
+                // thermal_absorption_code in the form of thermal_absorption_constants:
+                // alpha = c_es rho sqrt(q (1 + q)), q = q_ff rho T^(-7/2), T in K. Written
+                // without a branch or exp/log (a first version with both hung the Iris Plus, AI_LOG).
+                let t_m35 = 1.0 / (t_em * t_em * t_em * sqrt(t_em));
+                let q = gas.colour2.x * f.x * t_m35;
+                let th = select(0.0, 1.0, gas.colour2.x > 0.0);
+                let alpha_g = mix(alpha, gas.colour2.w * f.x * sqrt(q * (1.0 + q)), th);
+                let dtau = alpha_g * path * doppler;
+                let bol_dtau = g2 * g2 * gas.model.y * (f.y / f.x) * dtau;
                 let w = st.transmission * bol_dtau * one_minus_exp_over_x(dtau);
                 st.intensity += w * vec4<f32>(lut_chroma(g * t_em), 1.0);
                 st.transmission *= exp(-dtau);

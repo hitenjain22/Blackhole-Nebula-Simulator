@@ -560,3 +560,17 @@ def test_fade_out(runs):
     for bad in ("-1.0", "2.5"):  # negative, or longer than the 2 s test shot
         with pytest.raises(ShotError, match="fade_out"):
             Shot.load(write_shot(tmp, head + f"\nfade_out = {bad}\n" + rest))
+
+
+def test_opacity_setting(runs):
+    """opacity = "thermal" (phase-09 9.4 option 1) is read for true colour; default constant;
+    unknown values and thermal without true colour are refused."""
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    head, rest = plain.split("\n", 1)
+    check("opacity default", "constant", Shot.load(write_shot(tmp, plain)).opacity)
+    shot = Shot.load(write_shot(tmp, head + '\ncolour = "true"\nopacity = "thermal"\n' + rest))
+    check("opacity thermal read", "thermal", shot.opacity)
+    for bad in ('\ncolour = "true"\nopacity = "fog"\n', '\nopacity = "thermal"\n'):
+        with pytest.raises(ShotError, match="opacity"):
+            Shot.load(write_shot(tmp, head + bad + rest))

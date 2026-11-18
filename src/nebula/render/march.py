@@ -32,6 +32,7 @@ import numpy as np
 
 from nebula.physics.colour import blackbody_xyz_lut, bolometric_intensity_si
 from nebula.physics.geodesics import schw_static_proper_length
+from nebula.physics.opacity import thermal_absorption_code
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
     grey_absorption,
@@ -121,13 +122,26 @@ class RelativisticBlackbody:
     kappa rho ds_static (gamma - gamma beta . n) (physics.redshift.gas_frame_path_factor).
     Channels: CIE X, Y, Z and the bolometric intensity sigma (g T)^4 / pi [W m^-2 sr^-1].
 
-    log_t, log_chroma: the colour table of physics.colour.chroma_lut."""
+    log_t, log_chroma: the colour table of physics.colour.chroma_lut.
+
+    opacity: "constant" (kappa rho, phase-09 9.4 option 2; Phase 8's tuned look) or "thermal"
+    (option 1: physics.opacity.thermal_absorption_code, free-free + electron scattering at the
+    gas's own temperature; kappa is then unused). Hiten 2026-11-17: "thermal" clears the glow of
+    thin gas round the ring (DECISIONS)."""
 
     kappa: float
     r_cam: float
     log_t: np.ndarray
     log_chroma: np.ndarray
-    relativistic = True  # march_segment: sample velocities and pass the light direction
+    opacity: str = "constant"
+    relativistic = True
+
+    def __post_init__(self):
+        if self.opacity not in ("constant", "thermal"):
+            raise ValueError(
+                f'opacity = {self.opacity!r}: use "constant" or "thermal"'
+            )  # march_segment: sample velocities and pass the light direction
+
     channels = 4
 
     def source_and_dtau(self, mid, e, rho, rho_t4, rho_gb, path_static):
@@ -145,11 +159,11 @@ class RelativisticBlackbody:
         if t_obs > 0.0:
             src[:3] = blackbody_xyz_lut(t_obs, self.log_t, self.log_chroma)
             src[3] = bolometric_intensity_si(t_obs)
-        dtau = (
-            grey_absorption(rho, self.kappa)
-            * path_static
-            * float(gas_frame_path_factor(gb, n_light))
-        )
+        if self.opacity == "thermal":
+            alpha = float(thermal_absorption_code(rho, t_em))
+        else:
+            alpha = float(grey_absorption(rho, self.kappa))
+        dtau = alpha * path_static * float(gas_frame_path_factor(gb, n_light))
         return src, dtau
 
 

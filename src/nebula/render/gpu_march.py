@@ -17,6 +17,7 @@ import numpy as np
 import wgpu
 
 from nebula import units
+from nebula.physics.opacity import thermal_absorption_constants
 from nebula.render.bricks import BRICK, BrickTexture, pack_keys, unpack_keys
 from nebula.render.camera import Camera
 from nebula.render.device import TileTimings, get_device, load_shader, run_tiled, uniform_buffer
@@ -203,12 +204,17 @@ def _box_params(tex: Texture | None) -> tuple[np.ndarray, np.ndarray]:
 
 def _colour_params(model) -> bytes:
     """GasParams.colour, .colour2: colour mode on/off, the colour table's ln T grid, the
-    |gamma beta| cap and the smallest density treated as gas (march.GB_MAX, RHO_MIN_COLOUR)."""
+    |gamma beta| cap and the smallest density treated as gas (march.GB_MAX, RHO_MIN_COLOUR), and
+    for opacity = "thermal" the absorption constants (q_ff in .colour2.x, c_es in .colour2.w;
+    0 = constant kappa)."""
     c = np.zeros(8, np.float32)
     if isinstance(model, RelativisticBlackbody):
         lt = np.asarray(model.log_t, float)
         c[0], c[1], c[2], c[3] = 1.0, lt[0], (lt[-1] - lt[0]) / (len(lt) - 1), len(lt)
         c[5], c[6] = GB_MAX, RHO_MIN_COLOUR
+        if model.opacity == "thermal":  # physics.opacity.thermal_absorption_constants
+            c_es, q_ff = thermal_absorption_constants()
+            c[4], c[7] = q_ff, c_es
     return c.tobytes()
 
 

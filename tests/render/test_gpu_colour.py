@@ -148,3 +148,22 @@ def test_colour_subnormal_density_residues(lut):
     check("subnormal residues: every pixel finite", True, bool(np.all(np.isfinite(gpu))))
     check("subnormal residues: same image as without them", clean[..., :5], gpu[..., :5],
           rtol=1e-6, atol=0.0)  # fmt: skip
+
+
+def test_13_gpu_matches_cpu_thermal_opacity(lut):
+    """Test 13 with opacity = "thermal" (physics.opacity.thermal_absorption_code; the shader's
+    copy uses thermal_absorption_constants): the real snapshot, 256 pixels, X, Y, Z and
+    bolometric within 1e-3 relative."""
+    if not (REAL_RUN / "snapshots" / f"snap_{REAL_SNAP:05d}.npz").exists():
+        pytest.skip(f"run {REAL_RUN.name} not on this machine")
+    from nebula.render.snapshot_scene import snapshot_textures
+
+    textures, _ = snapshot_textures(REAL_RUN, REAL_SNAP)
+    model = RelativisticBlackbody(kappa=REAL_KAPPA, r_cam=float(np.linalg.norm(REAL_CAM.position)),
+                                  log_t=lut[0], log_chroma=lut[1], opacity="thermal")  # fmt: skip
+    gpu, timings = render_gas(REAL_CAM, upload_scene(textures, model), n_sub=1,
+                              out_mode=OUT_COLOUR)  # fmt: skip
+    pixels = [(i, j) for j in range(1, 64, 4) for i in range(2, 64, 4)]
+    _compare("real snapshot, thermal opacity", REAL_CAM, textures, model, pixels, gpu)
+    check("thermal GPU: every pixel finite", True, bool(np.all(np.isfinite(gpu))))
+    check("thermal GPU: slowest tile < 1 s", True, timings.max < 1.0)

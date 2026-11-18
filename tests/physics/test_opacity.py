@@ -37,3 +37,37 @@ def test_effective_opacity_limits_and_torus_estimate():
         f"tau_eff over H = {tau:.1f}"
     )
     check("torus tau_eff: 'a few to ~15' (phase-06 6.2, free-free only)", True, 1.0 < tau < 15.0)
+
+
+def test_thermal_absorption():
+    """phase-09 9.4 option 1: alpha = sqrt(kappa_ff (kappa_ff + kappa_es)) rho. Limits: dense
+    cool gas (kappa_ff >> kappa_es) -> kappa_ff rho, proportional to rho^2 T^-3.5; thin hot gas
+    (kappa_ff << kappa_es) -> sqrt(kappa_ff kappa_es) rho, proportional to rho^1.5 T^-1.75.
+    The code-unit wrapper and the renderer's two-constant form give the same alpha."""
+    from nebula.physics.opacity import (
+        thermal_absorption_code,
+        thermal_absorption_constants,
+        thermal_absorption_si,
+    )
+
+    kes = kappa_es_si()
+    rho, t = 1.0, 1e4  # dense and cool: kappa_ff / kappa_es ~ 1e6
+    kff = kappa_ff_si(rho, t)
+    check("thermal alpha, free-free limit", kff * rho, thermal_absorption_si(rho, t), rtol=1e-6)
+    rho, t = 1e-9, 1e6  # thin and hot: kappa_ff / kappa_es ~ 1e-17
+    kff = kappa_ff_si(rho, t)
+    check("thermal alpha, scattering limit", np.sqrt(kff * kes) * rho,
+          thermal_absorption_si(rho, t), rtol=1e-6)  # fmt: skip
+    a1 = thermal_absorption_si(1e-9, 1e6)
+    check("thermal alpha, thin limit scales as rho^1.5", a1 * 10**1.5,
+          thermal_absorption_si(1e-8, 1e6), rtol=1e-6)  # fmt: skip
+    gu = units.GasUnits()
+    rho_c = np.array([8e-6, 1e-8, 9e-10, 1e-4])
+    t_k = np.array([2.4e5, 1e5, 1e4, 1e3])
+    want = thermal_absorption_si(gu.density_to_si(rho_c), t_k) * gu.bh.length_m
+    check("thermal alpha, code wrapper", want, thermal_absorption_code(rho_c, t_k), rtol=1e-12)
+    c_es, q_ff = thermal_absorption_constants()
+    q = q_ff * rho_c * t_k**-3.5
+    check("thermal alpha, renderer's form c_es rho sqrt(q (1 + q))", want,
+          c_es * rho_c * np.sqrt(q * (1 + q)), rtol=1e-12)  # fmt: skip
+    check("thermal constants fit float32", True, bool(1e-30 < c_es < 1e30 and 1e-30 < q_ff < 1e30))

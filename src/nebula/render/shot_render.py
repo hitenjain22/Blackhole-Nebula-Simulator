@@ -110,7 +110,7 @@ class ShotRenderer:
             lam, cmf = load_cmf()
             lt, lc = chroma_lut(1e3, 1e8, 4096, lam, cmf)
             self.model = RelativisticBlackbody(kappa=shot.kappa, r_cam=float("inf"), log_t=lt,
-                                               log_chroma=lc)  # fmt: skip
+                                               log_chroma=lc, opacity=shot.opacity)  # fmt: skip
         else:
             self.model = GreyBlackbody(kappa=shot.kappa)
         self.grid = shot.log_grid()  # same grid settings every frame (8.8: no flicker)

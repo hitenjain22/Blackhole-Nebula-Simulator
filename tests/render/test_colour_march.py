@@ -120,3 +120,39 @@ def test_12b_bright_side_near_hole(lut):
     xa, ya = chromaticity(app[:3])
     xr, yr = chromaticity(rec[:3])
     check("near ring: approaching side bluer (smaller x and y)", True, xa < xr and ya < yr)
+
+
+def test_thermal_opacity_semitransparent_shell(lut):
+    """opacity = "thermal" (phase-09 9.4 option 1): a static shell of uniform gas (r 950-1050,
+    T = 1e5 K) with density set so its radial optical depth is ~1, seen along a radial ray from
+    r = 1e5. Transmission = exp(-alpha L), alpha = physics.opacity.thermal_absorption_code and
+    L = integral dr / sqrt(1 - 2/r) (static radial length); bolometric = sigma (g T)^4 / pi
+    (1 - transmission), g = sqrt(1 - 2/1000) / sqrt(1 - 2/1e5) (g varies by 1e-4 over the
+    shell). 2%: the shell's edges are smoothed over one cell by the trilinear sampling."""
+    from scipy.integrate import quad
+    from scipy.optimize import brentq
+
+    from nebula.physics.opacity import thermal_absorption_code
+
+    t_gas = 1e5
+    length = quad(lambda r: 1.0 / np.sqrt(1.0 - 2.0 / r), 950.0, 1050.0)[0]
+    rho0 = brentq(lambda rho: thermal_absorption_code(rho, t_gas) * length - 1.0, 1e-14, 1.0)
+    g = LogSphericalGrid(r_min=900.0, r_max=1100.0, nr=400, nth=8, nph=16)
+    rc = g.r_centres()[:, None, None] * np.ones(g.shape)
+    rho = np.where((rc > 950.0) & (rc < 1050.0), rho0, 0.0)
+    tex = texture_from_fields(g, rho, np.full(g.shape, t_gas))
+    d_cam = 1e5
+    cam = np.array([d_cam, 0.0, 0.0])
+    model = RelativisticBlackbody(kappa=1.0, r_cam=d_cam, log_t=lut[0], log_chroma=lut[1],
+                                  opacity="thermal")  # fmt: skip
+    i, trans, _, _ = march_bent_ray([tex], model, cam, np.array([-1.0, 0.0, 0.0]))
+    want_t = np.exp(-thermal_absorption_code(rho0, t_gas) * length)
+    gfac = np.sqrt(1 - 2 / 1000.0) / np.sqrt(1 - 2 / d_cam)
+    want_i = float(bolometric_intensity_si(gfac * t_gas)) * (1 - want_t)
+    print(f"   shell density {rho0:.3e} (code), alpha {thermal_absorption_code(rho0, t_gas):.3e}")
+    check("thermal shell: transmission exp(-alpha L)", want_t, trans, rtol=0.02)
+    check("thermal shell: bolometric sigma (g T)^4 / pi (1 - transmission)", want_i, float(i[3]),
+          rtol=0.02)  # fmt: skip
+    with pytest.raises(ValueError, match="opacity"):
+        RelativisticBlackbody(kappa=1.0, r_cam=d_cam, log_t=lut[0], log_chroma=lut[1],
+                              opacity="fog")  # fmt: skip

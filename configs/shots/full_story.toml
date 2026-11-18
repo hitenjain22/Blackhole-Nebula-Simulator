@@ -7,6 +7,9 @@
 # (designed with scripts/path_preview.py); sources switch to dense_P188 when it is on the Mac.
 name = "full_story"
 colour = "true"
+# physical absorption (free-free + electron scattering at the gas temperature; phase-09 9.4
+# option 1): thin hot gas turns nearly transparent, which clears the fog round the ring
+opacity = "thermal"
 # Draft 1 (2026-11-17): the approved continuous shot (0-50 s) continued into the ring
 # (DECISIONS 2026-11-17): B the long wait (50-60 s), C the crash (60-78 s), D the ring
 # (78-98 s), then a slow pull back and around to 108 s, fading to black.
