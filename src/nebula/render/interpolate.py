@@ -10,7 +10,8 @@ gas sweeps 60 deg in a sixth of an orbit), so each particle is moved along its o
   dt is moving (x, -p) forward by dt and flipping p back);
 - positions follow the forward state and cross-fade to the backward state over the last
   ``FADE`` (20%) of each interval (smoothstep weight), so there is no jump at the next
-  snapshot; scalars (h, rho, u) are blended linearly between the two snapshots;
+  snapshot; the cross-fade blends length and direction separately (blend_vectors), so it
+  never cuts through the hole; scalars (h, rho, u) are blended linearly between the two snapshots;
 - particles missing from the next snapshot (swallowed) follow their orbit until they cross
   ``r_drop`` (the run's accretion radius) and are then dropped; a particle whose backward path
   crosses r_drop keeps its forward position.
@@ -103,6 +104,30 @@ def fade_weight(a: float) -> float:
     return float(smoothstep((a - (1.0 - FADE)) / FADE))
 
 
+def blend_vectors(u, v, w):
+    """Cross-fade of 3-vectors u -> v (rows) by weight w (scalar or per row): the length
+    blended linearly and the direction turned along the great circle (slerp). A straight blend
+    of two positions on opposite sides of the hole cuts through it (R6.6 day 288.6: forward
+    r = 35, backward r = 16, blend r = 1.28, inside the horizon; AI_LOG 2026-11-18); this one
+    never comes closer than the nearer of the two. w = 0 gives u and w = 1 gives v exactly."""
+    u, v = np.asarray(u, float), np.asarray(v, float)
+    w = np.broadcast_to(np.asarray(w, float).reshape(-1, 1) if np.ndim(w) else w, (len(u), 1))
+    lu, lv = np.linalg.norm(u, axis=1, keepdims=True), np.linalg.norm(v, axis=1, keepdims=True)
+    du, dv = u / np.maximum(lu, 1e-300), v / np.maximum(lv, 1e-300)
+    om = np.arccos(np.clip(np.sum(du * dv, axis=1, keepdims=True), -1.0, 1.0))
+    so = np.sin(om)
+    ok = so > 1e-9
+    ca = np.where(ok, np.sin((1.0 - w) * om) / np.where(ok, so, 1.0), 1.0 - w)
+    cb = np.where(ok, np.sin(w * om) / np.where(ok, so, 1.0), w)
+    d = ca * du + cb * dv
+    flip = ~ok & (om > 1.0)  # exactly opposite: no unique great circle, take the nearer end
+    d = np.where(flip, np.where(w < 0.5, du, dv), d)
+    d /= np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-300)
+    out = ((1.0 - w) * lu + w * lv) * d
+    out = np.where(w <= 0.0, u, out)
+    return np.where(w >= 1.0, v, out)
+
+
 @dataclass
 class Snap:
     """One snapshot's particles (float64): time t, ids, x, p, and scalars (dict of arrays)."""
@@ -148,10 +173,15 @@ def state_at(
         xb, pb, alive_b = advance(b.x[jb[both]], b.p[jb[both]], t - b.t, eta, r_drop)
         idx = np.nonzero(both)[0]
         use = alive_b
+        # a forward path that fell in (frozen at r_drop) is not a place the particle was: the
+        # straight blend to the backward state on the far side would cut through the hole
+        # (r = 1.28 at day 288.6 of R6.6, NaN velocities inside r = 2; AI_LOG 2026-11-18), so
+        # such particles take the backward state alone
+        wu = np.where(alive[idx[use]], w, 1.0)
         x = x.copy()
-        x[idx[use]] = (1.0 - w) * xf[idx[use]] + w * xb[use]
+        x[idx[use]] = blend_vectors(xf[idx[use]], xb[use], wu)
         p = p.copy()
-        p[idx[use]] = (1.0 - w) * pf[idx[use]] + w * pb[use]
+        p[idx[use]] = blend_vectors(pf[idx[use]], pb[use], wu)
         alive[idx[use]] = True  # present in b: shown even if its forward path fell in
     keep = alive
     if with_p:

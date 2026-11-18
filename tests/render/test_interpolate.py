@@ -11,6 +11,7 @@ from nebula.render.interpolate import (
     FADE,
     Snap,
     advance,
+    blend_vectors,
     fade_weight,
     load_snap,
     state_at,
@@ -97,6 +98,57 @@ def test_swallowed_particle_is_dropped():
     gone_late = 0 not in state_at(a, b, 1999.0)[0]
     check("plunging particle shown early, dropped after crossing r_drop", (True, True),
           (shown_early, gone_late))  # fmt: skip
+
+
+def test_fallen_forward_path_never_crosses_the_hole():
+    """A particle present in both snapshots whose forward path falls in while its backward path
+    does not (gas pushed out by pressure in the run; the orbit-only forward path plunges). As
+    in R6.6 frame 2016 (AI_LOG 2026-11-18): the old straight blend of the frozen forward state
+    and the backward state on the far side put it at r = 1.28, inside the horizon. It must stay
+    outside r_drop at every frame and take the backward state alone in the fade window."""
+    dt = 2000.0
+    xa, pa = np.array([[30.0, 0.0, 0.0]]), np.array([[0.0, 0.02, 0.0]])  # plunges forward
+    xb, pb = np.array([[-40.0, 5.0, 0.0]]), np.array([[0.0, -0.158, 0.0]])  # ~circular at 40
+    ids = np.arange(1)
+    a = Snap(0.0, ids, xa, pa, {"h": np.ones(1)})
+    b = Snap(dt, ids, xb, pb, {"h": np.ones(1)})
+    check("set-up: forward path falls in", False, bool(advance(xa, pa, dt)[2][0]))
+    r_min, worst = np.inf, 0.0
+    for t in np.linspace(0.0, dt, 201):
+        out_ids, x, p, _ = state_at(a, b, t, with_p=True)
+        if len(out_ids):
+            r_min = min(r_min, float(np.linalg.norm(x[0])))
+        if fade_weight(t / dt) > 0.0:
+            back = advance(xb, pb, t - dt)  # backward from b
+            worst = max(worst, float(np.abs(x[0] - back[0][0]).max()))
+            worst = max(worst, float(np.abs(p[0] - back[1][0]).max()))
+    check("fallen forward path: closest approach >= r_drop 4", True, r_min >= 4.0)
+    check("fallen forward path: backward state alone in the fade window", 0.0, worst, atol=1e-12)
+
+
+def test_blend_never_cuts_through_the_hole():
+    """blend_vectors: exact ends; for two positions on opposite sides of the hole (R6.6 frame
+    2016: forward r = 35, backward r = 16 at 160 deg) the blend stays at r >= 16 where the
+    straight blend reached r = 1.28 (AI_LOG 2026-11-18); for nearby points (the usual case)
+    it is the straight blend to second order."""
+    rng = np.random.default_rng(3)
+    u = np.array([[35.0, 0.0, 0.0]])
+    v = 16.0 * np.array([[np.cos(np.radians(160)), np.sin(np.radians(160)), 0.0]])
+    ws = np.linspace(0.0, 1.0, 1001)
+    r = [float(np.linalg.norm(blend_vectors(u, v, w))) for w in ws]
+    straight = [float(np.linalg.norm((1 - w) * u + w * v)) for w in ws]
+    print(f"    closest approach: blend {min(r):.2f}, straight {min(straight):.2f}")
+    check("blend: closest approach >= nearer end (16)", True, min(r) >= 16.0 - 1e-9)
+    check("blend: w = 0 is the first vector", u, blend_vectors(u, v, 0.0), atol=0.0, rtol=0.0)
+    check("blend: w = 1 is the second vector", v, blend_vectors(u, v, 1.0), atol=0.0, rtol=0.0)
+    a = rng.normal(0, 100, (500, 3))
+    b = a + rng.normal(0, 0.5, (500, 3))  # forward and backward states 0.5 apart at r ~ 170
+    w = rng.uniform(0, 1, 500)
+    near = blend_vectors(a, b, w) - ((1 - w)[:, None] * a + w[:, None] * b)
+    check("blend: nearby points = straight blend (|diff| < 0.01)", True,
+          float(np.abs(near).max()) < 0.01)  # fmt: skip
+    check("blend: exactly opposite is finite", True,
+          bool(np.isfinite(blend_vectors(u, -u, 0.5)).all()))  # fmt: skip
 
 
 @pytest.mark.skipif(not REAL.exists(), reason="run R6.1_100k not on this machine")

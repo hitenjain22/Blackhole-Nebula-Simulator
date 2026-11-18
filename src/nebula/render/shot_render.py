@@ -146,6 +146,12 @@ class ShotRenderer:
         ids, x, p, s = eased_state(a, b, tc, self.easer.at(tc), r_drop=r_drop, with_p=True)
         # the gas velocity (gamma beta) feeds the Doppler colours; grey ignores it
         v = gn_static_frame_velocity(x, p)[1] if self.colour else np.zeros_like(x)
+        bad = ~np.isfinite(v).all(axis=1)
+        if bad.any():  # no velocity inside r = 2; reported, not hidden (AI_LOG 2026-11-18)
+            r_bad = np.linalg.norm(x[bad], axis=1)
+            print(f"  frame {i}: dropped {bad.sum()} particle(s) with no velocity, "
+                  f"r = {r_bad.min():.2f}", flush=True)  # fmt: skip
+            x, v, s = x[~bad], v[~bad], {k: val[~bad] for k, val in s.items()}
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
