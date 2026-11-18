@@ -29,12 +29,15 @@ nr = 230
 # sparse fine grid for all compact gas, from the far cloud (r 5,000) to the thin stream
 # (render/bricks.py; replaces the trailer's growing detail box)
 [bricks]
-dx = 1.0
 r_fine = 8000.0
-# after the pass only small particles (support <= 1 brick) go on the fine grid: the spread-out
-# gas (h 4-16) cost ~90,000 bricks and ~150 s per frame, and near the hole the log grid's
-# cells (1.6-6.5) already resolve it. Unchanged (4) through the approved first 50 s.
-max_support_by_day = [[0.0, 4.0], [105.0, 1.0]]
+# after the pass the spread-out gas (h 4-16) cost ~90,000 bricks and 1-6 min per frame at
+# 1-unit cells; from day 105 the cells are 2 units and the support limit 2 bricks (the same
+# 32 units, so the same particles as before): 8x fewer bricks, 16-25 s per frame, within
+# 0.12 of 255 of the 1-unit frame (outputs/checks/ring_t86_slow_lc4_fast.png). An earlier
+# rule (1 brick at 1-unit cells) sent the wide far gas to the coarse log grid: a soft blob
+# popped in at 50.4 s (AI_LOG 2026-11-18). Unchanged through the approved first 50 s.
+dx_by_day = [[0.0, 1.0], [105.0, 2.0]]
+max_support_by_day = [[0.0, 4.0], [105.0, 2.0]]
 
 # One consistent run through the pass: the original run to its dump 188 (day 94.385, where the
 # gas is still > 280 from the hole and half-day dumps are fine), then dense_P188 (restarted

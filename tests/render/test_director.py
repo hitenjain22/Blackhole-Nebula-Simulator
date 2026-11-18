@@ -590,5 +590,11 @@ def test_bricks_max_support_by_day(runs):
     shot = Shot.load(write_shot(tmp, body))
     got = [shot.brick_lattice(d).max_support for d in (None, 10.0, 104.99, 105.0, 300.0)]
     check("max_support steps by day", [4.0, 4.0, 4.0, 1.0, 1.0], got)
+    body2 = plain + "[bricks]\ndx_by_day = [[0.0, 1.0], [105.0, 2.0]]\n"
+    shot2 = Shot.load(write_shot(tmp, body2))
+    got2 = [shot2.brick_lattice(d).dx for d in (None, 104.99, 105.0)]
+    check("dx steps by day (full_story: 2-unit cells after day 105)", [1.0, 1.0, 2.0], got2)
+    with pytest.raises(ShotError, match="dx_by_day"):
+        Shot.load(write_shot(tmp, plain + "[bricks]\ndx_by_day = [[0.0, 1.0], [105.0, -2.0]]\n"))
     with pytest.raises(ShotError, match="max_support_by_day"):
         Shot.load(write_shot(tmp, plain + "[bricks]\nmax_support_by_day = [[0.0, -1.0]]\n"))

@@ -22,6 +22,12 @@ reuse=<old folder>: a shot whose text, scale and n_sub are exactly those of the 
 which the old render finished) is not rendered again: its frames are hard-linked (no copy, no
 disk space) and its exposure taken over, so after changing one shot only that shot is
 re-rendered. The old folder is not touched; the manifest records what was reused.
+
+reuse_frames=<old folder>:<shot>:<N>: frames 0..N-1 of that shot are hard-linked from the old
+render when they would come out the same: the old and new frame plans agree there (times,
+camera, stops) and, after this render's exposure, each frame's gas and star exposure is within
+1e-3 stops of the old one. The caller vouches that nothing else that shapes those frames
+changed (e.g. a [bricks] setting that only steps in later). Otherwise it stops with the reason.
 """
 
 import json
@@ -66,6 +72,40 @@ def _reusable(old, old_m, old_exp, name, text, opts, n) -> bool:
     same = all(str(old_m["options"].get(k)) == str(opts.get(k)) for k in ("scale", "n_sub"))
     done = all((old / "frames" / name / f"{i:05d}.png").exists() for i in range(n))
     return same and old_m["shots"].get(name) == text and name in old_exp and done
+
+
+def _link_frames(spec, folder, name, plan, rend, exposures):
+    """reuse_frames=<old>:<shot>:<N> (docstring): link frames 0..N-1 if they would match."""
+    old_s, shot_name, n_s = spec.rsplit(":", 2)
+    if shot_name != name:
+        return
+    old, n = Path(old_s).resolve(), int(n_s)
+    old_plan = np.load(old / "plans" / f"{name}.npz")
+    new_plan = np.load(folder / "plans" / f"{name}.npz")
+    for k in old_plan.files:
+        a, b = old_plan[k], new_plan[k]
+        if a.shape[1:] != b.shape[1:] or not np.array_equal(a[:n], b[:n]):
+            raise SystemExit(f"reuse_frames: plan '{k}' differs in frames < {n}")
+    oe = json.loads((old / "exposures.json").read_text())[name]
+    ne = exposures[name]
+    old_gas = np.log2(oe[0]) + np.asarray(oe[2][:n] if len(oe) > 2 else np.zeros(n))
+    new_gas = np.log2(ne[0]) + np.asarray(ne[2][:n] if len(ne) > 2 else np.zeros(n))
+    d_gas = float(np.abs(old_gas - new_gas).max())
+    d_star = abs(float(np.log2(oe[1] / ne[1])))
+    print(f"  reuse_frames: exposure differs by up to {d_gas:.2e} stops (gas), "
+          f"{d_star:.2e} (stars) in frames < {n}", flush=True)  # fmt: skip
+    if d_gas > 1e-3 or d_star > 1e-3:
+        raise SystemExit("reuse_frames: exposure differs by more than 1e-3 stops; render them")
+    fdir = folder / "frames" / name
+    for i in range(n):
+        src = old / "frames" / name / f"{i:05d}.png"
+        if not src.exists():
+            raise SystemExit(f"reuse_frames: {src} missing")
+        if not (fdir / f"{i:05d}.png").exists():
+            os.link(src, fdir / f"{i:05d}.png")
+    update(folder, reused_frames={name: {"from": str(old.relative_to(ROOT)), "frames": n,
+                                         "max_exposure_diff_stops": d_gas}})  # fmt: skip
+    print(f"  {name}: frames 0-{n - 1} linked from {old.name}", flush=True)
 
 
 def update(folder, **fields):
@@ -150,6 +190,8 @@ def main():
         if shot.auto_exposure is not None:
             exposures[name].append([float(v) for v in rend.adapt])
         exp_path.write_text(json.dumps(exposures, indent=2))
+        if opts.get("reuse_frames"):
+            _link_frames(opts["reuse_frames"], folder, name, plan, rend, exposures)
         for i in range(n):
             out = fdir / f"{i:05d}.png"
             if out.exists():

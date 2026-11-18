@@ -229,20 +229,19 @@ class Shot:
         return LogSphericalGrid(**self.grid)
 
     def brick_lattice(self, day: float | None = None) -> BrickLattice | None:
-        """The [bricks] lattice; with max_support_by_day = [[day, value], ...] the widest particle
-        support kept on the bricks steps to each value from its day on (``day`` None: the
-        first value)."""
+        """The [bricks] lattice; a setting given as <name>_by_day = [[day, value], ...]
+        (dx, max_support) steps to each value from its day on (``day`` None: the first
+        value)."""
         if self.bricks is None:
             return None
         d = dict(self.bricks)
-        steps = d.pop("max_support_by_day", None)
-        if steps:
-            keys = sorted((float(a), float(b)) for a, b in steps)
+        for key in [k for k in d if k.endswith("_by_day")]:
+            keys = sorted((float(a), float(b)) for a, b in d.pop(key))
             chosen = keys[0][1]
             for when, value in keys:
                 if day is not None and day >= when:
                     chosen = value
-            d["max_support"] = chosen
+            d[key.removesuffix("_by_day")] = chosen
         return BrickLattice(**d)
 
     @classmethod
@@ -303,6 +302,9 @@ class Shot:
             steps = self.bricks.get("max_support_by_day", [])
             if any(len(st) != 2 or float(st[1]) <= 0 for st in steps):
                 raise ShotError("[bricks]: max_support_by_day needs [day, positive value] pairs")
+            steps = self.bricks.get("dx_by_day", [])
+            if any(len(st) != 2 or float(st[1]) <= 0 for st in steps):
+                raise ShotError("[bricks]: dx_by_day needs [day, positive value] pairs")
         if self.auto_exposure is not None:
             bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
             if bad:
