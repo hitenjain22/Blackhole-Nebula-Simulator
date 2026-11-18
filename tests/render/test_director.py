@@ -574,3 +574,21 @@ def test_opacity_setting(runs):
     for bad in ('\ncolour = "true"\nopacity = "fog"\n', '\nopacity = "thermal"\n'):
         with pytest.raises(ShotError, match="opacity"):
             Shot.load(write_shot(tmp, head + bad + rest))
+
+
+def test_bricks_max_support_by_day(runs):
+    """[bricks] max_support_by_day: the widest particle support kept on the bricks steps to each
+    value from its day on (full_story: 4 through the pass, 1 after day 105, where spread-out gas
+    cost ~90,000 bricks per frame); default 4; bad pairs refused."""
+    from nebula.render.bricks import MAX_SUPPORT_BRICKS
+
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    shot = Shot.load(write_shot(tmp, plain + "[bricks]\ndx = 1.0\n"))
+    check("max_support default", float(MAX_SUPPORT_BRICKS), shot.brick_lattice(200.0).max_support)
+    body = plain + "[bricks]\ndx = 1.0\nmax_support_by_day = [[0.0, 4.0], [105.0, 1.0]]\n"
+    shot = Shot.load(write_shot(tmp, body))
+    got = [shot.brick_lattice(d).max_support for d in (None, 10.0, 104.99, 105.0, 300.0)]
+    check("max_support steps by day", [4.0, 4.0, 4.0, 1.0, 1.0], got)
+    with pytest.raises(ShotError, match="max_support_by_day"):
+        Shot.load(write_shot(tmp, plain + "[bricks]\nmax_support_by_day = [[0.0, -1.0]]\n"))

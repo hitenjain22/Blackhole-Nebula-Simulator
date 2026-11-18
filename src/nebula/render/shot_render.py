@@ -14,7 +14,7 @@ from nebula.analysis.cloud_metrics import snapshot_temperature
 from nebula.physics.colour import chroma_lut, srgb_decode, srgb_encode
 from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.colour_data import load_cmf
-from nebula.render.director import FramePlan, Shot, Timeline, fade_factor
+from nebula.render.director import CODE_DAY, FramePlan, Shot, Timeline, fade_factor
 from nebula.render.frames import to_uint8
 from nebula.render.gas_frames import (
     Exposure,
@@ -150,7 +150,7 @@ class ShotRenderer:
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
         texs = textures_from_particles(x, s["h"], mass, temp, v, self.grid, boxes,
-                                       self.shot.brick_lattice())  # fmt: skip
+                                       self.shot.brick_lattice(t / CODE_DAY))  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
         mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE
         pic, _ = render_gas(cam, upload_scene(texs, self.model), n_sub=self.n_sub, sky=self.sky,

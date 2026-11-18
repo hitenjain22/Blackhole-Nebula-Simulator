@@ -43,7 +43,7 @@ from nebula.render.gasgrid import MIN_KERNEL_CELLS, N_CHUNKS, R_SUPPORT, LogSphe
 from nebula.sim.kernels_nb import KERNEL_IDS, kernel_f
 
 BRICK = 8  # cells per brick side
-MAX_SUPPORT_BRICKS = 4  # particles with a wider support (2h) stay on the log grid
+MAX_SUPPORT_BRICKS = 4  # default BrickLattice.max_support (in bricks)
 KEY_OFFSET = 1 << 20  # brick coordinates are packed in 21 bits each (|I| < 2^20)
 KEY_BITS = 21
 EXIT_EPS = 1e-4  # in cells: a step out of an empty brick ends this far past its face
@@ -51,10 +51,14 @@ EXIT_EPS = 1e-4  # in cells: a step out of an empty brick ends this far past its
 
 @dataclass(frozen=True)
 class BrickLattice:
-    """Settings: cell size dx [code lengths] and the outer radius of the fine region."""
+    """Settings: cell size dx [code lengths], the outer radius of the fine region, and the
+    widest particle support (2h) kept on the bricks, in bricks (wider particles go to the log
+    grid; each costs ~(2h / brick)^3 bricks, so late, spread-out gas with h ~ 4-16 cost ~90,000
+    bricks and ~150 s per frame at max_support 4; full_story uses 1 after the pass)."""
 
     dx: float = 1.0
     r_fine: float = 1000.0
+    max_support: float = MAX_SUPPORT_BRICKS
 
     def r_in(self, grid: LogSphericalGrid) -> float:
         """Radius inside which the log grid's cells (r min(dln r, dth)) are finer than dx."""
@@ -121,7 +125,7 @@ def unpack_keys(keys):
 def fine_particles(x, h, lattice: BrickLattice, grid: LogSphericalGrid) -> np.ndarray:
     """Mask of the particles deposited on the bricks (the rest go to the log grid)."""
     r = np.linalg.norm(np.asarray(x, float), axis=1)
-    small = R_SUPPORT * np.asarray(h, float) <= MAX_SUPPORT_BRICKS * BRICK * lattice.dx
+    small = R_SUPPORT * np.asarray(h, float) <= lattice.max_support * BRICK * lattice.dx
     return small & (r >= lattice.r_in(grid)) & (r <= lattice.r_fine)
 
 

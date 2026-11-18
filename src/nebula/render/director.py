@@ -228,8 +228,22 @@ class Shot:
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
 
-    def brick_lattice(self) -> BrickLattice | None:
-        return BrickLattice(**self.bricks) if self.bricks is not None else None
+    def brick_lattice(self, day: float | None = None) -> BrickLattice | None:
+        """The [bricks] lattice; with max_support_by_day = [[day, value], ...] the widest particle
+        support kept on the bricks steps to each value from its day on (``day`` None: the
+        first value)."""
+        if self.bricks is None:
+            return None
+        d = dict(self.bricks)
+        steps = d.pop("max_support_by_day", None)
+        if steps:
+            keys = sorted((float(a), float(b)) for a, b in steps)
+            chosen = keys[0][1]
+            for when, value in keys:
+                if day is not None and day >= when:
+                    chosen = value
+            d["max_support"] = chosen
+        return BrickLattice(**d)
 
     @classmethod
     def load(cls, path) -> "Shot":
@@ -286,6 +300,9 @@ class Shot:
                 raise ShotError(f"[bricks]: {e}") from e
             if lat.dx <= 0 or lat.r_fine <= 0:
                 raise ShotError("[bricks]: dx and r_fine must be positive")
+            steps = self.bricks.get("max_support_by_day", [])
+            if any(len(st) != 2 or float(st[1]) <= 0 for st in steps):
+                raise ShotError("[bricks]: max_support_by_day needs [day, positive value] pairs")
         if self.auto_exposure is not None:
             bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
             if bad:

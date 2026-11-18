@@ -1,0 +1,4 @@
+# The final video, full story (Hiten 2026-11-17): one continuous 108 s shot into the ring.
+name = "final_story_v1"
+dissolve = 0.0
+shots = ["full_story.toml"]

@@ -31,6 +31,10 @@ nr = 230
 [bricks]
 dx = 1.0
 r_fine = 8000.0
+# after the pass only small particles (support <= 1 brick) go on the fine grid: the spread-out
+# gas (h 4-16) cost ~90,000 bricks and ~150 s per frame, and near the hole the log grid's
+# cells (1.6-6.5) already resolve it. Unchanged (4) through the approved first 50 s.
+max_support_by_day = [[0.0, 4.0], [105.0, 1.0]]
 
 # One consistent run through the pass: the original run to its dump 188 (day 94.385, where the
 # gas is still > 280 from the hole and half-day dumps are fine), then dense_P188 (restarted
@@ -77,6 +81,11 @@ ease_days = 0.8  # eased while the video is still slow (~49-50 s), before time s
 [[sources]]
 run = "R6.6_cool_part1"
 from_day = 235.97
+
+# the same run, converted after it stopped (dump 630, day 316.3; DECISIONS 2026-11-17)
+[[sources]]
+run = "R6.6_cool_part2"
+from_day = 300.75
 
 [[camera]]
 t = 0.0
@@ -268,12 +277,11 @@ day = 293.0
 
 [[time]]
 t = 98.0
-day = 296.0
+day = 304.0
 
-# draft: data to day 299.5 for now (R6.6 part 1); becomes day 320 when part 2 is converted
 [[time]]
 t = 108.0
-day = 299.4
+day = 316.2
 
 [[exposure]]
 t = 0.0

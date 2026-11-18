@@ -327,3 +327,20 @@ def test_velocity_deposit_matches_reference_box_and_momentum(monkeypatch):
     check("bricks: one field per pass = all at once (mass)", fast.mass, one.mass, rtol=0, atol=0)
     check("bricks: one field per pass = all at once (velocity)", fast.vel, one.vel, rtol=0,
           atol=0)  # fmt: skip
+
+
+def test_max_support_sends_wide_particles_to_the_log_grid():
+    """BrickLattice.max_support: particles with support 2h wider than max_support bricks are not
+    deposited on the bricks (they go to the log grid); default 4 bricks."""
+    from nebula.render.bricks import BRICK, MAX_SUPPORT_BRICKS, fine_particles
+
+    g = LogSphericalGrid(r_min=2.0, r_max=2000.0, nr=64, nth=32, nph=64)
+    dx = 1.0
+    h = np.array([1.0, 3.9, 4.1, 15.9, 16.1])  # support 2h vs 1 brick (8) and 4 bricks (32)
+    x = np.tile([500.0, 0.0, 0.0], (len(h), 1))
+    wide = fine_particles(x, h, BrickLattice(dx=dx, r_fine=1000.0), g)
+    narrow = fine_particles(x, h, BrickLattice(dx=dx, r_fine=1000.0, max_support=1), g)
+    check("default max_support", 4.0, float(MAX_SUPPORT_BRICKS))
+    check("max_support 4: support <= 32 kept", [True, True, True, True, False], wide.tolist())
+    check("max_support 1: support <= 8 kept", [True, True, False, False, False], narrow.tolist())
+    check("brick size", 8, BRICK)
