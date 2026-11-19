@@ -16,6 +16,7 @@ from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.colour_data import load_cmf
 from nebula.render.director import (
     CODE_DAY,
+    GAS_SETTINGS,
     STAR_SETTINGS,
     FramePlan,
     Shot,
@@ -30,6 +31,7 @@ from nebula.render.gas_frames import (
     compose,
     compose_colour,
 )
+from nebula.render.gas_look import motion_blur_copies
 from nebula.render.gpu_march import (
     OUT_COLOUR_PICTURE,
     OUT_PICTURE,
@@ -187,11 +189,23 @@ class ShotRenderer:
             r_bad = np.linalg.norm(x[bad], axis=1)
             print(f"  frame {i}: dropped {bad.sum()} particle(s) with no velocity, "
                   f"r = {r_bad.min():.2f}", flush=True)  # fmt: skip
-            x, v, s = x[~bad], v[~bad], {k: val[~bad] for k, val in s.items()}
+            x, p, v = x[~bad], p[~bad], v[~bad]
+            s = {k: val[~bad] for k, val in s.items()}
         eos, mass = self._eos_mass(k)
         temp = snapshot_temperature(eos, s["rho"], s["u"])
         boxes = self.plan.boxes(i, self.shot)
-        texs = textures_from_particles(x, s["h"], mass, temp, v, self.grid, boxes,
+        look = {**GAS_SETTINGS, **(self.shot.gas or {})}
+        h = s["h"] * float(look["h_scale"])
+        if float(look["shutter"]) > 0:  # motion blur: copies along the path (gas_look.py)
+            n_f = len(self.plan.sim_t)
+            dt_frame = (self.plan.sim_t[min(i + 1, n_f - 1)] - self.plan.sim_t[max(i - 1, 0)]) / (
+                min(i + 1, n_f - 1) - max(i - 1, 0)
+            )
+            nb = int(look["blur_samples"])
+            x = motion_blur_copies(x, p, float(look["shutter"]) * dt_frame, nb)
+            h, temp, v = np.tile(h, nb), np.tile(temp, nb), np.tile(v, (nb, 1))
+            mass = mass / nb
+        texs = textures_from_particles(x, h, mass, temp, v, self.grid, boxes,
                                        self.shot.brick_lattice(t / CODE_DAY))  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
         mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE

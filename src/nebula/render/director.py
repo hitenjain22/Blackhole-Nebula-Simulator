@@ -116,6 +116,12 @@ STAR_SETTINGS = {"mode": "cube", "n_stars": 100_000, "brightness": 1.0, "gamma":
                  "mag_ref": 1.0, "band_exposure": None, "size_deg": 0.0}  # fmt: skip
 
 
+# [gas] look settings (render/gas_look.py; DECISIONS 2026-11-19): h_scale (smoothing length
+# factor for drawing), shutter (motion blur, fraction of the frame interval; 0 = none),
+# blur_samples (copies per particle while blurring).
+GAS_SETTINGS = {"h_scale": 1.0, "shutter": 0.0, "blur_samples": 6}
+
+
 class ShotError(ValueError):
     """A shot file that cannot be rendered as written; the message says what to change."""
 
@@ -236,6 +242,7 @@ class Shot:
     fade_out: float = 0.0  # seconds: the whole picture fades to black at the end (fade_factor)
     opacity: str = "constant"  # true colour: "constant" (kappa) or "thermal" (march.py)
     stars: dict | None = None  # [stars]: mode = "points" for pinpoint stars (point_stars.py)
+    gas: dict | None = None  # [gas]: drawing look (GAS_SETTINGS)
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -281,6 +288,7 @@ class Shot:
             fade_out=float(d.get("fade_out", 0.0)),
             opacity=str(d.get("opacity", "constant")),
             stars=d.get("stars"),
+            gas=d.get("gas"),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -335,6 +343,13 @@ class Shot:
                 raise ShotError("[stars]: size_deg must be >= 0")
             if st["band_exposure"] is not None and float(st["band_exposure"]) <= 0:
                 raise ShotError("[stars]: band_exposure must be positive")
+        if self.gas is not None:
+            bad = set(self.gas) - set(GAS_SETTINGS)
+            if bad:
+                raise ShotError(f"[gas]: unknown settings {sorted(bad)}")
+            g = {**GAS_SETTINGS, **self.gas}
+            if float(g["h_scale"]) <= 0 or float(g["shutter"]) < 0 or int(g["blur_samples"]) < 1:
+                raise ShotError("[gas]: h_scale > 0, shutter >= 0 and blur_samples >= 1 needed")
         if self.auto_exposure is not None:
             bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
             if bad:

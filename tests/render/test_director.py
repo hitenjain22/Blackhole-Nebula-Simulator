@@ -618,3 +618,15 @@ def test_stars_settings(runs):
     ):
         with pytest.raises(ShotError, match=msg):
             Shot.load(write_shot(tmp, body))
+
+
+def test_gas_settings(runs):
+    """[gas] look settings: read as given; unknown or bad values refused."""
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    shot = Shot.load(write_shot(tmp, plain + "[gas]\nh_scale = 1.5\nshutter = 0.5\n"))
+    check("[gas] read", {"h_scale": 1.5, "shutter": 0.5}, shot.gas)
+    for body, msg in ((plain + "[gas]\nblur = 1\n", "unknown"),
+                      (plain + "[gas]\nh_scale = 0.0\n", "h_scale")):  # fmt: skip
+        with pytest.raises(ShotError, match=msg):
+            Shot.load(write_shot(tmp, body))
