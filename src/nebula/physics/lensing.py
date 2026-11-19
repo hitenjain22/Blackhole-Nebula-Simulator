@@ -55,3 +55,19 @@ def point_lens_magnification(u):
     Eq. 4). Used to test the pixel photometry of lensed stars."""
     u = np.asarray(u, float)
     return (u * u + 2.0) / (u * np.sqrt(u * u + 4.0))
+
+
+def gaussian_source_radiance(flux, dx, dy, c11, c12, c22):
+    """Radiance [flux / sr] at sky offset (dx, dy) [rad, on the tangent plane] from the centre
+    of a source of flux F whose light is spread as a 2D Gaussian of covariance C [rad^2]:
+
+        I = F exp(-d^T C^-1 d / 2) / (2 pi sqrt(det C))
+
+    Lensing conserves surface brightness (Schneider, Ehlers & Falco 1992 Sec. 5.1), so a
+    pixel whose ray lands at (dx, dy) shows this radiance; a magnified region of the sky is
+    spread over many pixels, which draws a small star near the hole as a stretched arc.
+    Pinpoint stars (render/point_stars.py) use C = sigma_star^2 I + sigma_pix^2 J J^T: the
+    star's own small size plus a pixel-sized filter (J: sky step per pixel)."""
+    det = c11 * c22 - c12 * c12
+    q = (c22 * dx * dx - 2.0 * c12 * dx * dy + c11 * dy * dy) / det
+    return np.asarray(flux, float) * np.exp(-0.5 * q) / (2.0 * np.pi * np.sqrt(det))

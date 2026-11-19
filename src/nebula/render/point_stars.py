@@ -25,7 +25,11 @@ from dataclasses import dataclass
 import numba
 import numpy as np
 
-from nebula.physics.lensing import point_source_radiance, quad_solid_angle
+from nebula.physics.lensing import (
+    gaussian_source_radiance,
+    point_source_radiance,
+    quad_solid_angle,
+)
 from nebula.render.camera import Camera
 
 MAX_QUAD_ANGLE = np.radians(2.0)  # quads wider than this (photon ring) get no stars
@@ -305,4 +309,148 @@ def splat_stars(node_dir, node_t, index: StarIndex, max_quad_angle=MAX_QUAD_ANGL
     out = np.zeros((node_t.shape[0] - 2, node_t.shape[1] - 2, 3))
     _splat_kernel(node_dir, node_t, index.direction, index.rgb, index.keys, index.n_cell,
                   index.cell, float(max_quad_angle), out)  # fmt: skip
+    return out
+
+
+# ------------------------------------------------- stars with a small size (lensed into arcs)
+#
+# Hiten 2026-11-19: pinpoint, but still warped round the hole. Each star is a small Gaussian on
+# the sky (sigma_star, far below a pixel), seen through each pixel with a pixel-sized filter:
+# C = sigma_star^2 I + sigma_pix^2 J J^T, J the sky step per pixel at that pixel (central
+# differences of the node grid's gnomonic coordinates). In open sky J dominates: a ~1 px
+# point. Where the hole magnifies the sky, J is small along the stretch and sigma_star
+# dominates: the star is drawn stretched, as lensing stretches any source with a size.
+# Pixel radiance = physics.lensing.gaussian_source_radiance(F T, offset, C).
+
+SIGMA_PIX = 0.6  # pixel filter (px): sampled on the pixel grid, a star's total flux varies
+# by ~2 exp(-2 pi^2 0.6^2) = 0.16% as it moves (Poisson summation): no twinkling
+
+
+def _pixel_frame(node_dir, row, col):
+    """Gnomonic frame at node (row, col): its unit direction, tangent axes, and the 2x2 sky
+    step per pixel J (columns: one pixel right, one pixel down)."""
+    d0 = node_dir[row, col] / np.linalg.norm(node_dir[row, col])
+    e1 = np.cross(d0, [0.0, 0.0, 1.0] if abs(d0[2]) < 0.9 else [1.0, 0.0, 0.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(d0, e1)
+
+    def proj(d):
+        d = d / np.linalg.norm(d)
+        return np.array([d @ e1, d @ e2]) / (d @ d0)
+
+    ju = 0.5 * (proj(node_dir[row, col + 1]) - proj(node_dir[row, col - 1]))
+    jv = 0.5 * (proj(node_dir[row + 1, col]) - proj(node_dir[row - 1, col]))
+    return d0, e1, e2, np.column_stack([ju, jv])
+
+
+def gauss_reference(node_dir, node_t, star_dir, star_rgb, sigma_star, sigma_pix=SIGMA_PIX,
+                    max_angle=MAX_QUAD_ANGLE):  # fmt: skip
+    """Plain-Python stars with a size: (H, W, 3) radiance [flux / sr] x gas transmission, from
+    the node grid (H+2, W+2) of star_grid_camera. Every star is tested against every pixel."""
+    hn, wn = node_t.shape
+    out = np.zeros((hn - 2, wn - 2, 3))
+    for r in range(hn - 2):
+        for c in range(wn - 2):
+            nr, nc = r + 1, c + 1
+            ts = [node_t[nr, nc], node_t[nr, nc - 1], node_t[nr, nc + 1], node_t[nr - 1, nc],
+                  node_t[nr + 1, nc]]  # fmt: skip
+            if min(ts) < 0.0:
+                continue
+            d0, e1, e2, jac = _pixel_frame(node_dir, nr, nc)
+            cov = sigma_star**2 * np.eye(2) + sigma_pix**2 * (jac @ jac.T)
+            reach = 4.0 * np.sqrt(np.trace(cov))
+            if np.sqrt(np.trace(jac @ jac.T)) > max_angle:
+                continue
+            for s in range(len(star_dir)):
+                z = star_dir[s] @ d0
+                if z <= np.cos(reach):
+                    continue
+                dx, dy = (star_dir[s] @ e1) / z, (star_dir[s] @ e2) / z
+                out[r, c] += gaussian_source_radiance(star_rgb[s] * node_t[nr, nc], dx, dy,
+                                                      cov[0, 0], cov[0, 1], cov[1, 1])  # fmt: skip
+    return out
+
+
+@numba.njit(cache=True, error_model="numpy")
+def _proj(d, d0, e1, e2):
+    n = np.sqrt(d[0] ** 2 + d[1] ** 2 + d[2] ** 2)
+    z = (d[0] * d0[0] + d[1] * d0[1] + d[2] * d0[2]) / n
+    x = (d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2]) / n
+    y = (d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2]) / n
+    return x / z, y / z
+
+
+@numba.njit(parallel=True, cache=True, error_model="numpy")
+def _gauss_kernel(node_dir, node_t, sdir, srgb, keys, n_cell, cell, sig_star, sig_pix, max_angle,
+                  out):  # fmt: skip
+    """gauss_reference with the sorted cell index (each pixel written by one thread only)."""
+    hn, wn = node_t.shape
+    for r in numba.prange(hn - 2):
+        nr = r + 1
+        for c in range(wn - 2):
+            nc = c + 1
+            t0 = node_t[nr, nc]
+            if (t0 < 0.0 or node_t[nr, nc - 1] < 0.0 or node_t[nr, nc + 1] < 0.0
+                    or node_t[nr - 1, nc] < 0.0 or node_t[nr + 1, nc] < 0.0):  # fmt: skip
+                continue
+            d0 = node_dir[nr, nc].copy()
+            d0 /= np.sqrt(d0[0] ** 2 + d0[1] ** 2 + d0[2] ** 2)
+            if abs(d0[2]) < 0.9:
+                e1 = np.array([d0[1], -d0[0], 0.0])  # d0 x (0, 0, 1)
+            else:
+                e1 = np.array([0.0, d0[2], -d0[1]])  # d0 x (1, 0, 0)
+            e1 /= np.sqrt(e1[0] ** 2 + e1[1] ** 2 + e1[2] ** 2)
+            e2 = np.array([d0[1] * e1[2] - d0[2] * e1[1], d0[2] * e1[0] - d0[0] * e1[2],
+                           d0[0] * e1[1] - d0[1] * e1[0]])  # fmt: skip
+            rx, ry = _proj(node_dir[nr, nc + 1], d0, e1, e2)
+            lx, ly = _proj(node_dir[nr, nc - 1], d0, e1, e2)
+            dx_, dy_ = _proj(node_dir[nr + 1, nc], d0, e1, e2)
+            ux, uy = _proj(node_dir[nr - 1, nc], d0, e1, e2)
+            j11, j21 = 0.5 * (rx - lx), 0.5 * (ry - ly)
+            j12, j22 = 0.5 * (dx_ - ux), 0.5 * (dy_ - uy)
+            jj11 = j11 * j11 + j12 * j12
+            jj12 = j11 * j21 + j12 * j22
+            jj22 = j21 * j21 + j22 * j22
+            if np.sqrt(jj11 + jj22) > max_angle:
+                continue
+            c11 = sig_star * sig_star + sig_pix * sig_pix * jj11
+            c12 = sig_pix * sig_pix * jj12
+            c22 = sig_star * sig_star + sig_pix * sig_pix * jj22
+            det = c11 * c22 - c12 * c12
+            reach = 4.0 * np.sqrt(c11 + c22)
+            cos_reach = np.cos(reach)
+            chord = 2.0 * np.sin(0.5 * reach) + 1e-9
+            lo0 = max(int(np.floor((d0[0] - chord + 1.0) / cell)), 0)
+            hi0 = min(int(np.floor((d0[0] + chord + 1.0) / cell)), n_cell - 1)
+            lo1 = max(int(np.floor((d0[1] - chord + 1.0) / cell)), 0)
+            hi1 = min(int(np.floor((d0[1] + chord + 1.0) / cell)), n_cell - 1)
+            lo2 = max(int(np.floor((d0[2] - chord + 1.0) / cell)), 0)
+            hi2 = min(int(np.floor((d0[2] + chord + 1.0) / cell)), n_cell - 1)
+            for ix in range(lo0, hi0 + 1):
+                for iy in range(lo1, hi1 + 1):
+                    base = (ix * n_cell + iy) * n_cell
+                    s0 = np.searchsorted(keys, base + lo2)
+                    s1 = np.searchsorted(keys, base + hi2 + 1)
+                    for s in range(s0, s1):
+                        z = sdir[s, 0] * d0[0] + sdir[s, 1] * d0[1] + sdir[s, 2] * d0[2]
+                        if z <= cos_reach:
+                            continue
+                        px = (sdir[s, 0] * e1[0] + sdir[s, 1] * e1[1] + sdir[s, 2] * e1[2]) / z
+                        py = (sdir[s, 0] * e2[0] + sdir[s, 1] * e2[1] + sdir[s, 2] * e2[2]) / z
+                        # mirrors physics.lensing.gaussian_source_radiance
+                        q = (c22 * px * px - 2.0 * c12 * px * py + c11 * py * py) / det
+                        g = np.exp(-0.5 * q) / (2.0 * np.pi * np.sqrt(det)) * t0
+                        for j in range(3):
+                            out[r, c, j] += srgb[s, j] * g
+
+
+def gauss_stars(node_dir, node_t, index: StarIndex, sigma_star: float, sigma_pix=SIGMA_PIX,
+                max_angle=MAX_QUAD_ANGLE):  # fmt: skip
+    """Fast stars with a size (same result as gauss_reference): (H, W, 3) radiance."""
+    node_dir = np.ascontiguousarray(node_dir, dtype=np.float64)
+    node_t = np.ascontiguousarray(node_t, dtype=np.float64)
+    out = np.zeros((node_t.shape[0] - 2, node_t.shape[1] - 2, 3))
+    _gauss_kernel(node_dir, node_t, index.direction, index.rgb, index.keys, index.n_cell,
+                  index.cell, float(sigma_star), float(sigma_pix), float(max_angle),
+                  out)  # fmt: skip
     return out

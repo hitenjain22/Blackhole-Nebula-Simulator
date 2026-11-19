@@ -613,6 +613,7 @@ def test_stars_settings(runs):
         (colour + "[stars]\nsparkle = 1.0\n", "unknown"),
         (colour + "[stars]\ngamma = 1.5\n", "gamma"),
         (colour + "[stars]\nbrightness = -1.0\n", "positive"),
+        (colour + "[stars]\nsize_deg = -0.01\n", "size_deg"),
         (plain + '[stars]\nmode = "points"\n', "true"),
     ):
         with pytest.raises(ShotError, match=msg):

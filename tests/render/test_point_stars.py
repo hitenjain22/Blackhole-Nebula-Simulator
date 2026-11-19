@@ -11,7 +11,10 @@ from nebula.physics.lensing import (
 )
 from nebula.render.camera import Camera
 from nebula.render.point_stars import (
+    SIGMA_PIX,
     build_star_index,
+    gauss_reference,
+    gauss_stars,
     splat_reference,
     splat_stars,
     star_grid_camera,
@@ -147,3 +150,79 @@ def test_fast_kernel_matches_reference():
     fast = splat_stars(d, t, build_star_index(sd, rgb))
     check("point stars: pixels lit (reference)", True, bool((ref > 0).any(axis=-1).sum() > 200))
     check("point stars: Numba = reference", ref, fast, rtol=1e-10, atol=1e-12 * ref.max())
+
+
+# ------------------------------------------------- stars with a small size (arcs near the hole)
+
+
+def test_sized_star_open_sky_is_a_steady_pinpoint():
+    """sigma_star = 0 in open sky: the star keeps its flux within 0.5% as it moves, lands
+    where the camera projects it, and is SIGMA_PIX (0.6 px) wide."""
+    nodes, t = _flat_nodes(CAM)
+    omega = _pixel_solid_angles(CAM)
+    fluxes, errs, widths = [], [], []
+    for s in np.linspace(0.0, 1.0, 17):
+        px, py = 11.3 + 6.7 * s, 9.1 + 4.2 * s
+        d = CAM.directions(np.array([px]), np.array([py]))
+        img = gauss_reference(nodes, t, d, np.array([[1.0, 1.0, 1.0]]), 0.0)
+        f, cx, cy = _flux_and_centroid(img, omega)
+        lum = img[..., 1]
+        xx = np.arange(img.shape[1]) + 0.5
+        widths.append(np.sqrt((lum.sum(axis=0) * (xx - cx) ** 2).sum() / lum.sum()))
+        fluxes.append(f)
+        errs.append(np.hypot(cx - px, cy - py))
+    check("sized star, open sky: flux kept (min)", 1.0, min(fluxes), rtol=5e-3)
+    check("sized star, open sky: flux kept (max)", 1.0, max(fluxes), rtol=5e-3)
+    check("sized star, open sky: position error (px)", 0.0, max(errs), atol=0.02)
+    check("sized star, open sky: width (px)", SIGMA_PIX, float(np.mean(widths)), rtol=0.05)
+
+
+def test_sized_star_lensed_flux_and_arc_shape():
+    """Behind a point lens, a small star's images carry the point-lens magnification, and the
+    outer image is stretched along the ring by mu_t = 1 / (1 - theta_E^2 / theta^2) and squeezed
+    across it by mu_r = 1 / (1 + theta_E^2 / theta^2) (Schneider, Ehlers & Falco 1992 Sec. 8.1):
+    image widths^2 = (mu sigma_star / pixel)^2 + SIGMA_PIX^2."""
+    theta_e, n = 0.01, 600
+    pix = 6.0 * theta_e / n
+    d, t, omega_pix = _point_lens_nodes(n, theta_e, pix)
+    theta = 1.5  # outer image at 1.5 theta_E: source at u = theta - 1 / theta
+    u = theta - 1.0 / theta
+    star = np.array([[u * theta_e, 0.0, 1.0]])
+    star /= np.linalg.norm(star)
+    idx = build_star_index(star, np.array([[1.0, 1.0, 1.0]]))
+    tiny = gauss_stars(d, t, idx, 1e-3 * theta_e)
+    mu = float((tiny[..., 1] * omega_pix).sum())
+    check("sized star (tiny), point lens: total magnification", point_lens_magnification(u), mu,
+          rtol=2e-2)  # fmt: skip
+    sig = 0.03 * theta_e
+    img = gauss_stars(d, t, idx, sig)[..., 1]
+    k = (np.arange(n) - n / 2 + 0.5) * pix / theta_e
+    tx, ty = np.meshgrid(k, k)
+    outer = img * (np.hypot(tx, ty) > 1.0)
+    w = outer / outer.sum()
+    cx, cy = (w * tx).sum(), (w * ty).sum()
+    var_r = (w * (tx - cx) ** 2).sum() * (theta_e / pix) ** 2  # image on the +x axis: x radial
+    var_t = (w * (ty - cy) ** 2).sum() * (theta_e / pix) ** 2
+    mu_t, mu_r = 1.0 / (1.0 - 1.0 / theta**2), 1.0 / (1.0 + 1.0 / theta**2)
+    s_px = sig / pix
+    check("sized star: arc image position (theta_E)", theta, float(cx), rtol=1e-2)
+    check("sized star: arc width^2 along the ring (px^2)", (mu_t * s_px) ** 2 + SIGMA_PIX**2,
+          float(var_t), rtol=5e-2)  # fmt: skip
+    check("sized star: arc width^2 across the ring (px^2)", (mu_r * s_px) ** 2 + SIGMA_PIX**2,
+          float(var_r), rtol=5e-2)  # fmt: skip
+
+
+def test_sized_fast_kernel_matches_reference():
+    theta_e, n = 0.01, 50
+    pix = 4.0 * theta_e / n
+    d, t, _ = _point_lens_nodes(n, theta_e, pix)
+    t = t * np.linspace(0.3, 1.0, t.size).reshape(t.shape)
+    t[25, 25:28] = -1.0
+    rng = np.random.default_rng(3)
+    sd = np.column_stack([rng.uniform(-0.03, 0.03, (300, 2)), np.ones(300)])
+    sd /= np.linalg.norm(sd, axis=1, keepdims=True)
+    rgb = rng.uniform(0.1, 1.0, (300, 3))
+    ref = gauss_reference(d, t, sd, rgb, 0.02 * theta_e)
+    fast = gauss_stars(d, t, build_star_index(sd, rgb), 0.02 * theta_e)
+    check("sized stars: pixels lit (reference)", True, bool((ref > 0).any(axis=-1).sum() > 300))
+    check("sized stars: Numba = reference", ref, fast, rtol=1e-9, atol=1e-12 * ref.max())

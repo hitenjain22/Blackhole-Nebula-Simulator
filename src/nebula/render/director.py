@@ -110,8 +110,10 @@ CHECK_OVERSAMPLE = 8
 # band only. A star of magnitude mag_ref shows at display level ``brightness`` (before the tone
 # curve) when unlensed; fluxes are compressed as (F / F_ref)^gamma (gamma 1: true ratios).
 # band_exposure: fixed exposure of the band (None: the automatic star exposure).
+# size_deg: each star's own size (Gaussian sigma on the sky, degrees; 0: exact points). Far below
+# a pixel it still shows as a point, but the hole's magnification stretches it into arcs.
 STAR_SETTINGS = {"mode": "cube", "n_stars": 100_000, "brightness": 1.0, "gamma": 1.0,
-                 "mag_ref": 1.0, "band_exposure": None}  # fmt: skip
+                 "mag_ref": 1.0, "band_exposure": None, "size_deg": 0.0}  # fmt: skip
 
 
 class ShotError(ValueError):
@@ -329,6 +331,8 @@ class Shot:
                 raise ShotError("[stars]: gamma must be in (0, 1]")
             if float(st["brightness"]) <= 0 or int(st["n_stars"]) <= 0:
                 raise ShotError("[stars]: brightness and n_stars must be positive")
+            if float(st["size_deg"]) < 0:
+                raise ShotError("[stars]: size_deg must be >= 0")
             if st["band_exposure"] is not None and float(st["band_exposure"]) <= 0:
                 raise ShotError("[stars]: band_exposure must be positive")
         if self.auto_exposure is not None:

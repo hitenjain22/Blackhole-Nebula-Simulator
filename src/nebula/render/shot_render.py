@@ -40,7 +40,12 @@ from nebula.render.gpu_march import (
 from nebula.render.interpolate import load_snap
 from nebula.render.junctions import JunctionEaser, eased_state
 from nebula.render.march import GreyBlackbody, RelativisticBlackbody
-from nebula.render.point_stars import build_star_index, splat_stars, star_grid_camera
+from nebula.render.point_stars import (
+    build_star_index,
+    gauss_stars,
+    splat_stars,
+    star_grid_camera,
+)
 from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
 from nebula.render.starfield import (
     StarFieldConfig,
@@ -196,7 +201,11 @@ class ShotRenderer:
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
         if self.points and not self._probing:  # channels 8-10: pinpoint stars x T
             node, _ = render_gas(star_grid_camera(cam), scene, n_sub=1, out_mode=OUT_SKY_DIR_T)
-            pts = splat_stars(node[..., :3], node[..., 3], self.star_index)
+            size = np.radians(float(self.stars["size_deg"]))
+            if size > 0:  # stars with a small size: points in open sky, arcs near the hole
+                pts = gauss_stars(node[..., :3], node[..., 3], self.star_index, size)
+            else:
+                pts = splat_stars(node[..., :3], node[..., 3], self.star_index)
             pic = np.concatenate([pic, pts.astype(np.float32)], axis=-1)
         return pic
 
