@@ -24,12 +24,15 @@ kappa = 1e7
 # Pinpoint stars (Hiten 2026-11-19: "each background star pinpoint, no giant circles, no
 # blobs, no blurriness"): every star a point through the lens map (render/point_stars.py); the
 # cube keeps the Milky Way band only, at the approved exposure (low-res render's star exposure).
-# Option D of outputs/checks/pointstars_options.png (chosen by Claude, Go Attack; DECISIONS).
+# Hiten 2026-11-19: size 3 of outputs/checks/stars_size_options.png (stars with a small size:
+# pinpoint in open sky, lensed into arcs near the hole; clip outputs/checks/stars_s3.mp4), with
+# ~17% fewer stars than its 300,000 ("less cluttered").
 [stars]
 mode = "points"
-n_stars = 300000
+n_stars = 250000
+size_deg = 0.016
 gamma = 0.4
-brightness = 5.0
+brightness = 10.0
 band_exposure = 1.0757394861345457e-04
 
 # rays must reach the far cloud (r 5,000) and start inside the grid (camera <= 0.9 r_max)
