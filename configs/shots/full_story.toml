@@ -26,10 +26,10 @@ kappa = 1e7
 # cube keeps the Milky Way band only, at the approved exposure (low-res render's star exposure).
 # Hiten 2026-11-19: size 3 of outputs/checks/stars_size_options.png (stars with a small size:
 # pinpoint in open sky, lensed into arcs near the hole; clip outputs/checks/stars_s3.mp4), with
-# ~17% fewer stars than its 300,000 ("less cluttered").
+# 150,000 stars (Hiten picked it from outputs/checks/stars_250k_175k_150k.png: "less cluttered").
 [stars]
 mode = "points"
-n_stars = 250000
+n_stars = 150000
 size_deg = 0.016
 gamma = 0.4
 brightness = 10.0
