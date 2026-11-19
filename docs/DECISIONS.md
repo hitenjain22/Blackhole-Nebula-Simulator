@@ -714,3 +714,9 @@ Phase 8.2's cross-fade from the forward to the backward orbit state was a straig
 ## 2026-11-18: fine-grid cells 2 units after day 105 (full_story; replaces the 1-brick rule)
 
 The 2026-11-17 rule (support limit 4 -> 1 brick at day 105) popped the far gas into a blob at 50.4 s (AI_LOG 2026-11-18). Now from day 105: [bricks] dx_by_day = [[0, 1], [105, 2]] and max_support_by_day = [[0, 4], [105, 2]] (the same 32-unit support limit, so the same particles as through the pass, on cells twice as big: ~8x fewer bricks). Same-frame checks: step at the switch 2.76 (neighbours 2.8; old rule 5.6); 86 s ring frame within 0.12/255 mean of the slow 1-unit, 4-brick setting; 16-25 s per frame. Director: any [bricks] setting can be given as <name>_by_day. Frames 0-1208 (before day 105, unchanged settings) are reused from the stopped render via render_trailer reuse_frames=, only if the new exposure matches within 1e-3 stops.
+
+## 2026-11-19: Milky Way band neutral white; snapshot tick left as is
+
+- **Band colour:** Hiten noticed a yellowish haze (the warm-tinted band, lensed round the shadow). From `outputs/checks/milkyway_options.png` (4 frames x as-is / neutral / dimmer / none, same exposures) he chose **neutral white at the same luminance** (option 2). `StarFieldConfig.band_colour` (default (0.939, 0.939, 0.939) = luminance of the old (1.0, 0.93, 0.85)); `WARM_BAND` keeps the old tint. Frame 2352 with the new default equals the approved option-2 image exactly. Test: `test_band_is_neutral_with_the_old_brightness`.
+- **Snapshot tick (96-101 s):** the frame-step scan of the low-res full story shows the step on each snapshot frame ~1.5x its neighbours there. Hiten watched the video and sees no problem: left as is (recheck in the full-quality render).
+- Hiten on the low-res full story (`final_story_v1_lowres_20261118-145413`): "looks amazing", no problems seen.

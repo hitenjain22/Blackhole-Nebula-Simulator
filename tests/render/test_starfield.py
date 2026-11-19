@@ -4,8 +4,11 @@ import numpy as np
 import pytest
 
 from nebula.render.starfield import (
+    BAND_LUMA,
     LUMA_WEIGHTS,
+    WARM_BAND,
     StarFieldConfig,
+    band_radiance,
     build_cube_map,
     cube_gpu_bytes,
     generate_stars,
@@ -104,3 +107,17 @@ def test_deterministic_and_memory():
     check("same seed -> identical sky", True, bool(np.array_equal(a.faces, b.faces)))
     check("GPU memory, 2048 per face with mips (MB)", 268.4, cube_gpu_bytes(2048) / 1e6, atol=1.0)
     check("within the plan's ~270 MB", True, bool(cube_gpu_bytes(2048) < 280e6))
+
+
+def test_band_is_neutral_with_the_old_brightness():
+    """Hiten's choice 2026-11-19 (option 2 of outputs/checks/milkyway_options.png): neutral
+    white at the luminance of the first warm band."""
+    cfg = StarFieldConfig()
+    d = np.array([[0.0, 0.0, 1.0], [0.6, 0.0, 0.8], [0.0, -1.0, 0.0]])
+    new = band_radiance(d, cfg, 1.0)
+    old = band_radiance(d, StarFieldConfig(band_colour=WARM_BAND), 1.0)
+    check("band: R = G = B (neutral)", 0.0, float(np.abs(new - new[:, :1]).max()), atol=0.0)
+    check(
+        "band: luminance equals the warm band's", old @ LUMA_WEIGHTS, new @ LUMA_WEIGHTS, rtol=1e-12
+    )
+    check("band luminance factor of the warm tint", 0.939106, BAND_LUMA, rtol=1e-6)

@@ -30,6 +30,8 @@ from nebula.units import H_PLANCK, K_B, C
 
 PEAK_VALUE = 1000.0
 LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722])  # Rec. 709 luminance of linear RGB
+WARM_BAND = (1.0, 0.93, 0.85)  # the band's first tint (2026-10-14 to 2026-11-18)
+BAND_LUMA = float(np.dot(WARM_BAND, LUMA_WEIGHTS))  # its luminance, kept by the neutral band
 FACE_AXES = (  # (major axis index, sign) for faces +X, -X, +Y, -Y, +Z, -Z
     (0, 1.0),
     (0, -1.0),
@@ -56,6 +58,10 @@ class StarFieldConfig:
         15.0  # band radiance relative to the sky-averaged starlight (chosen by eye)
     )
     band_star_fraction: float = 0.35  # extra stars concentrated toward the band
+    # neutral white with the luminance of the first, slightly warm tint (1.0, 0.93, 0.85):
+    # the warm band read as a yellowish haze beside the blue-white gas (Hiten chose neutral
+    # from outputs/checks/milkyway_options.png, 2026-11-19; DECISIONS)
+    band_colour: tuple[float, float, float] = (BAND_LUMA, BAND_LUMA, BAND_LUMA)
 
 
 # --------------------------------------------------------------------------- geometry
@@ -295,7 +301,8 @@ def _value_noise(d: np.ndarray, rng_seed: int, octaves: int = 5) -> np.ndarray:
 
 def band_radiance(d: np.ndarray, cfg: StarFieldConfig, mean_star_radiance: float) -> np.ndarray:
     """Milky Way band: Gaussian in latitude from the band's plane, mottled by fractal noise,
-    with a soft brighter 'core' region (artistic). Linear RGB (..., 3), slightly warm."""
+    with a soft brighter 'core' region (artistic). Linear RGB (..., 3), tinted by
+    cfg.band_colour (neutral white by default)."""
     pole = _band_pole(cfg)
     lat = np.arcsin(np.clip(d @ pole, -1, 1))
     w = np.radians(cfg.band_width_deg)
@@ -305,7 +312,7 @@ def band_radiance(d: np.ndarray, cfg: StarFieldConfig, mean_star_radiance: float
     core_dir /= np.linalg.norm(core_dir)
     core = 1.0 + 1.5 * np.exp(-0.5 * (np.arccos(np.clip(d @ core_dir, -1, 1)) / 0.5) ** 2)
     level = cfg.band_brightness * mean_star_radiance * profile * core * (0.25 + 1.5 * noise**2)
-    return level[..., None] * np.array([1.0, 0.93, 0.85])
+    return level[..., None] * np.asarray(cfg.band_colour, dtype=float)
 
 
 # --------------------------------------------------------------------------- cube map
