@@ -598,3 +598,22 @@ def test_bricks_max_support_by_day(runs):
         Shot.load(write_shot(tmp, plain + "[bricks]\ndx_by_day = [[0.0, 1.0], [105.0, -2.0]]\n"))
     with pytest.raises(ShotError, match="max_support_by_day"):
         Shot.load(write_shot(tmp, plain + "[bricks]\nmax_support_by_day = [[0.0, -1.0]]\n"))
+
+
+def test_stars_settings(runs):
+    """[stars] (pinpoint stars, DECISIONS 2026-11-19): read as given, unknown or bad settings
+    refused, points mode only with true colour."""
+    tmp, _ = runs
+    plain = BOXED.split("[grid]")[0]
+    colour = 'colour = "true"\n' + plain
+    shot = Shot.load(write_shot(tmp, colour + '[stars]\nmode = "points"\nn_stars = 300000\n'))
+    check("[stars] read", {"mode": "points", "n_stars": 300000}, shot.stars)
+    for body, msg in (
+        (colour + '[stars]\nmode = "dots"\n', "use"),
+        (colour + "[stars]\nsparkle = 1.0\n", "unknown"),
+        (colour + "[stars]\ngamma = 1.5\n", "gamma"),
+        (colour + "[stars]\nbrightness = -1.0\n", "positive"),
+        (plain + '[stars]\nmode = "points"\n', "true"),
+    ):
+        with pytest.raises(ShotError, match=msg):
+            Shot.load(write_shot(tmp, body))

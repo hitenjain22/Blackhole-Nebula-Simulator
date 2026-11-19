@@ -14,7 +14,14 @@ from nebula.analysis.cloud_metrics import snapshot_temperature
 from nebula.physics.colour import chroma_lut, srgb_decode, srgb_encode
 from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.colour_data import load_cmf
-from nebula.render.director import CODE_DAY, FramePlan, Shot, Timeline, fade_factor
+from nebula.render.director import (
+    CODE_DAY,
+    STAR_SETTINGS,
+    FramePlan,
+    Shot,
+    Timeline,
+    fade_factor,
+)
 from nebula.render.frames import to_uint8
 from nebula.render.gas_frames import (
     Exposure,
@@ -23,12 +30,25 @@ from nebula.render.gas_frames import (
     compose,
     compose_colour,
 )
-from nebula.render.gpu_march import OUT_COLOUR_PICTURE, OUT_PICTURE, render_gas, upload_scene
+from nebula.render.gpu_march import (
+    OUT_COLOUR_PICTURE,
+    OUT_PICTURE,
+    OUT_SKY_DIR_T,
+    render_gas,
+    upload_scene,
+)
 from nebula.render.interpolate import load_snap
 from nebula.render.junctions import JunctionEaser, eased_state
 from nebula.render.march import GreyBlackbody, RelativisticBlackbody
+from nebula.render.point_stars import build_star_index, splat_stars, star_grid_camera
 from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
-from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
+from nebula.render.starfield import (
+    StarFieldConfig,
+    build_cube_map,
+    generate_stars,
+    placeholder_blackbody_rgb,
+    upload_cube_map,
+)
 
 GAS_PERCENTILE, GAS_LEVEL = 99.9, 1.0  # as scripts/phase8_step4_first_frame.py
 N_PROBES = 5
@@ -114,7 +134,18 @@ class ShotRenderer:
         else:
             self.model = GreyBlackbody(kappa=shot.kappa)
         self.grid = shot.log_grid()  # same grid settings every frame (8.8: no flicker)
-        self.sky = sky if sky is not None else upload_cube_map(build_cube_map(StarFieldConfig()))
+        self.stars = {**STAR_SETTINGS, **(shot.stars or {})}
+        self.points = self.stars["mode"] == "points"
+        cfg = StarFieldConfig(n_stars=int(self.stars["n_stars"]), cube_stars=not self.points)
+        self.sky = sky if sky is not None else upload_cube_map(build_cube_map(cfg))
+        if self.points:  # pinpoint stars: the same catalogue, drawn through the lens map
+            st = generate_stars(cfg)
+            f_ref = 10.0 ** (-0.4 * float(self.stars["mag_ref"]))
+            flux = (st.flux / f_ref) ** float(self.stars["gamma"])
+            self.star_index = build_star_index(st.direction,
+                                               placeholder_blackbody_rgb(st.temperature)
+                                               * flux[:, None])  # fmt: skip
+        self._probing = False  # exposure probes skip the pinpoint stars (gas only)
         self._snaps = {}
         self._runs = {}
         self.easer = JunctionEaser(shot.sources, timeline, load_snap)  # joins between runs
@@ -159,10 +190,14 @@ class ShotRenderer:
                                        self.shot.brick_lattice(t / CODE_DAY))  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
         mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE
-        pic, _ = render_gas(cam, upload_scene(texs, self.model), n_sub=self.n_sub, sky=self.sky,
-                            out_mode=mode)  # fmt: skip
+        scene = upload_scene(texs, self.model)
+        pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode)
         if not np.isfinite(pic).all():
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
+        if self.points and not self._probing:  # channels 8-10: pinpoint stars x T
+            node, _ = render_gas(star_grid_camera(cam), scene, n_sub=1, out_mode=OUT_SKY_DIR_T)
+            pts = splat_stars(node[..., :3], node[..., 3], self.star_index)
+            pic = np.concatenate([pic, pts.astype(np.float32)], axis=-1)
         return pic
 
     def calibrate(self, probes=None):
@@ -192,10 +227,12 @@ class ShotRenderer:
         size, n_sub = (self.width, self.height), self.n_sub
         self.width, self.height = probe_size
         self.n_sub = 1
+        self._probing = True
         try:
             pics = [self.picture(int(i)) for i in idx]
         finally:
             (self.width, self.height), self.n_sub = size, n_sub
+            self._probing = False
         gas = np.array([auto_gas_exposure(self._gas_level(p), GAS_PERCENTILE, GAS_LEVEL)
                         for p in pics])  # fmt: skip
         stars = [auto_star_exposure(self._stars(p)) for p in pics]
@@ -212,7 +249,22 @@ class ShotRenderer:
         # the cooling stream made the star field noisy and over-bright; orbit_pass draft 3).
         stops = float(self.plan.stops[i]) + float(self.adapt[i])
         exp = Exposure(self.base.gas * 2.0**stops, self.base.stars)
-        img = (compose_colour if self.colour else compose)(self.picture(i), exp)
+        if self.stars["band_exposure"] is not None:
+            exp = Exposure(exp.gas, float(self.stars["band_exposure"]))
+        if self.points:
+            # an unlensed star of magnitude mag_ref shows at display level `brightness`, at
+            # any resolution or zoom: the splat gives it F / Omega_sky = F / Omega_pix
+            cam = self.plan.camera(i, self.width, self.height)
+            omega_pix = (2.0 * cam.tan_half_vfov / self.height) ** 2
+            pic = self.picture(i)
+            img = compose_colour(
+                pic[..., :8],
+                exp,
+                points=pic[..., 8:11],
+                point_exposure=float(self.stars["brightness"]) * omega_pix,
+            )
+        else:
+            img = (compose_colour if self.colour else compose)(self.picture(i), exp)
         fade = float(fade_factor(self.plan.video_t[i], self.plan.video_t[-1], self.shot.fade_out))
         if fade < 1.0:  # end fade, in linear light so it darkens evenly (stars too)
             img = to_uint8(srgb_encode(srgb_decode(img / 255.0) * fade))

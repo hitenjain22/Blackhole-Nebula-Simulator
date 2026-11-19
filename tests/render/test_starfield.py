@@ -121,3 +121,22 @@ def test_band_is_neutral_with_the_old_brightness():
         "band: luminance equals the warm band's", old @ LUMA_WEIGHTS, new @ LUMA_WEIGHTS, rtol=1e-12
     )
     check("band luminance factor of the warm tint", 0.939106, BAND_LUMA, rtol=1e-6)
+
+
+def test_band_brightness_does_not_follow_the_star_count():
+    """More stars (pinpoint-star options) must not brighten the Milky Way band: its radiance
+    is set against the 100,000 stars it was chosen with."""
+    lum = []
+    for n in (20_000, 60_000):
+        cfg = StarFieldConfig(n_stars=n, face_size=32, cube_stars=False)
+        lum.append(
+            build_cube_map(cfg).faces[0].astype(np.float64)
+            @ LUMA_WEIGHTS
+            * build_cube_map(cfg).scale
+        )
+    check(
+        "band radiance: 60k stars / 20k stars (same sky texels)",
+        1.0,
+        float(np.median(lum[1] / np.maximum(lum[0], 1e-300))),
+        rtol=0.05,
+    )

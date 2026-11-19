@@ -13,7 +13,14 @@ from nebula.physics.geodesics import schw_shadow_angle
 from nebula.render.bent_rays import render_reference, render_reference_colour
 from nebula.render.camera import Camera
 from nebula.render.colour_data import load_cmf
-from nebula.render.gpu_march import OUT_COLOUR, OUT_DIAGNOSTIC, render_gas, upload_scene
+from nebula.render.gpu_march import (
+    OUT_COLOUR,
+    OUT_DIAGNOSTIC,
+    OUT_SKY_DIR,
+    OUT_SKY_DIR_T,
+    render_gas,
+    upload_scene,
+)
 from nebula.render.march import GreyBlackbody, RelativisticBlackbody
 from tests.helpers import check
 from tests.render.test_colour_march import ring_textures
@@ -167,3 +174,27 @@ def test_13_gpu_matches_cpu_thermal_opacity(lut):
     _compare("real snapshot, thermal opacity", REAL_CAM, textures, model, pixels, gpu)
     check("thermal GPU: every pixel finite", True, bool(np.all(np.isfinite(gpu))))
     check("thermal GPU: slowest tile < 1 s", True, timings.max < 1.0)
+
+
+def test_sky_dir_and_transmission_mode(lut):
+    """OUT_SKY_DIR_T (the pinpoint stars' node grid, render/point_stars.py) returns, per
+    pixel-centre ray, the same sky direction as OUT_SKY_DIR and the same gas transmission as
+    OUT_COLOUR (thermal-opacity colour scene, the final render's), and -1 for captured rays."""
+    tex, _ = ring_textures(10.0, 2.0, 1.5, nr=120, nth=64, nph=256, r_lo=6.0, r_hi=16.0)
+    cam = Camera(position=(50.0, 0.0, 20.0), vfov_deg=40.0, width=48, height=32)
+    model = dataclasses.replace(_model(lut, 1.0, cam), opacity="thermal")
+    scene = upload_scene([tex], model)
+    st, _ = render_gas(cam, scene, n_sub=1, out_mode=OUT_SKY_DIR_T)
+    sd, _ = render_gas(cam, scene, n_sub=1, out_mode=OUT_SKY_DIR)
+    col, _ = render_gas(cam, scene, n_sub=1, out_mode=OUT_COLOUR)
+    esc = sd[..., 3] > 0.5
+    t_col = col[..., 4]  # OUT_COLOUR: (X, Y, Z, bol), (T of escaped rays, captured, steps, 0)
+    check("sky dir + T mode: directions = OUT_SKY_DIR", sd[..., :3], st[..., :3], atol=0.0)
+    check("sky dir + T mode: T = colour march T (escaped rays)", t_col[esc], st[..., 3][esc],
+          atol=0.0)  # fmt: skip
+    check("sky dir + T mode: captured rays marked -1", np.full((~esc).sum(), -1.0),
+          st[..., 3][~esc], atol=0.0)  # fmt: skip
+    check(
+        "sky dir + T mode: some gas in front (T < 0.99)", True, bool((st[..., 3][esc] < 0.99).any())
+    )
+    check("sky dir + T mode: captured rays present", True, bool((~esc).any()))

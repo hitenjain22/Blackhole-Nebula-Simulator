@@ -44,7 +44,9 @@ OUT_PICTURE = 1  # (gas I, T x star radiance RGB): frames
 OUT_SKY_DIR = 2  # (sky direction of the pixel-centre ray with n_sub = 1, escaped 0/1): tests
 OUT_COLOUR = 3  # Phase 9: (X, Y, Z, bolometric), (T of escaped rays, captured, sub-steps, 0)
 OUT_COLOUR_PICTURE = 4  # Phase 9 frames: (X, Y, Z, bolometric), (T x star radiance RGB, 0)
+OUT_SKY_DIR_T = 5  # (sky direction, gas T or -1 if captured), pixel-centre rays: point stars
 COLOUR_MODES = (OUT_COLOUR, OUT_COLOUR_PICTURE)
+GREY_MODES = (OUT_DIAGNOSTIC, OUT_PICTURE)  # the sky-direction modes work with both shaders
 
 
 def shader_source(colour: bool) -> str:
@@ -345,10 +347,11 @@ def render_gas(
     busy CPU, against the 1 s watchdog limit)."""
     if not 1 <= n_sub <= 4:
         raise ValueError("n_sub must be 1..4")
-    if (out_mode in COLOUR_MODES) != scene.colour:
+    if (out_mode in COLOUR_MODES and not scene.colour) or (out_mode in GREY_MODES
+                                                           and scene.colour):  # fmt: skip
         raise ValueError("colour output modes need a scene uploaded with a colour model")
     if tile is None:
-        tile = max(16, 64 // n_sub)
+        tile = 128  # the largest tile; run_tiled sizes each one to ~TILE_TARGET_S
     sky = sky or _black_sky()
     cam_buf = uniform_buffer(camera.uniform_bytes(n_sub, out_mode, (sky.scale, 0.0)))
     extra = [{"binding": 2, "resource": {"buffer": cam_buf}}]

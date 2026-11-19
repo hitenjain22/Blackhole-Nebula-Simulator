@@ -23,6 +23,20 @@ which the old render finished) is not rendered again: its frames are hard-linked
 disk space) and its exposure taken over, so after changing one shot only that shot is
 re-rendered. The old folder is not touched; the manifest records what was reused.
 
+Several processes on one machine (a cloud GPU: the per-frame CPU work is single-threaded):
+
+    ... configs/<trailer>.toml tag=... probes_only=1      # folder, plans, exposures; no frames
+    ... resume=<folder> worker=0/4  (and 1/4, 2/4, 3/4)   # each draws frames i with i % 4 == k
+    ... resume=<folder>                                   # all frames exist: writes the video
+
+A worker never writes the manifest (they run at once); each records itself in
+workers/<k>.json (start, end, git commit, frames drawn) and stops if exposures are missing.
+
+exposures_from=<old folder>: take each shot's exposure (base and automatic curve) from that
+render's exposures.json instead of running the probes. The caller vouches that nothing that
+shapes the gas exposure changed (the probes measure the gas only; e.g. [stars] settings or a
+higher scale / n_sub do not change it); the manifest records it.
+
 reuse_frames=<old folder>:<shot>:<N>: frames 0..N-1 of that shot are hard-linked from the old
 render when they would come out the same: the old and new frame plans agree there (times,
 camera, stops) and, after this render's exposure, each frame's gas and star exposure is within
@@ -123,13 +137,22 @@ def update(folder, **fields):
 
 def main():
     opts = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
+    worker = None
+    if "worker" in opts:  # "k/N": this process draws frames i with i % N == k
+        k_s, n_s = opts["worker"].split("/")
+        worker = (int(k_s), int(n_s))
+        if not 0 <= worker[0] < worker[1]:
+            raise SystemExit(f"worker={opts['worker']}: need 0 <= k < N")
+        if "resume" not in opts:
+            raise SystemExit("worker= needs resume=<folder> (run probes_only=1 first)")
     if "resume" in opts:
         folder = Path(opts["resume"]).resolve()
         m = json.loads((folder / "manifest.json").read_text())
         opts = m["options"]
         cfg = tomllib.loads(m["trailer"])
         shot_texts = m["shots"]
-        update(folder, resumed=time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        if worker is None:
+            update(folder, resumed=time.strftime("%Y-%m-%d %H:%M:%S %Z"))
     else:
         tpath = Path(sys.argv[1])
         trailer_text = tpath.read_text()
@@ -170,6 +193,14 @@ def main():
             exposures[name] = old_exp[name]
             update(folder, reused={name: str(old.relative_to(ROOT))})
             print(f"  {name}: {n} frames reused from {old.name}", flush=True)
+        if opts.get("exposures_from") and name not in exposures:
+            src = ROOT / opts["exposures_from"] / "exposures.json"
+            exposures[name] = json.loads(src.read_text())[name]
+            done = json.loads((folder / "manifest.json").read_text()).get("exposures_from", {})
+            update(folder, exposures_from={**done, name: opts["exposures_from"]})
+            print(f"  {name}: exposure taken from {opts['exposures_from']}", flush=True)
+        if worker is not None and name not in exposures:
+            raise SystemExit(f"worker: shot {name} has no exposure yet (run probes_only=1)")
         if name in exposures:
             rend.base = Exposure(*exposures[name][:2])
             if len(exposures[name]) > 2:
@@ -190,18 +221,38 @@ def main():
         if shot.auto_exposure is not None:
             exposures[name].append([float(v) for v in rend.adapt])
         exp_path.write_text(json.dumps(exposures, indent=2))
-        if opts.get("reuse_frames"):
+        if opts.get("reuse_frames") and worker is None:
             _link_frames(opts["reuse_frames"], folder, name, plan, rend, exposures)
+        if opts.get("probes_only") and worker is None:
+            print(f"  {name}: exposures written (probes_only)", flush=True)
+            continue
+        drawn = 0
         for i in range(n):
+            if worker is not None and i % worker[1] != worker[0]:
+                continue
             out = fdir / f"{i:05d}.png"
             if out.exists():
                 continue  # resumed: already rendered
-            tmp_png = fdir / f"{i:05d}.tmp.png"
+            tmp_png = fdir / f"{i:05d}.tmp{'' if worker is None else worker[0]}.png"
             write_png(tmp_png, rend.frame(i))
             tmp_png.rename(out)  # complete frames only (a crash mid-write leaves a .tmp)
-            if i % 24 == 0:
+            drawn += 1
+            if i % 24 == 0 or (worker is not None and drawn % 6 == 0):
                 print(f"  {name}: frame {i + 1}/{n}, {time.perf_counter() - t0:.0f} s", flush=True)
         order.append((name, n))
+    if opts.get("probes_only") and worker is None:
+        update(folder, probes_done=time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        print("probes_only: done; start the workers with resume=<folder> worker=k/N", flush=True)
+        return
+    if worker is not None:
+        wdir = folder / "workers"
+        wdir.mkdir(exist_ok=True)
+        (wdir / f"{worker[0]}.json").write_text(json.dumps({
+            "worker": f"{worker[0]}/{worker[1]}", "git": _git(), "machine": platform.node(),
+            "end": time.strftime("%Y-%m-%d %H:%M:%S %Z"), "seconds": time.perf_counter() - t0},
+            indent=2))  # fmt: skip
+        print(f"worker {worker[0]}/{worker[1]} done, {time.perf_counter() - t0:.0f} s", flush=True)
+        return
     # assemble: dissolves of `dissolve` seconds overlapping the shots' ends; frames are read
     # one at a time (a 1080p trailer held in memory would be ~4 GB)
     d = int(round(float(cfg.get("dissolve", 0.5)) * fps))

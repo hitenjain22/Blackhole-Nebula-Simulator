@@ -19,6 +19,7 @@ passed in), bindings 1..k read-only storage inputs, binding k+1 the read_write o
 Shader libraries (e.g. schw_ray.wgsl) are combined with an entry shader by ``load_shader``.
 """
 
+import os
 import time
 from dataclasses import dataclass, field
 from functools import cache
@@ -122,6 +123,14 @@ def uniform_buffer(data: bytes) -> wgpu.GPUBuffer:
     )
 
 
+# Adaptive tiles (AI_LOG 2026-11-19: fixed 32-px tiles of heavy 1080p x 4-ray frames ran for
+# seconds and the Mac's WindowServer watchdog killed the screen three times). Each tile is
+# timed and the next one sized so it takes about TILE_TARGET_S. NEBULA_TILE_TARGET overrides it
+# (a headless cloud GPU has no screen to starve: larger tiles, less overhead).
+TILE_TARGET_S = float(os.environ.get("NEBULA_TILE_TARGET", "0.25"))
+MIN_TILE = 8
+
+
 def run_tiled(
     shader_code: str,
     width: int,
@@ -129,18 +138,26 @@ def run_tiled(
     tile: int = 256,
     extra: list[dict] | None = None,
     vec4_per_pixel: int = 1,
+    target_s: float | None = None,
 ) -> tuple[np.ndarray, TileTimings]:
     """Run a compute shader over a width x height image in tiles; return (H, W, 4 k) float32
     with k = ``vec4_per_pixel`` (the shader writes out[k idx + j], j < k).
+
+    ``tile`` is the largest tile side. Tiles are sized from the measured time per pixel of the
+    previous tile so each takes about ``target_s`` (default TILE_TARGET_S): rows of tiles,
+    the row height and the tile widths adapting (MIN_TILE .. tile). Pixels do not depend on
+    the tiling (test_gpu.py).
 
     ``extra``: further bind-group entries (binding >= 2), e.g. a camera uniform buffer or a
     texture view and sampler, shared by all tiles.
     """
     k = int(vec4_per_pixel)
+    target = TILE_TARGET_S if target_s is None else float(target_s)
+    max_area = tile * tile
     device = get_device()
     pipeline = get_pipeline(shader_code)
     out_buf = device.create_buffer(
-        size=tile * tile * 16 * k, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+        size=max_area * 16 * k, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
     )
     uni_buf = device.create_buffer(
         size=32, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST
@@ -155,9 +172,14 @@ def run_tiled(
     )
     image = np.empty((height, width, 4 * k), dtype=np.float32)
     timings = TileTimings()
-    for y0 in range(0, height, tile):
-        for x0 in range(0, width, tile):
-            tw, th = min(tile, width - x0), min(tile, height - y0)
+    area = float(min(max_area, 32 * 32))  # start small (unknown cost), then adapt
+    y0 = 0
+    while y0 < height:
+        side = int(np.clip(np.sqrt(area), MIN_TILE, tile))
+        th = min(side, height - y0)
+        x0 = 0
+        while x0 < width:
+            tw = min(int(np.clip(area / th, MIN_TILE, max_area // th)), width - x0)
             t0 = time.perf_counter()
             params = np.array([x0, y0, width, height, tw, th, 0, 0], dtype=np.uint32)
             device.queue.write_buffer(uni_buf, 0, params.tobytes())
@@ -170,8 +192,14 @@ def run_tiled(
             device.queue.submit([encoder.finish()])
             # read_buffer waits for the GPU, so the timing covers the whole tile.
             data = device.queue.read_buffer(out_buf, 0, tw * th * 16 * k)
-            timings.per_tile.append(time.perf_counter() - t0)
+            dt = time.perf_counter() - t0
+            timings.per_tile.append(dt)
             image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(
                 th, tw, 4 * k
             )
+            # next tile: the area that would take `target` at this tile's rate (grow at most 2x)
+            want = target / max(dt, 1e-6) * (tw * th)
+            area = float(np.clip(want, MIN_TILE * MIN_TILE, min(max_area, 2.0 * tw * th)))
+            x0 += tw
+        y0 += th
     return image, timings

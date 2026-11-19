@@ -658,6 +658,10 @@ const OUT_SKY_DIR: u32 = 2u;
 //                   star radiance RGB, 0)
 const OUT_COLOUR: u32 = 3u;
 const OUT_COLOUR_PICTURE: u32 = 4u;
+//   OUT_SKY_DIR_T:  (sky direction xyz, gas transmission T, or -1 if captured) of the last
+//                   sub-ray (n_sub = 1: the pixel-centre ray): the node grid of the pinpoint
+//                   stars (render/point_stars.py)
+const OUT_SKY_DIR_T: u32 = 5u;
 const T_REF_F: f32 = 1.0e4;  // march.T_REF
 const MAX_SUB: u32 = 16u;  // n_sub <= 4
 const TEXEL_ANGLE_FACE0: f32 = 0.000766990;  // as render_stars.wgsl
@@ -690,7 +694,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             acc += vec4<f32>(r.intensity.x, select(0.0, r.transmission, escaped),
                              select(1.0, 0.0, escaped), f32(r.steps));
             col += r.intensity;
-            last = vec4<f32>(r.sky_dir, select(0.0, 1.0, escaped));
+            if (cam.dims.w == OUT_SKY_DIR_T) {
+                last = vec4<f32>(r.sky_dir, select(-1.0, r.transmission, escaped));
+            } else {
+                last = vec4<f32>(r.sky_dir, select(0.0, 1.0, escaped));
+            }
             if (escaped) {
                 dirs[n_esc] = r.sky_dir;
                 trans[n_esc] = r.transmission;
@@ -708,7 +716,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[2u * idx + 1u] = vec4<f32>(acc.y / total, acc.z / total, acc.w / total, 0.0);
         return;
     }
-    if (cam.dims.w == OUT_SKY_DIR) {
+    if (cam.dims.w == OUT_SKY_DIR || cam.dims.w == OUT_SKY_DIR_T) {
         out[idx] = last;
         return;
     }

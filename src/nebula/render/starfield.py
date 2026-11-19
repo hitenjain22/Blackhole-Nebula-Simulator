@@ -30,6 +30,7 @@ from nebula.units import H_PLANCK, K_B, C
 
 PEAK_VALUE = 1000.0
 LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722])  # Rec. 709 luminance of linear RGB
+BAND_REF_STARS = 100_000  # star count the band brightness was chosen with (2026-10-14)
 WARM_BAND = (1.0, 0.93, 0.85)  # the band's first tint (2026-10-14 to 2026-11-18)
 BAND_LUMA = float(np.dot(WARM_BAND, LUMA_WEIGHTS))  # its luminance, kept by the neutral band
 FACE_AXES = (  # (major axis index, sign) for faces +X, -X, +Y, -Y, +Z, -Z
@@ -62,6 +63,9 @@ class StarFieldConfig:
     # the warm band read as a yellowish haze beside the blue-white gas (Hiten chose neutral
     # from outputs/checks/milkyway_options.png, 2026-11-19; DECISIONS)
     band_colour: tuple[float, float, float] = (BAND_LUMA, BAND_LUMA, BAND_LUMA)
+    # False: the cube holds the band only (pinpoint stars are drawn separately,
+    # render/point_stars.py); the band's level still follows the stars' mean radiance
+    cube_stars: bool = True
 
 
 # --------------------------------------------------------------------------- geometry
@@ -369,9 +373,14 @@ def build_cube_map(cfg: StarFieldConfig | None = None) -> CubeMap:
     cfg = cfg or StarFieldConfig()
     size = cfg.face_size
     stars = generate_stars(cfg)
-    faces = _deposit_stars(stars.direction, stars.rgb, size, cfg.star_sigma_texels)
+    if cfg.cube_stars:
+        faces = _deposit_stars(stars.direction, stars.rgb, size, cfg.star_sigma_texels)
+    else:
+        faces = np.zeros((6, size, size, 3))
     if cfg.band:
-        mean_radiance = stars.flux.sum() / (4 * np.pi)
+        # the band's level was set by eye against 100,000 stars: keep that radiance whatever
+        # n_stars is (more stars must not brighten the band; DECISIONS 2026-11-19)
+        mean_radiance = stars.flux.sum() / (4 * np.pi) * BAND_REF_STARS / cfg.n_stars
         for face in range(6):
             faces[face] += band_radiance(texel_directions(face, size), cfg, mean_radiance)
     return _finish(faces, stars.flux.sum())

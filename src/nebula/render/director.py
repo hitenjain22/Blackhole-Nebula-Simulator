@@ -105,6 +105,15 @@ VERTICAL_LIMIT = 0.985  # |forward . z| above this: the up vector is too close t
 CHECK_OVERSAMPLE = 8
 
 
+# [stars] settings and defaults (final render, DECISIONS 2026-11-19). mode "cube": Phase 2's
+# star cube map; "points": pinpoint stars (render/point_stars.py), the cube keeps the Milky Way
+# band only. A star of magnitude mag_ref shows at display level ``brightness`` (before the tone
+# curve) when unlensed; fluxes are compressed as (F / F_ref)^gamma (gamma 1: true ratios).
+# band_exposure: fixed exposure of the band (None: the automatic star exposure).
+STAR_SETTINGS = {"mode": "cube", "n_stars": 100_000, "brightness": 1.0, "gamma": 1.0,
+                 "mag_ref": 1.0, "band_exposure": None}  # fmt: skip
+
+
 class ShotError(ValueError):
     """A shot file that cannot be rendered as written; the message says what to change."""
 
@@ -224,6 +233,7 @@ class Shot:
     colour: str = "grey"
     fade_out: float = 0.0  # seconds: the whole picture fades to black at the end (fade_factor)
     opacity: str = "constant"  # true colour: "constant" (kappa) or "thermal" (march.py)
+    stars: dict | None = None  # [stars]: mode = "points" for pinpoint stars (point_stars.py)
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -268,6 +278,7 @@ class Shot:
             colour=str(d.get("colour", "grey")),
             fade_out=float(d.get("fade_out", 0.0)),
             opacity=str(d.get("opacity", "constant")),
+            stars=d.get("stars"),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -305,6 +316,21 @@ class Shot:
             steps = self.bricks.get("dx_by_day", [])
             if any(len(st) != 2 or float(st[1]) <= 0 for st in steps):
                 raise ShotError("[bricks]: dx_by_day needs [day, positive value] pairs")
+        if self.stars is not None:
+            bad = set(self.stars) - set(STAR_SETTINGS)
+            if bad:
+                raise ShotError(f"[stars]: unknown settings {sorted(bad)}")
+            st = {**STAR_SETTINGS, **self.stars}
+            if st["mode"] not in ("cube", "points"):
+                raise ShotError(f'[stars]: mode = {st["mode"]!r}: use "cube" or "points"')
+            if st["mode"] == "points" and self.colour != "true":
+                raise ShotError('[stars]: mode = "points" needs colour = "true"')
+            if not 0.0 < float(st["gamma"]) <= 1.0:
+                raise ShotError("[stars]: gamma must be in (0, 1]")
+            if float(st["brightness"]) <= 0 or int(st["n_stars"]) <= 0:
+                raise ShotError("[stars]: brightness and n_stars must be positive")
+            if st["band_exposure"] is not None and float(st["band_exposure"]) <= 0:
+                raise ShotError("[stars]: band_exposure must be positive")
         if self.auto_exposure is not None:
             bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
             if bad:
