@@ -139,6 +139,9 @@ def run_tiled(
     extra: list[dict] | None = None,
     vec4_per_pixel: int = 1,
     target_s: float | None = None,
+    regions: list[tuple[int, int, int, int]] | None = None,
+    start_area: float = 32 * 32,
+    min_tile: int = MIN_TILE,
 ) -> tuple[np.ndarray, TileTimings]:
     """Run a compute shader over a width x height image in tiles; return (H, W, 4 k) float32
     with k = ``vec4_per_pixel`` (the shader writes out[k idx + j], j < k).
@@ -150,6 +153,11 @@ def run_tiled(
 
     ``extra``: further bind-group entries (binding >= 2), e.g. a camera uniform buffer or a
     texture view and sampler, shared by all tiles.
+
+    ``regions``: only these (x0, y0, w, h) rectangles are computed (other pixels are left
+    uninitialized), each tiled the same way; with ``start_area`` and ``min_tile`` small, a
+    region of very expensive pixels (64-ray photon-ring pixels) starts with tiny dispatches
+    instead of one that runs for seconds (the Mac's GPU restarted twice: AI_LOG 2026-11-19).
     """
     k = int(vec4_per_pixel)
     target = TILE_TARGET_S if target_s is None else float(target_s)
@@ -172,34 +180,35 @@ def run_tiled(
     )
     image = np.empty((height, width, 4 * k), dtype=np.float32)
     timings = TileTimings()
-    area = float(min(max_area, 32 * 32))  # start small (unknown cost), then adapt
-    y0 = 0
-    while y0 < height:
-        side = int(np.clip(np.sqrt(area), MIN_TILE, tile))
-        th = min(side, height - y0)
-        x0 = 0
-        while x0 < width:
-            tw = min(int(np.clip(area / th, MIN_TILE, max_area // th)), width - x0)
-            t0 = time.perf_counter()
-            params = np.array([x0, y0, width, height, tw, th, 0, 0], dtype=np.uint32)
-            device.queue.write_buffer(uni_buf, 0, params.tobytes())
-            encoder = device.create_command_encoder()
-            cpass = encoder.begin_compute_pass()
-            cpass.set_pipeline(pipeline)
-            cpass.set_bind_group(0, bind_group)
-            cpass.dispatch_workgroups(-(-tw // WORKGROUP), -(-th // WORKGROUP), 1)
-            cpass.end()
-            device.queue.submit([encoder.finish()])
-            # read_buffer waits for the GPU, so the timing covers the whole tile.
-            data = device.queue.read_buffer(out_buf, 0, tw * th * 16 * k)
-            dt = time.perf_counter() - t0
-            timings.per_tile.append(dt)
-            image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(
-                th, tw, 4 * k
-            )
-            # next tile: the area that would take `target` at this tile's rate (grow at most 2x)
-            want = target / max(dt, 1e-6) * (tw * th)
-            area = float(np.clip(want, MIN_TILE * MIN_TILE, min(max_area, 2.0 * tw * th)))
-            x0 += tw
-        y0 += th
+    area = float(min(max_area, start_area))  # start small (unknown cost), then adapt
+    for rx, ry, rw, rh in regions if regions is not None else [(0, 0, width, height)]:
+        y0 = ry
+        while y0 < ry + rh:
+            side = int(np.clip(np.sqrt(area), min_tile, tile))
+            th = min(side, ry + rh - y0)
+            x0 = rx
+            while x0 < rx + rw:
+                tw = min(int(np.clip(area / th, min_tile, max_area // th)), rx + rw - x0)
+                t0 = time.perf_counter()
+                params = np.array([x0, y0, width, height, tw, th, 0, 0], dtype=np.uint32)
+                device.queue.write_buffer(uni_buf, 0, params.tobytes())
+                encoder = device.create_command_encoder()
+                cpass = encoder.begin_compute_pass()
+                cpass.set_pipeline(pipeline)
+                cpass.set_bind_group(0, bind_group)
+                cpass.dispatch_workgroups(-(-tw // WORKGROUP), -(-th // WORKGROUP), 1)
+                cpass.end()
+                device.queue.submit([encoder.finish()])
+                # read_buffer waits for the GPU, so the timing covers the whole tile.
+                data = device.queue.read_buffer(out_buf, 0, tw * th * 16 * k)
+                dt = time.perf_counter() - t0
+                timings.per_tile.append(dt)
+                image[y0 : y0 + th, x0 : x0 + tw] = np.frombuffer(data, np.float32).reshape(
+                    th, tw, 4 * k
+                )
+                # next tile: the area that takes `target` at this tile's rate (grow <= 2x)
+                want = target / max(dt, 1e-6) * (tw * th)
+                area = float(np.clip(want, min_tile * min_tile, min(max_area, 2.0 * tw * th)))
+                x0 += tw
+            y0 += th
     return image, timings

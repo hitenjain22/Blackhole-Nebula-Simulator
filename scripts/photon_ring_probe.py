@@ -11,7 +11,7 @@ import numpy as np
 
 import nebula.render.shot_render as SR
 from nebula.render.director import Shot, Timeline, plan_frames
-from nebula.render.starfield import StarFieldConfig, build_cube_map, upload_cube_map
+from nebula.render.gpu_march import _black_sky
 
 ROOT = Path(__file__).resolve().parents[1]
 R = ROOT / "outputs/renders/final_story_v1_lowres_20261118-145413"
@@ -35,8 +35,13 @@ def render(tag, shot, sky=None, no_gas=False):
     print(tag, "done", flush=True)
 
 
-dark = upload_cube_map(build_cube_map(StarFieldConfig(band=False, cube_stars=False, n_stars=10)))
+dark = _black_sky()  # a 1-texel black cube: no stars, no Milky Way
 no_points = dataclasses.replace(base, stars={**base.stars, "mode": "cube"})
-render("normal", base)
-render("black_sky", no_points, sky=dark)
-render("no_gas", base, no_gas=True)
+which = sys.argv[2].split(",") if len(sys.argv) > 2 else ["normal", "black_sky", "no_gas"]
+for tag in which:  # any other tag: a normal render saved under that name (e.g. "after")
+    if tag == "black_sky":
+        render(tag, no_points, sky=dark)
+    elif tag == "no_gas":
+        render(tag, base, no_gas=True)
+    else:
+        render(tag, base)

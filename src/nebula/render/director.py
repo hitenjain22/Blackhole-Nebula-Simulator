@@ -119,7 +119,10 @@ STAR_SETTINGS = {"mode": "cube", "n_stars": 100_000, "brightness": 1.0, "gamma":
 # [gas] look settings (render/gas_look.py; DECISIONS 2026-11-19): h_scale (smoothing length
 # factor for drawing), shutter (motion blur, fraction of the frame interval; 0 = none),
 # blur_samples (copies per particle while blurring).
-GAS_SETTINGS = {"h_scale": 1.0, "shutter": 0.0, "blur_samples": 6}
+GAS_SETTINGS = {"h_scale": 1.0, "shutter": 0.0, "blur_samples": 6, "ring_rays": 0}
+# ring_rays: rays per side on photon-ring pixels (render/ring_samples.py; 0 = off). 8 (64 rays)
+# turns the dotted 1-px ring into a continuous line but costs ~6 min per 720p frame on the Mac
+# (~15 ms per near-critical ray); off by default until the plunging-gas gap is fixed.
 
 
 class ShotError(ValueError):
@@ -348,6 +351,8 @@ class Shot:
             if bad:
                 raise ShotError(f"[gas]: unknown settings {sorted(bad)}")
             g = {**GAS_SETTINGS, **self.gas}
+            if int(g["ring_rays"]) not in range(0, 9):
+                raise ShotError("[gas]: ring_rays must be 0 (off) to 8")
             if float(g["h_scale"]) <= 0 or float(g["shutter"]) < 0 or int(g["blur_samples"]) < 1:
                 raise ShotError("[gas]: h_scale > 0, shutter >= 0 and blur_samples >= 1 needed")
         if self.auto_exposure is not None:

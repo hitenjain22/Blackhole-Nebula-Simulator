@@ -48,6 +48,7 @@ from nebula.render.point_stars import (
     splat_stars,
     star_grid_camera,
 )
+from nebula.render.ring_samples import ring_subsample_map
 from nebula.render.snapshot_scene import inside_boxes, run_eos_and_mass, textures_from_particles
 from nebula.render.starfield import (
     StarFieldConfig,
@@ -210,7 +211,12 @@ class ShotRenderer:
         cam = self.plan.camera(i, self.width, self.height)
         mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE
         scene = upload_scene(texs, self.model)
-        pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode)
+        # photon-ring pixels get 64 rays (render/ring_samples.py: the ring is thinner than a
+        # pixel; 4 rays drew it as a dotted line). Not for the low-res exposure probes.
+        rr = int({**GAS_SETTINGS, **(self.shot.gas or {})}["ring_rays"])
+        ring = ring_subsample_map(cam, n_ring=rr) if rr and not self._probing else None
+        pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode,
+                            sub_map=ring)  # fmt: skip
         if not np.isfinite(pic).all():
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
         if self.points and not self._probing:  # channels 8-10: pinpoint stars x T

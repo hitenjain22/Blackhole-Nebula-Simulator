@@ -122,25 +122,36 @@ def march_bent_ray(textures, model, cam_pos, d):
     return intensity, transmission, status, n
 
 
-def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=None):
+def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None):
     """CPU reference image: per pixel (mean I, mean T of escaped sub-rays (0 if captured),
     captured fraction, mean sub-steps), as the GPU shader writes them. ``pixels``: optional
-    list of (column, row) to render (others are NaN). Slow: for tests."""
+    list of (column, row) to render (others are NaN). ``sub_map``: per-pixel sub-ray counts
+    for photon-ring pixels (render/ring_samples.py), as the shader. Slow: for tests."""
     offs = sub_pixel_offsets(n_sub)
     out = np.full((camera.height, camera.width, 4), np.nan)
     todo = pixels if pixels is not None else np.ndindex(camera.width, camera.height)
     for i, j in todo:
         acc = np.zeros(4)
-        for ox, oy in offs:
+        for ox, oy in _offsets(offs, n_sub, sub_map, i, j):
             d = camera.directions(i + ox, j + oy)
             intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d)
             escaped = status == RAY_ESCAPED
             acc += (intensity, transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)
-        out[j, i] = acc / len(offs)
+        out[j, i] = acc / len(_offsets(offs, n_sub, sub_map, i, j))
     return out
 
 
-def render_reference_colour(camera: Camera, textures, model, n_sub: int = 1, pixels=None):
+def _offsets(offs, n_sub, sub_map, i, j):
+    """The sub-ray pattern of pixel (i, j): the ring map's m x m if m > n_sub (gas_march.wgsl,
+    capped at its MAX_RING_SUB = 8), else the n_sub x n_sub one."""
+    if sub_map is not None and min(int(sub_map[j, i]), 8) > n_sub:
+        return sub_pixel_offsets(min(int(sub_map[j, i]), 8))
+    return offs
+
+
+def render_reference_colour(
+    camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None
+):
     """CPU reference image for a Phase 9 model (march.RelativisticBlackbody): per pixel the mean
     over sub-rays of (X, Y, Z, bolometric) followed by (mean T of escaped sub-rays, captured
     fraction, mean sub-steps); shape (height, width, model.channels + 3). Slow: for tests."""
@@ -150,11 +161,12 @@ def render_reference_colour(camera: Camera, textures, model, n_sub: int = 1, pix
     todo = pixels if pixels is not None else np.ndindex(camera.width, camera.height)
     for i, j in todo:
         acc = np.zeros(nc + 3)
-        for ox, oy in offs:
+        offs_ij = _offsets(offs, n_sub, sub_map, i, j)
+        for ox, oy in offs_ij:
             d = camera.directions(i + ox, j + oy)
             intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d)
             escaped = status == RAY_ESCAPED
             acc[:nc] += intensity
             acc[nc:] += (transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)
-        out[j, i] = acc / len(offs)
+        out[j, i] = acc / len(offs_ij)
     return out

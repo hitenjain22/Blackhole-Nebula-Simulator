@@ -668,6 +668,9 @@ const TEXEL_ANGLE_FACE0: f32 = 0.000766990;  // as render_stars.wgsl
 
 @group(0) @binding(7) var sky: texture_cube<f32>;
 @group(0) @binding(8) var sky_sampler: sampler;
+// per-pixel sub-ray count for photon-ring pixels (0: use n_sub); a 1-element buffer = none
+@group(0) @binding(16) var<storage, read> sub_map: array<u32>;
+const MAX_RING_SUB: u32 = 8u;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -676,19 +679,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let pix = tile.origin + gid.xy;
     let idx = gid.y * tile.size.x + gid.x;
-    let n = min(cam.dims.z, 4u);
-    let total = f32(n * n);
+    // Photon-ring pixels (render/ring_samples.py: |b - b_crit| within a few pixels) trace
+    // m x m sub-rays instead of n x n: the ring is thinner than a pixel and 4 rays drew it as a
+    // dotted line (DECISIONS 2026-11-19). One ray loop for both (a second inlined march loop
+    // made the shader too big for the Iris Plus compiler: AI_LOG 2026-11-19).
+    var m = min(cam.dims.z, 4u);
+    if (arrayLength(&sub_map) == cam.dims.x * cam.dims.y) {
+        m = max(m, min(sub_map[pix.y * cam.dims.x + pix.x], MAX_RING_SUB));
+    }
+    let total = f32(m * m);
     var acc = vec4<f32>(0.0);
     var col = vec4<f32>(0.0);
     var dirs: array<vec3<f32>, MAX_SUB>;
     var trans: array<f32, MAX_SUB>;
-    var n_esc = 0u;
+    var n_esc = 0u;  // escaped sub-rays kept for the sky sample (the first MAX_SUB)
+    var n_esc_all = 0u;
     var mean = vec3<f32>(0.0);
     var last = vec4<f32>(0.0);
-    for (var b = 0u; b < n; b++) {
-        for (var a = 0u; a < n; a++) {
-            let d = pixel_dir(f32(pix.x) + (f32(a) + 0.5) / f32(n),
-                              f32(pix.y) + (f32(b) + 0.5) / f32(n));
+    for (var b = 0u; b < m; b++) {
+        for (var a = 0u; a < m; a++) {
+            let d = pixel_dir(f32(pix.x) + (f32(a) + 0.5) / f32(m),
+                              f32(pix.y) + (f32(b) + 0.5) / f32(m));
             let r = march_ray(d);
             let escaped = r.status == RAY_ESCAPED;
             acc += vec4<f32>(r.intensity.x, select(0.0, r.transmission, escaped),
@@ -700,10 +711,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 last = vec4<f32>(r.sky_dir, select(0.0, 1.0, escaped));
             }
             if (escaped) {
-                dirs[n_esc] = r.sky_dir;
-                trans[n_esc] = r.transmission;
-                mean += r.sky_dir;
-                n_esc += 1u;
+                n_esc_all += 1u;
+                if (n_esc < MAX_SUB) {
+                    dirs[n_esc] = r.sky_dir;
+                    trans[n_esc] = r.transmission;
+                    mean += r.sky_dir;
+                    n_esc += 1u;
+                }
             }
         }
     }
@@ -720,20 +734,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[idx] = last;
         return;
     }
+    // Milky Way band behind the gas: the kept escaped sub-rays (all of them unless a ring pixel
+    // has more than MAX_SUB), level from their spread, scaled to all escaped rays
     var rgb = vec3<f32>(0.0);
     if (n_esc > 0u) {
-        let m = normalize(mean);
+        let mn = normalize(mean);
         var spread = 0.0;
         for (var k = 0u; k < n_esc; k++) {
-            spread = max(spread, acos(clamp(dot(dirs[k], m), -1.0, 1.0)));
+            spread = max(spread, acos(clamp(dot(dirs[k], mn), -1.0, 1.0)));
         }
         let face_size = f32(textureDimensions(sky).x);
         let texel_angle = TEXEL_ANGLE_FACE0 * 2048.0 / face_size;
-        let footprint = 2.0 * spread / f32(n);
+        let footprint = 2.0 * spread / f32(min(m, 4u));
         let lod = log2(max(footprint / texel_angle, 1.0));
         for (var k = 0u; k < n_esc; k++) {
             rgb += trans[k] * textureSampleLevel(sky, sky_sampler, dirs[k], lod).rgb;
         }
+        rgb *= f32(n_esc_all) / f32(n_esc);
     }
     if (cam.dims.w == OUT_COLOUR_PICTURE) {
         out[2u * idx] = col / total;

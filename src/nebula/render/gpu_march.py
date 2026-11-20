@@ -336,6 +336,7 @@ def render_gas(
     tile: int | None = None,
     sky: GPUSky | None = None,
     out_mode: int = OUT_DIAGNOSTIC,
+    sub_map: np.ndarray | None = None,
 ) -> tuple[np.ndarray, TileTimings]:
     """(H, W, 4) float32 image. OUT_DIAGNOSTIC: mean I [W m^-2 sr^-1], mean T of escaped
     sub-rays, captured fraction, mean sub-steps per ray (bent_rays.render_reference layout).
@@ -365,5 +366,29 @@ def render_gas(
     extra.append({"binding": 6, "resource": {"buffer": scene.params}})
     extra.extend(sky.entries(7))
     k = 2 if out_mode in COLOUR_MODES else 1
-    return run_tiled(shader_source(scene.colour), camera.width, camera.height, tile=tile,
-                     extra=extra, vec4_per_pixel=k)  # fmt: skip
+    code = shader_source(scene.colour)
+    none = get_device().create_buffer_with_data(data=np.zeros(1, np.uint32).tobytes(),
+                                                usage=wgpu.BufferUsage.STORAGE)  # fmt: skip
+    image, timings = run_tiled(code, camera.width, camera.height, tile=tile,
+                               extra=[*extra, {"binding": 16, "resource": {"buffer": none}}],
+                               vec4_per_pixel=k)  # fmt: skip
+    if sub_map is None or not np.any(sub_map):
+        return image, timings
+    # photon-ring pixels (render/ring_samples.py): a second pass over only the 8 x 8 blocks
+    # that hold them, starting from 1-pixel dispatches (64 rays per pixel near the photon
+    # sphere: a normal tile of them ran for seconds and restarted the Mac's GPU, AI_LOG)
+    sub_map = np.ascontiguousarray(sub_map, dtype=np.uint32)
+    if sub_map.shape != (camera.height, camera.width):
+        raise ValueError(f"sub_map shape {sub_map.shape} != {(camera.height, camera.width)}")
+    buf = get_device().create_buffer_with_data(data=sub_map.tobytes(),
+                                               usage=wgpu.BufferUsage.STORAGE)  # fmt: skip
+    by, bx = np.nonzero(sub_map)
+    blocks = sorted({(int(x) // 8 * 8, int(y) // 8 * 8) for y, x in zip(by, bx, strict=True)})
+    regions = [(x, y, min(8, camera.width - x), min(8, camera.height - y)) for x, y in blocks]
+    ring, t2 = run_tiled(code, camera.width, camera.height, tile=8,
+                         extra=[*extra, {"binding": 16, "resource": {"buffer": buf}}],
+                         vec4_per_pixel=k, regions=regions, start_area=1, min_tile=1)  # fmt: skip
+    for x, y, w, h in regions:
+        image[y : y + h, x : x + w] = ring[y : y + h, x : x + w]
+    timings.per_tile.extend(t2.per_tile)
+    return image, timings
