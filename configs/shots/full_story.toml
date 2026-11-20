@@ -35,6 +35,11 @@ gamma = 0.4
 brightness = 10.0
 band_exposure = 1.0757394861345457e-04
 
+# Softer gas (Hiten 2026-11-19: softer blobs look best for the cost; outputs/checks/
+# gas_look_options.png): each particle drawn with 1.5x its smoothing length (render/gas_look.py).
+[gas]
+h_scale = 1.5
+
 # rays must reach the far cloud (r 5,000) and start inside the grid (camera <= 0.9 r_max)
 [grid]
 r_max = 8000.0
