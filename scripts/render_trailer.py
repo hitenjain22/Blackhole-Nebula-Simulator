@@ -148,7 +148,10 @@ def main():
     if "resume" in opts:
         folder = Path(opts["resume"]).resolve()
         m = json.loads((folder / "manifest.json").read_text())
-        opts = m["options"]
+        # probes_only describes the run that made the folder, not this one: carried over, it
+        # made the final "resume=<folder>" stop after the probes instead of writing the video
+        # (AI_LOG 2026-11-20)
+        opts = {k: v for k, v in m["options"].items() if k != "probes_only"}
         cfg = tomllib.loads(m["trailer"])
         shot_texts = m["shots"]
         if worker is None:
