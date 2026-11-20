@@ -731,3 +731,10 @@ The 2026-11-17 rule (support limit 4 -> 1 brick at day 105) popped the far gas i
 - **Star count final (2026-11-19):** Hiten compared 250k / 175k / 150k (outputs/checks/stars_250k_175k_150k.png) and chose **150,000** (size 3).
 - **Gas look options (2026-11-19):** `[gas]` h_scale (draw each particle with h x factor) and shutter / blur_samples (motion blur: copies along gn_v_from_p over a fraction of the frame interval, streak capped at 0.2 r); render/gas_look.py. Sheet outputs/checks/gas_look_options.png. Mac time per frame vs now: soft 1.5x ~1.6x, blur 0.5 ~2.8x, both ~6x. Hiten: softer blobs look best for the cost; wants a 4-s motion clip (as now vs soft, 70-74 s) before committing.
 - **Final 1080p settings (2026-11-19):** [gas] h_scale 1.5 added to full_story.toml; Hiten asked to queue the final render on the VM right after the 1080p check and the 4K clip (fresh probes for the softer gas).
+
+## 2026-11-19: how we spend from now on (Hiten)
+
+- **No more full-length cloud renders until the very end of the project** (one final render of everything), except tonight's milestone 1080p render. Changes are judged with short (~4 s) high-quality clips of the hardest moments on the cloud GPU; timeline-wide problems (like the 50.4 s pop, the frame-2016 NaN, the 96-101 s tick: none would show in a chosen clip) are caught by free low-res full passes on the Mac overnight.
+- **Realism "to some extent":** visual-only approaches are welcome when they give most of the effect (e.g. a spinning hole in the light bending only, gas dynamics unchanged), stated as such. Nebula work may add new physics later.
+- **Compute split:** Google Cloud for GPU work; free services for CPU work when needed (Oracle Always Free, Azure for Students on Hiten's own account, GitHub Student Pack, UC Davis computing, Kaggle) — to be evaluated when we get there (terms checked, one account each, Hiten's name).
+- Cost estimates for the next work (2026-11-19 chat): look upgrades ~$15-30; + spin in light bending + new cloud runs ~$50-90; full spin physics ~$90-160 (full renders included; now lower with clips only).
