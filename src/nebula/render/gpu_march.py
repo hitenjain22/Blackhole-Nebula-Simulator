@@ -21,6 +21,7 @@ from nebula.physics.opacity import thermal_absorption_constants
 from nebula.render.bricks import BRICK, BrickTexture, pack_keys, unpack_keys
 from nebula.render.camera import Camera
 from nebula.render.device import TileTimings, get_device, load_shader, run_tiled, uniform_buffer
+from nebula.render.kerr_rays import kerr_camera_bytes
 from nebula.render.march import (
     BLEND_CELLS,
     GB_MAX,
@@ -49,27 +50,32 @@ COLOUR_MODES = (OUT_COLOUR, OUT_COLOUR_PICTURE)
 GREY_MODES = (OUT_DIAGNOSTIC, OUT_PICTURE)  # the sky-direction modes work with both shaders
 
 
-def shader_source(colour: bool) -> str:
-    """The gas shader with one branch of its "// #if COLOUR" block kept (grey or colour).
+def shader_source(colour: bool, kerr: bool = False) -> str:
+    """The gas shader with one branch of each "// #if COLOUR" and "// #if KERR" block kept
+    (grey or colour; non-spinning or spinning hole). Blocks may nest.
 
-    Only the march step differs; everything else is shared text. The colour shader also uses
-    bindings 11-15 (velocities, colour table), the grey one does not."""
-    out, keep, depth = [], True, 0
+    Only the march step and (KERR) the ray geometry differ; everything else is shared text.
+    The colour shader also uses bindings 11-15 (velocities, colour table), the grey one does
+    not; the Kerr shader uses binding 17 (spin and camera frame, kerr_rays.kerr_camera_bytes).
+    Each variant is compiled separately (a shader holding unused branches ran ~250x slower on
+    the Iris Plus: AI_LOG 2026-11-17)."""
+    flags = {"COLOUR": colour, "KERR": kerr}
+    out, stack = [], []  # stack of (flag value, in the else branch)
     for line in load_shader(*SHADER).splitlines():
         tag = line.strip()
-        if tag == "// #if COLOUR":
-            depth, keep = depth + 1, colour
+        if tag.startswith("// #if ") and tag[7:] in flags:
+            stack.append([flags[tag[7:]], False])
             continue
-        if tag == "// #else" and depth:
-            keep = not colour
+        if tag == "// #else" and stack:
+            stack[-1][1] = True
             continue
-        if tag == "// #endif" and depth:
-            depth, keep = depth - 1, True
+        if tag == "// #endif" and stack:
+            stack.pop()
             continue
-        if keep:
+        if all(v != e for v, e in stack):
             out.append(line)
-    if depth:
-        raise ValueError("unbalanced // #if COLOUR block in gas_march.wgsl")
+    if stack:
+        raise ValueError("unbalanced // #if block in gas_march.wgsl")
     return "\n".join(out) + "\n"
 
 
@@ -337,6 +343,7 @@ def render_gas(
     sky: GPUSky | None = None,
     out_mode: int = OUT_DIAGNOSTIC,
     sub_map: np.ndarray | None = None,
+    spin: float = 0.0,
 ) -> tuple[np.ndarray, TileTimings]:
     """(H, W, 4) float32 image. OUT_DIAGNOSTIC: mean I [W m^-2 sr^-1], mean T of escaped
     sub-rays, captured fraction, mean sub-steps per ray (bent_rays.render_reference layout).
@@ -345,7 +352,10 @@ def render_gas(
 
     Default tile: 64 px for 1 ray per pixel, shrinking with n_sub so each dispatch traces about
     the same number of rays (measured: 64 x 64 x 4 rays up to 0.86 s on the Iris Plus with a
-    busy CPU, against the 1 s watchdog limit)."""
+    busy CPU, against the 1 s watchdog limit).
+
+    spin > 0: a spinning hole (Phase 11): Kerr rays (render/kerr_rays.py, the shader's KERR
+    variant) from a static camera; the camera must be outside the ergosphere."""
     if not 1 <= n_sub <= 4:
         raise ValueError("n_sub must be 1..4")
     if (out_mode in COLOUR_MODES and not scene.colour) or (out_mode in GREY_MODES
@@ -366,7 +376,10 @@ def render_gas(
     extra.append({"binding": 6, "resource": {"buffer": scene.params}})
     extra.extend(sky.entries(7))
     k = 2 if out_mode in COLOUR_MODES else 1
-    code = shader_source(scene.colour)
+    code = shader_source(scene.colour, kerr=spin > 0.0)
+    if spin > 0.0:
+        kbuf = uniform_buffer(kerr_camera_bytes(np.asarray(camera.position, float), spin))
+        extra.append({"binding": 17, "resource": {"buffer": kbuf}})
     none = get_device().create_buffer_with_data(data=np.zeros(1, np.uint32).tobytes(),
                                                 usage=wgpu.BufferUsage.STORAGE)  # fmt: skip
     image, timings = run_tiled(code, camera.width, camera.height, tile=tile,

@@ -92,6 +92,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from nebula import units
+from nebula.physics.orbits import isco_radius
 from nebula.render.bricks import BrickLattice
 from nebula.render.camera import Camera
 from nebula.render.gasgrid import LogSphericalGrid
@@ -123,6 +124,19 @@ GAS_SETTINGS = {"h_scale": 1.0, "shutter": 0.0, "blur_samples": 6, "ring_rays": 
 # ring_rays: rays per side on photon-ring pixels (render/ring_samples.py; 0 = off). 8 (64 rays)
 # turns the dotted 1-px ring into a continuous line but costs ~6 min per 720p frame on the Mac
 # (~15 ms per near-critical ray); off by default until the plunging-gas gap is fixed.
+
+# [disc]: the render-time inner accretion disc (render/inner_disc.py; DECISIONS 2026-11-20); on
+# when the section is present. r_in: inner edge (None: the ISCO of the shot's spin, 6 without
+# spin, 2.32 at spin 0.9); edge: the
+# annulus [R1, R2] at the torus's inner edge that feeds it; r_ref: where the disc matches the
+# measured edge gas; taper: [R0, R1] the disc fades out between (handing over to the torus);
+# smooth_days: full width of the time average of the feed; spacing: particle spacing in units
+# of the thickness H; stripes: amplitude of the ring stripes (0 = none); seed: stripe pattern.
+DISC_SETTINGS = {"r_in": None, "edge": [40.0, 60.0], "r_ref": 50.0, "taper": [35.0, 50.0],
+                 "smooth_days": 10.0, "spacing": 0.6, "stripes": 0.35, "seed": 7,
+                 "temperature": 1.0, "density": 1.0, "t_stripes": 0.0}  # fmt: skip
+# temperature, density: scale factors on the matched disc (look; inner_disc.disc_particles);
+# t_stripes: ring stripes in temperature
 
 
 class ShotError(ValueError):
@@ -246,6 +260,13 @@ class Shot:
     opacity: str = "constant"  # true colour: "constant" (kappa) or "thermal" (march.py)
     stars: dict | None = None  # [stars]: mode = "points" for pinpoint stars (point_stars.py)
     gas: dict | None = None  # [gas]: drawing look (GAS_SETTINGS)
+    disc: dict | None = None  # [disc]: render-time inner disc (DISC_SETTINGS); None = off
+    spin: float = 0.0  # hole spin a (Phase 11): Kerr light rays (render_gas spin=) and disc edge
+
+    def disc_r_in(self) -> float:
+        """The inner disc's inner edge: [disc] r_in, or the ISCO of the shot's spin."""
+        r_in = {**DISC_SETTINGS, **(self.disc or {})}["r_in"]
+        return isco_radius(self.spin) if r_in is None else float(r_in)
 
     def log_grid(self) -> LogSphericalGrid:
         return LogSphericalGrid(**self.grid)
@@ -292,6 +313,8 @@ class Shot:
             opacity=str(d.get("opacity", "constant")),
             stars=d.get("stars"),
             gas=d.get("gas"),
+            disc=d.get("disc"),
+            spin=float(d.get("spin", 0.0)),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -355,6 +378,26 @@ class Shot:
                 raise ShotError("[gas]: ring_rays must be 0 (off) to 8")
             if float(g["h_scale"]) <= 0 or float(g["shutter"]) < 0 or int(g["blur_samples"]) < 1:
                 raise ShotError("[gas]: h_scale > 0, shutter >= 0 and blur_samples >= 1 needed")
+        if not 0.0 <= self.spin < 1.0:
+            raise ShotError(f"spin = {self.spin}: use 0 <= spin < 1")
+        if self.disc is not None:
+            bad = set(self.disc) - set(DISC_SETTINGS)
+            if bad:
+                raise ShotError(f"[disc]: unknown settings {sorted(bad)}")
+            dc = {**DISC_SETTINGS, **self.disc}
+            e0, e1 = (float(v) for v in dc["edge"])
+            t0, t1 = (float(v) for v in dc["taper"])
+            r_in = self.disc_r_in()
+            if not (1.0 < r_in < t0 < t1 and 0 < e0 < e1):
+                raise ShotError("[disc]: need 1 < r_in < taper[0] < taper[1] and edge[0] < edge[1]")
+            if float(dc["r_ref"]) <= r_in or float(dc["smooth_days"]) <= 0:
+                raise ShotError("[disc]: r_ref > r_in and smooth_days > 0 needed")
+            if float(dc["temperature"]) <= 0 or float(dc["density"]) <= 0:
+                raise ShotError("[disc]: temperature and density scales must be positive")
+            if not 0.0 <= float(dc["t_stripes"]) < 1.0:
+                raise ShotError("[disc]: t_stripes 0-1 (less than 1)")
+            if not 0.1 <= float(dc["spacing"]) <= 2.0 or not 0.0 <= float(dc["stripes"]) < 1.0:
+                raise ShotError("[disc]: spacing 0.1-2 and stripes 0-1 (less than 1)")
         if self.auto_exposure is not None:
             bad = set(self.auto_exposure) - {"every", "smooth", "strength"}
             if bad:

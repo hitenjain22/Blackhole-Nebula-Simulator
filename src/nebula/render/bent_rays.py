@@ -21,6 +21,7 @@ Exactly radial rays (|sin psi| < 1e-7) are a single straight segment to r = 2 or
 
 import numpy as np
 
+from nebula.render import kerr_rays
 from nebula.render.camera import Camera, sub_pixel_offsets
 from nebula.render.march import T_STOP, march_segment
 
@@ -106,11 +107,16 @@ def ray_polyline(cam_pos, d, r_max: float):
     return np.array(pts), RAY_ORBITING
 
 
-def march_bent_ray(textures, model, cam_pos, d):
+def march_bent_ray(textures, model, cam_pos, d, spin: float = 0.0):
     """(I, T, status, n_substeps) for one bent ray through the textures (march.sample
-    convention: log grid first, then boxes). Proper path lengths throughout."""
+    convention: log grid first, then boxes). Proper path lengths throughout (the
+    Schwarzschild static ones, also with spin). spin > 0: the ray of a spinning hole
+    (render/kerr_rays.py, the GPU's KERR path)."""
     r_max = textures[0].grid.r_max
-    pts, status = ray_polyline(cam_pos, d, r_max)
+    if spin > 0.0:
+        pts, status, _ = kerr_rays.ray_polyline(cam_pos, d, spin, r_max)
+    else:
+        pts, status = ray_polyline(cam_pos, d, r_max)
     intensity, transmission, n = 0.0, 1.0, 0
     for a, b in zip(pts[:-1], pts[1:], strict=True):
         intensity, transmission, k = march_segment(
@@ -122,7 +128,8 @@ def march_bent_ray(textures, model, cam_pos, d):
     return intensity, transmission, status, n
 
 
-def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None):
+def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None,
+                     spin: float = 0.0):  # fmt: skip
     """CPU reference image: per pixel (mean I, mean T of escaped sub-rays (0 if captured),
     captured fraction, mean sub-steps), as the GPU shader writes them. ``pixels``: optional
     list of (column, row) to render (others are NaN). ``sub_map``: per-pixel sub-ray counts
@@ -134,7 +141,8 @@ def render_reference(camera: Camera, textures, model, n_sub: int = 1, pixels=Non
         acc = np.zeros(4)
         for ox, oy in _offsets(offs, n_sub, sub_map, i, j):
             d = camera.directions(i + ox, j + oy)
-            intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d)
+            intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d,
+                                                                spin)  # fmt: skip
             escaped = status == RAY_ESCAPED
             acc += (intensity, transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)
         out[j, i] = acc / len(_offsets(offs, n_sub, sub_map, i, j))
@@ -150,7 +158,7 @@ def _offsets(offs, n_sub, sub_map, i, j):
 
 
 def render_reference_colour(
-    camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None
+    camera: Camera, textures, model, n_sub: int = 1, pixels=None, sub_map=None, spin: float = 0.0
 ):
     """CPU reference image for a Phase 9 model (march.RelativisticBlackbody): per pixel the mean
     over sub-rays of (X, Y, Z, bolometric) followed by (mean T of escaped sub-rays, captured
@@ -164,7 +172,8 @@ def render_reference_colour(
         offs_ij = _offsets(offs, n_sub, sub_map, i, j)
         for ox, oy in offs_ij:
             d = camera.directions(i + ox, j + oy)
-            intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d)
+            intensity, transmission, status, n = march_bent_ray(textures, model, camera.position, d,
+                                                                spin)  # fmt: skip
             escaped = status == RAY_ESCAPED
             acc[:nc] += intensity
             acc[nc:] += (transmission if escaped else 0.0, 0.0 if escaped else 1.0, n)

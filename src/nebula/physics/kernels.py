@@ -75,6 +75,16 @@ class Kernel:
         q = np.asarray(r, float) / h
         return -self.c_norm / h**4 * (3.0 * self.f(q) + q * self.df(q))
 
+    def axis_rms(self) -> float:
+        """Root-mean-square spread of the kernel along one axis, in units of h:
+        sqrt(<z^2>) = sqrt(<r^2> / 3) = sqrt(int f q^4 dq / (3 int f q^2 dq)) (isotropy). Used to
+        give a single layer of particles a chosen thickness (render/inner_disc.py)."""
+        from scipy.integrate import quad
+
+        num = quad(lambda q: float(self.f(q)) * q**4, 0.0, R_KERN)[0]
+        den = quad(lambda q: float(self.f(q)) * q**2, 0.0, R_KERN)[0]
+        return float(np.sqrt(num / (3.0 * den)))
+
     def expected_neighbours(self, eta: float | None = None) -> float:
         """Mean neighbour number for h = eta (m/rho)^(1/3): (4 pi / 3) (R_kern eta)^3."""
         eta = self.hfact if eta is None else eta

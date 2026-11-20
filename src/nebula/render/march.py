@@ -32,6 +32,7 @@ import numpy as np
 
 from nebula.physics.colour import blackbody_xyz_lut, bolometric_intensity_si
 from nebula.physics.geodesics import schw_static_proper_length
+from nebula.physics.kerr import redshift_factor_kerr, static_frame_direction_kerr
 from nebula.physics.opacity import thermal_absorption_code
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
@@ -134,6 +135,10 @@ class RelativisticBlackbody:
     log_t: np.ndarray
     log_chroma: np.ndarray
     opacity: str = "constant"
+    # spinning hole (Phase 11): the Kerr static lapse in the redshift (physics.kerr notes);
+    # f_cam = Kerr-Schild f at the camera. spin 0: the Phase 9 formulas unchanged.
+    spin: float = 0.0
+    f_cam: float = 0.0
     relativistic = True
 
     def __post_init__(self):
@@ -151,9 +156,13 @@ class RelativisticBlackbody:
         gbl = float(np.sqrt(gb @ gb))
         if gbl > GB_MAX:
             gb = gb * (GB_MAX / gbl)
-        n_light = -static_frame_direction(mid, e)  # light travels back toward the camera
-        r = float(np.sqrt(mid @ mid))
-        g = float(redshift_factor(r, gb, n_light, self.r_cam))
+        if self.spin > 0.0:  # approximate Doppler near a spinning hole (physics.kerr notes)
+            n_light = -static_frame_direction_kerr(mid, e, self.spin)
+            g = float(redshift_factor_kerr(mid, gb, n_light, self.spin, self.f_cam))
+        else:
+            n_light = -static_frame_direction(mid, e)  # light travels back toward the camera
+            r = float(np.sqrt(mid @ mid))
+            g = float(redshift_factor(r, gb, n_light, self.r_cam))
         t_obs = g * t_em
         src = np.zeros(4)
         if t_obs > 0.0:

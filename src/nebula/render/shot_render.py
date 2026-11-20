@@ -19,6 +19,7 @@ from nebula.physics.redshift import gn_static_frame_velocity
 from nebula.render.colour_data import load_cmf
 from nebula.render.director import (
     CODE_DAY,
+    DISC_SETTINGS,
     GAS_SETTINGS,
     STAR_SETTINGS,
     FramePlan,
@@ -42,6 +43,7 @@ from nebula.render.gpu_march import (
     render_gas,
     upload_scene,
 )
+from nebula.render.inner_disc import blend_feeds, disc_particles, edge_feed, triangle_weights
 from nebula.render.interpolate import load_snap
 from nebula.render.junctions import JunctionEaser, eased_state
 from nebula.render.march import GreyBlackbody, RelativisticBlackbody
@@ -177,6 +179,7 @@ class ShotRenderer:
         self._probing = False  # exposure probes skip the pinpoint stars (gas only)
         self._snaps = {}
         self._runs = {}
+        self._feeds = {}  # inner disc: edge measurement per snapshot index (inner_disc.py)
         self.easer = JunctionEaser(shot.sources, timeline, load_snap)  # joins between runs
         self.base = None
         self.adapt = np.zeros(len(plan.video_t))  # automatic exposure stops (adapt_exposure)
@@ -193,6 +196,30 @@ class ShotRenderer:
         if run_dir not in self._runs:
             self._runs[run_dir] = run_eos_and_mass(run_dir)
         return self._runs[run_dir]
+
+    def _edge_feed(self, k: int):
+        if k not in self._feeds:
+            dc = {**DISC_SETTINGS, **self.shot.disc}
+            snap = load_snap(self.timeline.paths[k])
+            eos, mass = self._eos_mass(k)
+            temp = snapshot_temperature(eos, snap.scalars["rho"], snap.scalars["u"])
+            self._feeds[k] = edge_feed(snap.x, snap.p, mass, temp, *(float(v) for v in dc["edge"]))
+        return self._feeds[k]
+
+    def disc(self, t: float):
+        """The inner disc's particles at sim time t (None: no [disc] or no torus yet): the
+        edge feed averaged over smooth_days (triangle weights) around t."""
+        if self.shot.disc is None:
+            return None
+        dc = {**DISC_SETTINGS, **self.shot.disc}
+        w = triangle_weights(self.timeline.times, t, float(dc["smooth_days"]) * CODE_DAY)
+        ks = np.nonzero(w)[0]
+        feed = blend_feeds([self._edge_feed(int(k)) for k in ks], w[ks])
+        return disc_particles(feed, self.shot.disc_r_in(), float(dc["r_ref"]),
+                              [float(v) for v in dc["taper"]], float(dc["spacing"]),
+                              float(dc["stripes"]), int(dc["seed"]), self.shot.spin,
+                              float(dc["temperature"]), float(dc["density"]),
+                              float(dc["t_stripes"]))  # fmt: skip
 
     def picture(self, i: int) -> np.ndarray:
         """Linear GPU picture of frame i: grey (H, W, 4) = (gas I, T x star RGB); true colour
@@ -227,6 +254,12 @@ class ShotRenderer:
             x = motion_blur_copies(x, p, float(look["shutter"]) * dt_frame, nb)
             h, temp, v = np.tile(h, nb), np.tile(temp, nb), np.tile(v, (nb, 1))
             mass = mass / nb
+        mass = np.full(len(h), float(mass))
+        dp = self.disc(t)
+        if dp is not None:  # the render-time inner disc (inner_disc.py), drawn like the gas
+            x, h = np.concatenate([x, dp.x]), np.concatenate([h, dp.h * float(look["h_scale"])])
+            mass, temp = np.concatenate([mass, dp.m]), np.concatenate([temp, dp.temp])
+            v = np.concatenate([v, dp.gamma_beta if self.colour else np.zeros_like(dp.x)])
         texs = textures_from_particles(x, h, mass, temp, v, self.grid, boxes,
                                        self.shot.brick_lattice(t / CODE_DAY))  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
@@ -238,11 +271,11 @@ class ShotRenderer:
         with gpu_turn():  # several render workers share one cloud GPU: one at a time
             scene = upload_scene(texs, self.model)
             pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode,
-                                sub_map=ring)  # fmt: skip
+                                sub_map=ring, spin=self.shot.spin)  # fmt: skip
             node = None
             if self.points and not self._probing:
                 node, _ = render_gas(star_grid_camera(cam), scene, n_sub=1,
-                                     out_mode=OUT_SKY_DIR_T)  # fmt: skip
+                                     out_mode=OUT_SKY_DIR_T, spin=self.shot.spin)  # fmt: skip
         if not np.isfinite(pic).all():
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
         if node is not None:  # channels 8-10: pinpoint stars x T

@@ -472,11 +472,19 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
                 }
                 let rh = mid / r_mid;
                 let er = dot(e, rh);
+                // #if KERR
+                let lapse = kerr_lapse(mid);  // physics.kerr.static_lapse (approximate Doppler)
+                // #else
                 let lapse = sqrt(1.0 - 2.0 / r_mid);
+                // #endif
                 let n_light = -normalize(e + (er / lapse - er) * rh);
                 let doppler = sqrt(1.0 + dot(gb, gb)) - dot(gb, n_light);
                 // camera factor sqrt(1 - 2/r_cam) from the camera itself (it moves per frame)
+                // #if KERR
+                let g = lapse / sqrt(1.0 - kerr.spin.z) / doppler;  // kerr.spin.z = f at the camera
+                // #else
                 let g = lapse / sqrt(1.0 - 2.0 / length(cam.pos.xyz)) / doppler;
+                // #endif
                 let t_em = T_REF_F * sqrt(sqrt(f.y / f.x));
                 let g2 = g * g;
                 // opacity "thermal" when gas.colour2.x > 0: physics.opacity.
@@ -527,6 +535,149 @@ struct RayOut {
     sky_dir: vec3<f32>,  // direction on the sky seen by an escaped ray (Phase 2 bend)
 };
 
+// #if KERR
+// Spinning hole (Phase 11, 11.2): Hamiltonian rays in Cartesian Kerr-Schild coordinates, the
+// arriving photon followed backward, fixed RK4 steps. Float32 twin of render/kerr_rays.py
+// (ray_polyline, step_size, sky_direction), which mirrors physics/kerr.py (backward_rhs,
+// hamiltonian_grad_x, ks_radius, metric_parts); tests: tests/render/test_kerr_gpu.py.
+struct KerrCam {
+    spin: vec4<f32>,  // a, r_h, f at the camera, -
+    c0: vec4<f32>,    // p_mu ~ c0 - (a0 d.x + a1 d.y + a2 d.z) (kerr_rays.camera_map)
+    a0: vec4<f32>,
+    a1: vec4<f32>,
+    a2: vec4<f32>,
+};
+@group(0) @binding(17) var<uniform> kerr: KerrCam;
+const KERR_H_FAR: f32 = 0.02;     // kerr_rays.H_FAR
+const KERR_R_NEAR: f32 = 2.0;     // kerr_rays.R_NEAR
+const KERR_H_MIN: f32 = 1.0e-4;   // kerr_rays.H_MIN
+const KERR_R_SKY: f32 = 1.0e6;    // kerr_rays.R_SKY
+const KERR_MAX_STEPS: u32 = 20000u;  // kerr_rays.MAX_STEPS
+const KERR_MARGIN: f32 = 1.0e-3;  // physics.kerr.HORIZON_MARGIN
+
+fn kerr_radius(x: vec3<f32>) -> f32 {  // physics.kerr.ks_radius
+    let a2 = kerr.spin.x * kerr.spin.x;
+    let b = dot(x, x) - a2;
+    return sqrt(0.5 * b + sqrt(0.25 * b * b + a2 * x.z * x.z));
+}
+
+fn kerr_f(x: vec3<f32>) -> f32 {  // physics.kerr.metric_parts: f = 2 r^3 / (r^4 + a^2 z^2)
+    let r = kerr_radius(x);
+    let a = kerr.spin.x;
+    return 2.0 * r * r * r / (r * r * r * r + a * a * x.z * x.z);
+}
+
+fn kerr_lapse(x: vec3<f32>) -> f32 {  // physics.kerr.static_lapse
+    return sqrt(max(1.0 - kerr_f(x), 0.0));
+}
+
+struct KerrRhs { dx: vec3<f32>, dp: vec3<f32> };
+
+// physics.kerr.backward_rhs: (-dH/dp, +dH/dx) with p_t = -1. df/dr is written as
+// 2 r^2 (3 a^2 z^2 - r^4) / D^2 (equal to hamiltonian_grad_x's form; no cancellation of
+// r^6 terms in float32).
+fn kerr_rhs(x: vec3<f32>, p: vec3<f32>) -> KerrRhs {
+    let a = kerr.spin.x;
+    let r = kerr_radius(x);
+    let r2 = r * r;
+    let z2 = x.z * x.z;
+    let dd = r2 * r2 + a * a * z2;
+    let f = 2.0 * r2 * r / dd;
+    let bb = r2 + a * a;
+    let l = vec3<f32>((r * x.x + a * x.y) / bb, (r * x.y - a * x.x) / bb, x.z / r);
+    let s = 1.0 + dot(l, p);
+    let dr = vec3<f32>(x.x * r2 * r, x.y * r2 * r, x.z * r * bb) / dd;
+    var df = (2.0 * r2 * (3.0 * a * a * z2 - r2 * r2) / (dd * dd)) * dr;
+    df.z += -4.0 * r2 * r * a * a * x.z / (dd * dd);
+    let aa = r * (x.x * p.x + x.y * p.y) + a * (x.y * p.x - x.x * p.y);
+    let da = dr * (x.x * p.x + x.y * p.y) + r * vec3<f32>(p.x, p.y, 0.0)
+           + a * vec3<f32>(-p.y, p.x, 0.0);
+    var dlp = (da * bb - aa * 2.0 * r * dr) / (bb * bb) - (x.z * p.z / r2) * dr;
+    dlp.z += p.z / r;
+    let grad = -0.5 * s * s * df - f * s * dlp;
+    var out: KerrRhs;
+    out.dx = -(p - f * s * l);
+    out.dp = grad;
+    return out;
+}
+
+struct KerrState { x: vec3<f32>, p: vec3<f32> };
+
+fn kerr_rk4(x: vec3<f32>, p: vec3<f32>, h: f32) -> KerrState {
+    let k1 = kerr_rhs(x, p);
+    let k2 = kerr_rhs(x + 0.5 * h * k1.dx, p + 0.5 * h * k1.dp);
+    let k3 = kerr_rhs(x + 0.5 * h * k2.dx, p + 0.5 * h * k2.dp);
+    let k4 = kerr_rhs(x + h * k3.dx, p + h * k3.dp);
+    var out: KerrState;
+    out.x = x + h / 6.0 * (k1.dx + 2.0 * k2.dx + 2.0 * k3.dx + k4.dx);
+    out.p = p + h / 6.0 * (k1.dp + 2.0 * k2.dp + 2.0 * k3.dp + k4.dp);
+    return out;
+}
+
+fn kerr_step_size(r: f32) -> f32 {  // kerr_rays.step_size
+    return max(KERR_H_FAR * r * min(1.0, (r - kerr.spin.y) / KERR_R_NEAR), KERR_H_MIN);
+}
+
+fn kerr_sky(x_in: vec3<f32>, p_in: vec3<f32>) -> vec3<f32> {  // kerr_rays.sky_direction
+    var st: KerrState;
+    st.x = x_in;
+    st.p = p_in;
+    for (var k = 0u; k < 200u; k++) {
+        let r = kerr_radius(st.x);
+        if (r >= KERR_R_SKY) {
+            break;
+        }
+        st = kerr_rk4(st.x, st.p, 0.1 * r);
+    }
+    return normalize(kerr_rhs(st.x, st.p).dx);
+}
+
+// One camera ray around the spinning hole (bent_rays.march_bent_ray with spin): the RK4
+// points joined by chords, one march_chord call per step (a second call site inlines a second
+// copy of the march; too big for the Iris Plus compiler, AI_LOG 2026-11-19).
+fn march_ray(d: vec3<f32>) -> RayOut {
+    var st: MarchState;
+    st.intensity = vec4<f32>(0.0);
+    st.transmission = 1.0;
+    st.steps = 0u;
+    var res: RayOut;
+    res.status = RAY_ORBITING;
+    res.sky_dir = vec3<f32>(0.0);
+    let r_max = gas.grid.y;
+    let pc = kerr.c0 - (kerr.a0 * d.x + kerr.a1 * d.y + kerr.a2 * d.z);
+    var x = cam.pos.xyz;
+    var p = pc.yzw / (-pc.x);
+    for (var n = 0u; n < KERR_MAX_STEPS; n++) {
+        let r = kerr_radius(x);
+        let nxt = kerr_rk4(x, p, kerr_step_size(r));
+        let r1 = kerr_radius(nxt.x);
+        var end = nxt.x;
+        var done = false;
+        if (r1 < kerr.spin.y + KERR_MARGIN) {
+            res.status = RAY_CAPTURED;
+            done = true;
+        } else if (r1 > r_max && r1 > r) {
+            end = x + clamp((r_max - r) / (r1 - r), 0.0, 1.0) * (nxt.x - x);
+            res.status = RAY_ESCAPED;
+            res.sky_dir = kerr_sky(nxt.x, nxt.p);
+            done = true;
+        }
+        if (st.transmission >= gas.grid2.z) {
+            st = march_chord(x, end, st);
+        }
+        if (done) {
+            break;
+        }
+        x = nxt.x;
+        p = nxt.p;
+    }
+    res.intensity = st.intensity;
+    res.transmission = st.transmission;
+    res.steps = st.steps;
+    return res;
+}
+
+// #else
 // Continue an outgoing ray from state (u, w) at angle phi to infinity: the escape angle
 // phi_inf. Same RK4 steps and Hermite root as trace_ray (schw_ray.wgsl), so a ray gets the
 // same sky direction as in the Phase 2 star renderer (tested: test_gpu_march).
@@ -648,6 +799,7 @@ fn march_ray(d: vec3<f32>) -> RayOut {
     return res;
 }
 
+// #endif
 // Output modes (cam.dims.w):
 //   OUT_DIAGNOSTIC: (mean I, mean T of escaped sub-rays (0 for captured), captured fraction,
 //                   mean sub-steps) (bent_rays.render_reference; tests 6-7)
