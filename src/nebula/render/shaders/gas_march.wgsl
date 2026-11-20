@@ -63,6 +63,7 @@ struct GasParams {
 const BRICK_I: i32 = 8;
 const APRON_I: i32 = 9;
 const EXIT_EPS: f32 = 1e-4;  // bricks.EXIT_EPS (in cells)
+const MAX_MARCH_STEPS: u32 = 400000u;  // per ray (normal rays take < 10^4; a hang guard)
 
 const TWO_PI_F: f32 = 6.28318531;
 const U_HORIZON: f32 = 0.5;
@@ -505,8 +506,15 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
             }
             // #endif
         }
-        s += ds;
+        // Always move on: s + ds rounds to s in float32 when ds (a brick-edge step of
+        // EXIT_EPS cells) is below half an ulp of s (s in the thousands on wide shots); the ray
+        // then marched in place forever and hung the GPU (NVIDIA Xid 109; AI_LOG 2026-11-19).
+        let s_next = s + ds;
+        s = select(s_next, s + max(abs(s), 1.0) * 4.0e-7, s_next <= s);
         st.steps += 1u;
+        if (st.steps >= MAX_MARCH_STEPS) {  // backstop: no ray may run without end
+            break;
+        }
     }
     return st;
 }
