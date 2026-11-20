@@ -6,6 +6,9 @@ One exposure for the whole shot (no pumping): the median of the automatic exposu
 probe frames spread over the shot, times 2^stops from the shot's exposure keyframes.
 """
 
+import contextlib
+import fcntl
+import os
 from pathlib import Path
 
 import numpy as np
@@ -126,6 +129,24 @@ def gas_outside_boxes(plan: FramePlan, shot: Shot, timeline: Timeline) -> np.nda
     return out
 
 
+@contextlib.contextmanager
+def gpu_turn():
+    """Hold the file lock named by NEBULA_GPU_LOCK (if set) while using the GPU. Render
+    workers sharing the cloud L4 hit NVIDIA Xid 109 (context switch timeout) within minutes
+    when they submitted work at the same time (AI_LOG 2026-11-19); taking turns, the GPU never
+    has to preempt one worker for another. The CPU work (particles -> textures) stays parallel."""
+    path = os.environ.get("NEBULA_GPU_LOCK")
+    if not path:
+        yield
+        return
+    with open(path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 class ShotRenderer:
     def __init__(self, shot: Shot, plan: FramePlan, timeline: Timeline, width=None, height=None,
                  n_sub=None, sky=None):  # fmt: skip
@@ -209,12 +230,16 @@ class ShotRenderer:
                                        self.shot.brick_lattice(t / CODE_DAY))  # fmt: skip
         cam = self.plan.camera(i, self.width, self.height)
         mode = OUT_COLOUR_PICTURE if self.colour else OUT_PICTURE
-        scene = upload_scene(texs, self.model)
-        pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode)
+        with gpu_turn():  # several render workers share one cloud GPU: one at a time
+            scene = upload_scene(texs, self.model)
+            pic, _ = render_gas(cam, scene, n_sub=self.n_sub, sky=self.sky, out_mode=mode)
+            node = None
+            if self.points and not self._probing:
+                node, _ = render_gas(star_grid_camera(cam), scene, n_sub=1,
+                                     out_mode=OUT_SKY_DIR_T)  # fmt: skip
         if not np.isfinite(pic).all():
             raise FloatingPointError(f"frame {i}: {(~np.isfinite(pic)).sum()} non-finite values")
-        if self.points and not self._probing:  # channels 8-10: pinpoint stars x T
-            node, _ = render_gas(star_grid_camera(cam), scene, n_sub=1, out_mode=OUT_SKY_DIR_T)
+        if node is not None:  # channels 8-10: pinpoint stars x T
             size = np.radians(float(self.stars["size_deg"]))
             if size > 0:  # stars with a small size: points in open sky, arcs near the hole
                 pts = gauss_stars(node[..., :3], node[..., 3], self.star_index, size)
