@@ -32,7 +32,7 @@ import numpy as np
 
 from nebula.physics.colour import blackbody_xyz_lut, bolometric_intensity_si
 from nebula.physics.geodesics import schw_static_proper_length
-from nebula.physics.kerr import redshift_factor_kerr, static_frame_direction_kerr
+from nebula.physics.kerr import metric_parts, redshift_factor_kerr, static_frame_direction_kerr
 from nebula.physics.opacity import thermal_absorption_code
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
@@ -332,7 +332,11 @@ def brick_step_limit(textures, p, e):
 # ---------------------------------------------------------------- marching
 
 
-def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved=False):
+KERR_F_MAX = 0.99  # spinning hole: gas only where f < this (static lapse > 0.1)
+
+
+def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved=False,
+                  spin: float = 0.0):  # fmt: skip
     """March the straight segment a -> b (front to back) and return (I, T, n_steps).
 
     Each sub-step is at most STEP_FRACTION x the local cell size at both its start and its
@@ -367,7 +371,8 @@ def march_segment(textures, model, a, b, intensity=0.0, transmission=1.0, curved
         # A step with no gas changes nothing; skipping it also avoids 0 x infinity when a
         # captured ray's last step ends exactly on the horizon, where the proper length
         # diverges (r_mid = 2 happens in float32 on the GPU).
-        if lr > (RHO_MIN_COLOUR if rel else 0.0) and (not curved or r_mid > 2.0):
+        deep = spin > 0.0 and float(metric_parts(mid, spin)[1]) >= KERR_F_MAX  # ergosphere
+        if lr > (RHO_MIN_COLOUR if rel else 0.0) and (not curved or r_mid > 2.0) and not deep:
             path = ds
             if curved:
                 q = p + ds * e

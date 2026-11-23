@@ -158,3 +158,44 @@ def test_gas_march_along_kerr_rays_colour():
         check(f"Kerr colour: {ch} relative ({lit.sum()} lit pixels)", np.zeros(lit.sum()), rel,
               atol=1e-3)  # fmt: skip
     check("Kerr colour: lit pixels present (>= 10 of the sample)", True, lit.sum() >= 10)
+
+
+def test_gas_inside_the_ergosphere_is_skipped_not_nan():
+    """Gas reaching into the ergosphere (f >= 1 at Boyer-Lindquist r < 2 in the equator; the
+    first full spin frame had 158 NaN pixels there, AI_LOG 2026-11-20): with spin, gas where
+    f >= march.KERR_F_MAX is left out on the GPU and the CPU alike. A ring from r = 1.8 to 6.2:
+    every GPU pixel finite, and GPU = CPU (X, Y, Z, bolometric within 1e-3) at lit, stable
+    pixels."""
+    from nebula.render.march import KERR_F_MAX
+
+    lam, cmf = load_cmf()
+    lt, lc = chroma_lut(1e3, 1e8, 4096, lam, cmf)
+    tex, _ = ring_textures(4.0, 2.2, 1.0, nr=120, nth=64, nph=256, r_lo=1.5, r_hi=10.0)
+    g = tex.grid
+    r = g.r_centres()[:, None, None]
+    th = ((np.arange(g.nth) + 0.5) * g.dth)[None, :, None]
+    xs = np.stack(np.broadcast_arrays(r * np.sin(th), 0.0 * r * th, r * np.cos(th)), -1)
+    _, f, _ = K.metric_parts(xs[..., 0, :], SPIN)
+    deep = (f >= KERR_F_MAX) & (tex.rho[..., 0] > 0)
+    check("ergosphere test: the ring has gas where f >= KERR_F_MAX", True, bool(deep.any()))
+    cam = Camera(position=(40.0, 0.0, 12.0), vfov_deg=20.0, width=48, height=32)
+    _, f_cam, _ = K.metric_parts(np.asarray(cam.position, float), SPIN)
+    r_cam = float(np.linalg.norm(cam.position))
+    model = RelativisticBlackbody(kappa=1.0, r_cam=r_cam, log_t=lt, log_chroma=lc, spin=SPIN,
+                                  f_cam=float(f_cam))  # fmt: skip
+    gpu, _ = render_gas(cam, upload_scene([tex], model), n_sub=1, out_mode=OUT_COLOUR, spin=SPIN)
+    check("ergosphere test: every GPU value finite", True, bool(np.all(np.isfinite(gpu))))
+    pixels = [(i, j) for j in range(1, 32, 3) for i in range(1, 48, 3)]
+    stable = _cpu_rays(cam, SPIN, pixels)
+    pixels = [px for px in pixels if stable[px][2]]
+    cpu = render_reference_colour(cam, [tex], model, pixels=pixels, spin=SPIN)
+    cols = np.array([p[0] for p in pixels])
+    rows = np.array([p[1] for p in pixels])
+    gg, c = gpu[rows, cols].astype(float), cpu[rows, cols]
+    check("ergosphere test: every CPU value finite", True, bool(np.all(np.isfinite(c))))
+    lit = c[:, 3] > 1e-3 * c[:, 3].max()
+    for k, ch in enumerate(("X", "Y", "Z", "bolometric")):
+        rel = np.abs(gg[lit, k] - c[lit, k]) / c[lit, k]
+        check(f"ergosphere test: {ch} relative ({lit.sum()} lit pixels)", np.zeros(lit.sum()),
+              rel, atol=1e-3)  # fmt: skip
+    check("ergosphere test: lit pixels present (>= 10)", True, lit.sum() >= 10)

@@ -120,7 +120,7 @@ def march_bent_ray(textures, model, cam_pos, d, spin: float = 0.0):
     intensity, transmission, n = 0.0, 1.0, 0
     for a, b in zip(pts[:-1], pts[1:], strict=True):
         intensity, transmission, k = march_segment(
-            textures, model, a, b, intensity, transmission, curved=True
+            textures, model, a, b, intensity, transmission, curved=True, spin=spin
         )
         n += k
         if transmission < T_STOP:

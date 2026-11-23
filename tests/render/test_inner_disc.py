@@ -115,7 +115,10 @@ def test_disc_settings_are_checked(tmp_path):
     from pathlib import Path
 
     base = Path(__file__).resolve().parents[2] / "configs" / "shots" / "full_story.toml"
-    text = base.read_text()
+    import re
+
+    # the story's own [disc] section out, so each case below adds exactly one
+    text = re.sub(r"\n\[disc\]\n(?:[^\[\n][^\n]*\n|\n)*", "\n", base.read_text())
     good = tmp_path / "good.toml"
     good.write_text(text + "\n[disc]\nstripes = 0.2\n")
     check("[disc] accepted", 0.2, Shot.load(good).disc["stripes"])

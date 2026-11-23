@@ -40,6 +40,16 @@ band_exposure = 1.0757394861345457e-04
 [gas]
 h_scale = 1.5
 
+# The inner accretion disc (render/inner_disc.py; DECISIONS 2026-11-20 and 2026-11-23): a steady
+# thin disc fed by the torus's inner edge fills the dark gap down to the innermost stable orbit.
+# Hiten 2026-11-23 picked look C3 of outputs/checks/inner_disc/v4_02352_hole_zoom.png: cool and
+# nearly see-through ("you see the hole a bit more and the shape it creates").
+[disc]
+temperature = 0.5
+density = 0.0067
+stripes = 0.5
+t_stripes = 0.1
+
 # rays must reach the far cloud (r 5,000) and start inside the grid (camera <= 0.9 r_max)
 [grid]
 r_max = 8000.0

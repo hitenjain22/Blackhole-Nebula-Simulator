@@ -456,7 +456,13 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
         let alpha = gas.model.x * f.x;
         let r_mid = length(mid);
         // No gas: nothing changes; also avoids 0 x infinity at r_mid = 2 exactly (march.py).
+        // #if KERR
+        // also no gas where the static lapse sqrt(1 - f) < 0.1 (at and inside the ergosphere
+        // its colour formula divides by 0; such light is redshifted 10x and more anyway)
+        if (alpha > 0.0 && r_mid > 2.0 && kerr_f(mid) < KERR_F_MAX) {
+        // #else
         if (alpha > 0.0 && r_mid > 2.0) {
+        // #endif
             let q = p + ds * e;
             let path = proper_length(ds, length(q) - length(p), r_mid);
             // #if COLOUR
@@ -554,6 +560,7 @@ const KERR_H_MIN: f32 = 1.0e-4;   // kerr_rays.H_MIN
 const KERR_R_SKY: f32 = 1.0e6;    // kerr_rays.R_SKY
 const KERR_MAX_STEPS: u32 = 20000u;  // kerr_rays.MAX_STEPS
 const KERR_MARGIN: f32 = 1.0e-3;  // physics.kerr.HORIZON_MARGIN
+const KERR_F_MAX: f32 = 0.99;  // march.KERR_F_MAX
 
 fn kerr_radius(x: vec3<f32>) -> f32 {  // physics.kerr.ks_radius
     let a2 = kerr.spin.x * kerr.spin.x;

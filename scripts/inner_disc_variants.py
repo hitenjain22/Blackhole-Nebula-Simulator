@@ -3,7 +3,8 @@
 adaptation would apply (as scripts/inner_disc_try.py).
 
     uv run python scripts/inner_disc_variants.py frame width tag "A:toml" "B:toml" ...
-e.g. "A:temperature = 0.7\ndensity = 0.1"
+e.g. "A:temperature = 0.7\ndensity = 0.1"; a key spin = 0.9 sets the shot's spin instead
+(Kerr light rays; the disc then reaches the spinning hole's innermost stable orbit).
 """
 
 import dataclasses
@@ -48,7 +49,8 @@ lvl0 = auto_gas_exposure(probe0._gas_level(probe0.picture(frame)), SR.GAS_PERCEN
 now = renderer(base, width, height, 2)
 imgs, labels = [now.frame(frame)], ["now"]
 for name, disc in variants:
-    shot = dataclasses.replace(base, disc=disc)
+    spin = float(disc.pop("spin", 0.0))
+    shot = dataclasses.replace(base, disc=disc, spin=spin)
     probe = renderer(shot, 320, 180, 1, probing=True)
     lvl = auto_gas_exposure(probe._gas_level(probe.picture(frame)), SR.GAS_PERCENTILE,
                             SR.GAS_LEVEL)  # fmt: skip
@@ -59,7 +61,7 @@ for name, disc in variants:
     iio.imwrite(out / f"{tag}_{frame:05d}_{name}.png", img)
     imgs.append(img)
     labels.append(name)
-    print(f"{name}: {disc} exposure {stops:+.2f} stops", flush=True)
+    print(f"{name}: {disc} spin {spin} exposure {stops:+.2f} stops", flush=True)
 gap = np.full((height, 8, 3), 255, np.uint8)
 rows = [np.concatenate([imgs[k], gap, imgs[k + 1]], axis=1) if k + 1 < len(imgs)
         else np.concatenate([imgs[k], gap, np.zeros_like(imgs[k])], axis=1)
