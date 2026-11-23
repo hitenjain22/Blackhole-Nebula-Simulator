@@ -555,7 +555,7 @@ struct KerrCam {
 };
 @group(0) @binding(17) var<uniform> kerr: KerrCam;
 const KERR_H_FAR: f32 = 0.02;     // kerr_rays.H_FAR
-const KERR_R_NEAR: f32 = 2.0;     // kerr_rays.R_NEAR
+const KERR_R_NEAR: f32 = 0.5;     // kerr_rays.R_NEAR
 const KERR_H_MIN: f32 = 1.0e-4;   // kerr_rays.H_MIN
 const KERR_R_SKY: f32 = 1.0e6;    // kerr_rays.R_SKY
 const KERR_MAX_STEPS: u32 = 20000u;  // kerr_rays.MAX_STEPS

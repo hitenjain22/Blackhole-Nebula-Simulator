@@ -23,7 +23,7 @@ import numpy as np
 from nebula.physics import kerr as K
 
 H_FAR = 0.02  # step / r far from the hole
-R_NEAR = 2.0  # steps shrink inside r_h + R_NEAR
+R_NEAR = 0.5  # steps shrink inside r_h + R_NEAR (was 2.0: 1.7x the steps, no gain at a = 0.9)
 H_MIN = 1.0e-4  # smallest step (affine units)
 R_SKY = 1.0e6  # sky direction taken here (remaining bending ~ 4 / R_SKY rad at most)
 MAX_STEPS = 20000

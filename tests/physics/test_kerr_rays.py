@@ -104,3 +104,35 @@ def test_5_flat_side_faces_the_approaching_side():
     check("test 5: screen left at 1.5 x the flat edge escapes", "escaped", _status(a, left * 1.5))
     check("test 5: far edge on screen right", ("captured", "escaped"),
           (_status(a, right * 0.998), _status(a, right * 1.002)))  # fmt: skip
+
+
+def test_fixed_steps_match_the_reference_at_spin_0_9():
+    """The renderer's fixed-step rays (render/kerr_rays.py, the GPU's step rule) against DOP853
+    for the story's camera distance, a = 0.9: 30 random rays and 30 within +-0.05 of the
+    prograde shadow edge (where rays skim the hole): same fate, sky directions within 2e-4 rad.
+    (a = 0.99 fails this with fixed steps: AI_LOG 2026-11-23; not used.)"""
+    from nebula.render import kerr_rays as KR
+
+    a = 0.9
+    xc = np.array([270.0, 50.0, 70.0])
+    rc = np.linalg.norm(xc)
+    fwd = -xc / rc
+    e1 = np.cross(fwd, [0.0, 0.0, 1.0])
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(e1, fwd)
+    c0, amat = KR.camera_map(xc, a)
+    rng = np.random.default_rng(2)
+    bs = list(rng.uniform(0.0, 9.0, 30)) + list(2.925 + rng.uniform(-0.05, 0.05, 30))
+    bad, worst = 0, 0.0
+    for k, b in enumerate(bs):
+        ph = rng.uniform(0.0, 2.0 * np.pi) if k < 30 else np.pi
+        d = np.cos(b / rc) * fwd + np.sin(b / rc) * (np.cos(ph) * e1 + np.sin(ph) * e2)
+        _, st, sky = KR.ray_polyline(xc, d, a, 8000.0, c0, amat)
+        s2, _, pe, _ = K.trace_ray(xc, K.flat_to_local(xc, d), a, r_escape=1e8)
+        if {"captured": KR.RAY_CAPTURED, "escaped": KR.RAY_ESCAPED}.get(s2, -1) != st:
+            bad += 1
+        elif st == KR.RAY_ESCAPED:
+            ex = -pe / np.linalg.norm(pe)
+            worst = max(worst, float(np.arcsin(min(1.0, np.linalg.norm(np.cross(ex, sky))))))
+    check("fixed steps vs DOP853, a = 0.9: rays with a different fate (60)", 0, bad)
+    check("fixed steps vs DOP853, a = 0.9: sky directions (rad)", 0.0, worst, atol=2e-4)
