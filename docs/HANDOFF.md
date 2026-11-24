@@ -27,23 +27,13 @@ exact after every step (what runs, what's uncommitted, what's next).
 both approved by Hiten 2026-11-23). N0 done and committed (124c64d). **N1 (emission-line colours)
 in progress**, see below. Mode: "Go Attack!" (Hiten said so 2026-11-23 evening; he still checks in).
 
-**Running right now (Mac):**
-1. **Orbit preview clip** (Hiten's idea: camera orbiting close to the spinning hole, 78-108 s):
-   shot `configs/shots/full_story_orbit.toml` (copy of full_story.toml with `spin = 0.9` and new
-   camera keys 78-108 s; uncommitted), script `scripts/shot_clip.py` (uncommitted; resumable),
-   args `78 108 width=640 every=2 h_scale=1.0 tag=orbit1` (h_scale 1.0 = clumpier gas, Hiten OK'd
-   for previews). Runs from a **frozen git worktree** `<scratchpad>/frozen_clip` (commit 06a0812 +
-   the two uncommitted files; PYTHONPATH=its src; runs/ and the frames folder symlinked). Frames:
-   `outputs/checks/clips/full_story_orbit1/` (360 PNGs when done; 92 at 17:50), log
-   `<scratchpad>/orbit1b.log`; ~30-40 s/frame -> done ~21:30-22:00. Then it writes
-   `<worktree>/outputs/checks/clip_full_story_orbit1.mp4` and the command copies it to
-   `outputs/checks/clip_full_story_orbit1.mp4`. **If the session died:** rerun the same command
-   from the worktree (it resumes: skips existing PNGs, reuses `exposure_stops.json`), or from the
-   main repo once nothing edits the shader. Show Hiten the mp4 (full frames).
-   (<scratchpad> = /private/tmp/claude-501/-Users-hitenjain-Desktop-Blackhole-Nebula-Simulator/b68d049f-8097-4604-91f4-7a3e0eecd6d5/scratchpad; a reboot clears it: then
-   recreate the worktree with `git worktree add --detach <dir> HEAD`.)
-2. **Queued after the clip:** `uv run pytest -s -q tests/render/test_gpu_lines.py` (N1 test 4, GPU
-   vs CPU with lines). If the session died, run it yourself (GPU, ~10-15 min; one GPU job at a time).
+**Running right now (Mac), 2026-11-23 21:32:** the full suite (`uv run pytest -s -q`, log
+`<scratchpad>/suite_1123c.log`, ~30-35 min) before committing N1 part 2 + the optimization work.
+If the session died: rerun the full suite; if it passes, commit everything listed below.
+**Done tonight:** orbit clip finished: `outputs/checks/clip_full_story_orbit1.mp4` (30 s, 78-108
+s, spin 0.9, preview gas; Hiten liked the orbit, then asked for an over-the-pole loop, see below).
+GPU line tests pass (tests/render/test_gpu_lines.py: 6 pass; test 4 design story in AI_LOG
+2026-11-23 night).
 
 **Uncommitted work (N1 part 2), CPU-tested, needs the GPU tests before committing:**
 - `src/nebula/render/march.py`: `LineLook` (knobs: gain, continuum_mix, x_h, x_o3, x_ns, n_cap,
@@ -64,8 +54,10 @@ in progress**, see below. Mode: "Go Attack!" (Hiten said so 2026-11-23 evening; 
 - scripts: `scripts/look_variants.py` (full-frame labelled look sheets), `scripts/shot_clip.py`,
   `scripts/inner_disc_variants.py` (small change), `configs/shots/full_story_orbit.toml`.
 - docs: DECISIONS (N1 choices incl. hot fade change), AI_LOG (clip crash), this file.
-**To commit:** after test_gpu_lines passes, run the full suite (`uv run pytest -s -q`, ~30 min,
-uses the GPU), then commit + push (attribution line below).
+**To commit (after the suite passes):** N1 part 2 files above + optimization files
+(`gasgrid.py` deposit_log_split, `snapshot_scene.py`, `inner_disc.py` feed changes,
+`shot_render.py` feed cache, tests test_deposit_split.py / test_inner_disc.py additions,
+`scripts/profile_frame_cpu.py`, `scripts/look_variants.py`) + DECISIONS/AI_LOG/HANDOFF.
 
 **Hiten 2026-11-23 ~18:05:** pause until 18:30 PST (his usage reset), then: **(A) optimization
 review first**: look for ways to make everything run faster and/or better (simulation, deposition,

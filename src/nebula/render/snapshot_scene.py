@@ -15,7 +15,7 @@ from nebula.render.gasgrid import (
     CartesianBox,
     LogSphericalGrid,
     deposit_box,
-    deposit_log,
+    deposit_log_split,
 )
 from nebula.render.march import BLEND_CELLS, T_REF, Texture, texture_from_gasgrid
 
@@ -68,7 +68,9 @@ def textures_from_particles(x, h, m, t, v, grid=None, boxes=(), bricks=None) -> 
     """[log-grid texture, box textures...] from particle arrays (code units; t in K); with
     ``bricks`` (a bricks.BrickLattice; not together with boxes) [log-grid texture, brick
     texture]: the fine particles (bricks.fine_particles) go to the bricks only, the rest to the
-    log grid only, so each particle is deposited exactly once.
+    log grid only, so each particle is deposited exactly once. The log grid uses
+    gasgrid.deposit_log_split (very wide particles via a coarser grid: ~4x faster late frames,
+    density within ~1%, ledger exact; optimization review 2026-11-23).
 
     Particles deep inside a detail box go into the box only. In the log grid their mass would
     be spread over its cells, which far from the hole are hundreds of units wide, so a cloud at
@@ -82,13 +84,14 @@ def textures_from_particles(x, h, m, t, v, grid=None, boxes=(), bricks=None) -> 
             raise ValueError("a scene uses detail boxes or bricks, not both")
         fine = fine_particles(x, h, bricks, grid)
         rest = ~fine
-        log = deposit_log(x[rest], h[rest], m[rest], t[rest], v[rest], grid)
+        log = deposit_log_split(x[rest], h[rest], m[rest], t[rest], v[rest], grid)
         # velocities only when there are any (Phase 9 colour); zeros skip the extra passes
         vf = v[fine] if np.any(v) else None
         bg = deposit_bricks(x[fine], h[fine], m[fine], t[fine], bricks, v=vf)
         return [texture_from_gasgrid(log), texture_from_bricks(bg, T_REF)]
     keep = ~inside_boxes(x, h, boxes) if boxes else np.ones(len(h), bool)
-    texs = [texture_from_gasgrid(deposit_log(x[keep], h[keep], m[keep], t[keep], v[keep], grid))]
+    texs = [texture_from_gasgrid(deposit_log_split(x[keep], h[keep], m[keep], t[keep], v[keep],
+                                                   grid))]  # fmt: skip
     for b in boxes:
         texs.append(texture_from_gasgrid(deposit_box(x, h, m, t, v, CartesianBox(**b))))
     return texs

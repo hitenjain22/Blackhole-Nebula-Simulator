@@ -503,8 +503,21 @@ fn march_chord(a: vec3<f32>, b: vec3<f32>, st_in: MarchState) -> MarchState {
                 let alpha_g = mix(alpha, gas.colour2.w * f.x * sqrt(q * (1.0 + q)), th);
                 let dtau = alpha_g * path * doppler;
                 let bol_dtau = g2 * g2 * gas.model.y * (f.y / f.x) * dtau;
+                // #if LINES
+                // Phase 14 N1 (march.RelativisticBlackbody with LineLook): continuum x the blend
+                // factor (physics.opacity.thin_emission_fraction), plus the lines' j over the
+                // gas-frame path (physics/emission_lines.py), both through the step's
+                // self-absorption (1 - e^-dtau) / dtau
+                let s_cont = (1.0 - lp.look.y) + lp.look.y * sqrt(q / (1.0 + q));
+                let lfac = one_minus_exp_over_x(dtau);
+                let w = st.transmission * s_cont * bol_dtau * lfac;
+                st.intensity += w * vec4<f32>(lut_chroma(g * t_em), 1.0)
+                    + (st.transmission * lp.look.x * path * doppler * lfac)
+                    * line_source(f.x, t_em, g);
+                // #else
                 let w = st.transmission * bol_dtau * one_minus_exp_over_x(dtau);
                 st.intensity += w * vec4<f32>(lut_chroma(g * t_em), 1.0);
+                // #endif
                 st.transmission *= exp(-dtau);
             }
             // #else
@@ -838,6 +851,90 @@ const TEXEL_ANGLE_FACE0: f32 = 0.000766990;  // as render_stars.wgsl
 // per-pixel sub-ray count for photon-ring pixels (0: use n_sub); a 1-element buffer = none
 @group(0) @binding(16) var<storage, read> sub_map: array<u32>;
 const MAX_RING_SUB: u32 = 8u;
+// #if LINES
+// Phase 14 N1: nebula emission lines (float32 twin of physics/emission_lines.py via
+// march.RelativisticBlackbody._line_source; tests/render/test_gpu_lines.py).
+struct LineParams {
+    look: vec4<f32>,   // gain, continuum_mix, x_h, x_o3
+    look2: vec4<f32>,  // x_ns, n_cap [cm^-3], t_fade [K], fade_power
+    conv: vec4<f32>,   // n_H [cm^-3] per code density, erg cm^-3 s^-1 -> W m^-3 x code length [m], log10 T0, d log10 T
+    grid: vec4<f32>,   // log10 n0, d log10 n, n_T, n_n of the forbidden-line table
+    abund: vec4<f32>,  // O, N, S, He per H (by number)
+    wave0: vec4<f32>,  // line wavelengths [nm] in emission_lines.LINE_NAMES order
+    wave1: vec4<f32>,
+    wave2: vec4<f32>,
+};
+@group(0) @binding(18) var line_cmf: texture_2d<f32>;    // 471 x 1: (xbar, ybar, zbar, 0), 360-830 nm
+@group(0) @binding(19) var line_table: texture_2d<f32>;  // n_n x (6 n_T): log10 eps, line-major
+@group(0) @binding(20) var<uniform> lp: LineParams;
+const INV_LN10: f32 = 0.434294482;
+const INV_4PI: f32 = 0.0795774715;
+
+fn cmf_at(lam: f32) -> vec3<f32> {  // emission_lines.line_xyz (0 outside the table)
+    let x = lam - 360.0;
+    if (x < 0.0 || x > 470.0) {
+        return vec3<f32>(0.0);
+    }
+    let i = min(u32(x), 469u);
+    let f = x - f32(i);
+    let a = textureLoad(line_cmf, vec2<i32>(i32(i), 0), 0).xyz;
+    let b = textureLoad(line_cmf, vec2<i32>(i32(i) + 1, 0), 0).xyz;
+    return a * (1.0 - f) + b * f;
+}
+
+fn coll_eps(k: i32, lt_in: f32, ln_in: f32) -> f32 {  // emission_lines.table_lookup
+    let nt = i32(lp.grid.z);
+    let nn = i32(lp.grid.w);
+    let lt = clamp(lt_in, lp.conv.z, lp.conv.z + lp.conv.w * f32(nt - 1));
+    let ln = clamp(ln_in, lp.grid.x, lp.grid.x + lp.grid.y * f32(nn - 1));
+    let ft = (lt - lp.conv.z) / lp.conv.w;
+    let fn_ = (ln - lp.grid.x) / lp.grid.y;
+    let i = min(i32(floor(ft)), nt - 2);
+    let j = min(i32(floor(fn_)), nn - 2);
+    let a = ft - f32(i);
+    let b = fn_ - f32(j);
+    let row = k * nt + i;
+    let v00 = textureLoad(line_table, vec2<i32>(j, row), 0).x;
+    let v10 = textureLoad(line_table, vec2<i32>(j, row + 1), 0).x;
+    let v01 = textureLoad(line_table, vec2<i32>(j + 1, row), 0).x;
+    let v11 = textureLoad(line_table, vec2<i32>(j + 1, row + 1), 0).x;
+    let v = v00 * (1.0 - a) * (1.0 - b) + v10 * a * (1.0 - b) + v01 * (1.0 - a) * b + v11 * a * b;
+    return exp(v / INV_LN10);
+}
+
+// Observed (X, Y, Z, bolometric) line radiance per code length of gas-frame path, before the
+// gain: g^4 sum_l j_l CMF(lambda_l / g) x hot fade (emission_lines.line_emission_code,
+// lines_to_xyz). Densities in cm^-3 as the _cgs functions.
+fn line_source(rho: f32, t: f32, g: f32) -> vec4<f32> {
+    let nh = rho * lp.conv.x;
+    let n_p = lp.look.z * nh;
+    let n_e = n_p * (1.0 + lp.abund.w);
+    let lt4 = log(t * 1.0e-4);
+    let ha = 2.82e-26 * exp((-0.942 - 0.031 * lt4) * lt4) * (n_e * n_p);  // Dong & Draine
+    let hb = ha / 2.86;
+    let hg = 0.468 * hb;
+    let lt = log(t) * INV_LN10;
+    let ln = log(min(n_e, lp.look2.y)) * INV_LN10;
+    let c = n_e * INV_4PI;
+    let o3 = c * (lp.look.w * lp.abund.x * nh);
+    let n2 = c * (lp.look2.x * lp.abund.y * nh);
+    let s2 = c * (lp.look2.x * lp.abund.z * nh);
+    let j0 = vec4<f32>(ha, hb, hg, coll_eps(0, lt, ln) * o3);
+    let j1 = vec4<f32>(coll_eps(1, lt, ln) * o3, coll_eps(2, lt, ln) * n2,
+                       coll_eps(3, lt, ln) * n2, coll_eps(4, lt, ln) * s2);
+    let j8 = coll_eps(5, lt, ln) * s2;
+    let ig = 1.0 / g;
+    var xyz = j0.x * cmf_at(lp.wave0.x * ig) + j0.y * cmf_at(lp.wave0.y * ig)
+            + j0.z * cmf_at(lp.wave0.z * ig) + j0.w * cmf_at(lp.wave0.w * ig);
+    xyz += j1.x * cmf_at(lp.wave1.x * ig) + j1.y * cmf_at(lp.wave1.y * ig)
+         + j1.z * cmf_at(lp.wave1.z * ig) + j1.w * cmf_at(lp.wave1.w * ig);
+    xyz += j8 * cmf_at(lp.wave2.x * ig);
+    let bol = j0.x + j0.y + j0.z + j0.w + j1.x + j1.y + j1.z + j1.w + j8;
+    let g2 = g * g;
+    let scale = lp.conv.y * g2 * g2 / (1.0 + pow(t / lp.look2.z, lp.look2.w));
+    return vec4<f32>(xyz, bol) * scale;
+}
+// #endif
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {

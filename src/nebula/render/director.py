@@ -135,6 +135,13 @@ GAS_SETTINGS = {"h_scale": 1.0, "shutter": 0.0, "blur_samples": 6, "ring_rays": 
 DISC_SETTINGS = {"r_in": None, "edge": [40.0, 60.0], "r_ref": 50.0, "taper": [35.0, 50.0],
                  "smooth_days": 10.0, "spacing": 0.6, "stripes": 0.35, "seed": 7,
                  "temperature": 1.0, "density": 1.0, "t_stripes": 0.0}  # fmt: skip
+# [nebula]: Phase 14 N1 emission-line colours (march.LineLook; DECISIONS 2026-11-23); on when the
+# section is present (true colour with opacity "thermal" only). gain: line glow; continuum_mix:
+# 0 = today's continuum, 1 = the thin-gas continuum; x_h, x_o3, x_ns: ionization tags (uniform
+# until N4); n_cap [cm^-3], t_fade [K], fade_power: line model; saturation: colour richness of
+# the gas in the final picture (1 = as rendered; gas_frames.compose_colour). Labelled look knobs.
+NEBULA_SETTINGS = {"gain": 1.0, "continuum_mix": 0.0, "x_h": 1.0, "x_o3": 0.03, "x_ns": 0.3,
+                   "n_cap": 1e3, "t_fade": 4e4, "fade_power": 8.0, "saturation": 1.0}  # fmt: skip
 # temperature, density: scale factors on the matched disc (look; inner_disc.disc_particles);
 # t_stripes: ring stripes in temperature
 
@@ -262,6 +269,7 @@ class Shot:
     gas: dict | None = None  # [gas]: drawing look (GAS_SETTINGS)
     disc: dict | None = None  # [disc]: render-time inner disc (DISC_SETTINGS); None = off
     spin: float = 0.0  # hole spin a (Phase 11): Kerr light rays (render_gas spin=) and disc edge
+    nebula: dict | None = None  # [nebula]: emission-line colours and look knobs (NEBULA_SETTINGS)
 
     def disc_r_in(self) -> float:
         """The inner disc's inner edge: [disc] r_in, or the ISCO of the shot's spin."""
@@ -315,6 +323,7 @@ class Shot:
             gas=d.get("gas"),
             disc=d.get("disc"),
             spin=float(d.get("spin", 0.0)),
+            nebula=d.get("nebula"),
         )  # fmt: skip
         shot.validate()
         return shot
@@ -378,6 +387,22 @@ class Shot:
                 raise ShotError("[gas]: ring_rays must be 0 (off) to 8")
             if float(g["h_scale"]) <= 0 or float(g["shutter"]) < 0 or int(g["blur_samples"]) < 1:
                 raise ShotError("[gas]: h_scale > 0, shutter >= 0 and blur_samples >= 1 needed")
+        if self.nebula is not None:
+            bad = set(self.nebula) - set(NEBULA_SETTINGS)
+            if bad:
+                raise ShotError(f"[nebula]: unknown settings {sorted(bad)}")
+            nb = {**NEBULA_SETTINGS, **self.nebula}
+            if self.colour != "true" or self.opacity != "thermal":
+                raise ShotError('[nebula] needs colour = "true" and opacity = "thermal"')
+            if not 0.0 <= float(nb["continuum_mix"]) <= 1.0:
+                raise ShotError("[nebula]: continuum_mix must be 0-1")
+            for key in ("x_h", "x_o3", "x_ns"):
+                if not 0.0 <= float(nb[key]) <= 1.0:
+                    raise ShotError(f"[nebula]: {key} must be 0-1")
+            if min(float(nb[k]) for k in ("gain", "n_cap", "t_fade", "fade_power")) <= 0:
+                raise ShotError("[nebula]: gain, n_cap, t_fade and fade_power must be positive")
+            if float(nb["saturation"]) < 0:
+                raise ShotError("[nebula]: saturation must be >= 0")
         if not 0.0 <= self.spin < 1.0:
             raise ShotError(f"spin = {self.spin}: use 0 <= spin < 1")
         if self.disc is not None:

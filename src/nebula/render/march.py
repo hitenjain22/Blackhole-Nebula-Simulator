@@ -31,9 +31,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from nebula.physics.colour import blackbody_xyz_lut, bolometric_intensity_si
+from nebula.physics.emission_lines import line_emission_code, lines_to_xyz
 from nebula.physics.geodesics import schw_static_proper_length
 from nebula.physics.kerr import metric_parts, redshift_factor_kerr, static_frame_direction_kerr
-from nebula.physics.opacity import thermal_absorption_code
+from nebula.physics.opacity import thermal_absorption_code, thin_emission_fraction
 from nebula.physics.radiative_transfer import (
     blackbody_intensity_si,
     grey_absorption,
@@ -115,6 +116,30 @@ class GreyBlackbody:
 
 
 @dataclass(frozen=True)
+class LineLook:
+    """Nebula emission lines on top of the blackbody (Phase 14 N1; physics/emission_lines.py),
+    with the look knobs (labelled cheats, DECISIONS 2026-11-23):
+
+    gain: multiplies the line glow; continuum_mix: 0 = today's continuum source S = B, 1 = the
+    thin-gas form S = sqrt(q/(1+q)) B (physics.opacity.thin_emission_fraction), in between a
+    linear blend of the two factors; x_h, x_o3, x_ns: the ionization tags (uniform until N4
+    deposits per-particle tags); n_cap, t_fade, fade_power: as line_emissivities_si.
+    tables: render.colour_data.load_emission_tables(); lam, cmf: load_cmf()."""
+
+    tables: dict
+    lam: np.ndarray
+    cmf: np.ndarray
+    gain: float = 1.0
+    continuum_mix: float = 0.0
+    x_h: float = 1.0
+    x_o3: float = 0.03
+    x_ns: float = 0.3
+    n_cap: float = 1e3
+    t_fade: float = 4e4
+    fade_power: float = 8.0
+
+
+@dataclass(frozen=True)
 class RelativisticBlackbody:
     """Phase 9 emission (phase-09 9.4): gas emits as a blackbody at its temperature T_em in its
     own frame, with grey absorption alpha_gas = kappa rho in its own frame. Seen from a static
@@ -139,6 +164,8 @@ class RelativisticBlackbody:
     # f_cam = Kerr-Schild f at the camera. spin 0: the Phase 9 formulas unchanged.
     spin: float = 0.0
     f_cam: float = 0.0
+    # Phase 14 N1: emission lines (needs opacity "thermal"); None = Phase 9 colours unchanged
+    lines: LineLook | None = None
     relativistic = True
 
     def __post_init__(self):
@@ -146,6 +173,8 @@ class RelativisticBlackbody:
             raise ValueError(
                 f'opacity = {self.opacity!r}: use "constant" or "thermal"'
             )  # march_segment: sample velocities and pass the light direction
+        if self.lines is not None and self.opacity != "thermal":
+            raise ValueError('emission lines need opacity = "thermal" (their continuum blend)')
 
     channels = 4
 
@@ -172,8 +201,28 @@ class RelativisticBlackbody:
             alpha = float(thermal_absorption_code(rho, t_em))
         else:
             alpha = float(grey_absorption(rho, self.kappa))
-        dtau = alpha * path_static * float(gas_frame_path_factor(gb, n_light))
+        doppler = float(gas_frame_path_factor(gb, n_light))
+        dtau = alpha * path_static * doppler
+        if self.lines is not None and dtau > 0.0:
+            src = src * self._continuum_factor(rho, t_em)
+            src = src + self._line_source(rho, t_em, g, path_static * doppler) / dtau
         return src, dtau
+
+    def _continuum_factor(self, rho, t_em):
+        mix = self.lines.continuum_mix
+        return (1.0 - mix) + mix * float(thin_emission_fraction(rho, t_em))
+
+    def _line_source(self, rho, t_em, g, path_gas):
+        """Observed line radiance of the step (X, Y, Z, bolometric) [W m^-2 sr^-1]: g^4 j over
+        the gas-frame path (physics/emission_lines.py), times the gain. The caller divides by
+        dtau so that transfer_step's S (1 - e^-dtau) gives j path (1 - e^-dtau) / dtau."""
+        lk = self.lines
+        j = line_emission_code(rho, t_em, lk.x_h, lk.x_o3, lk.x_ns, lk.tables, n_cap=lk.n_cap,
+                               t_fade=lk.t_fade, fade_power=lk.fade_power)  # fmt: skip
+        out = np.zeros(4)
+        out[:3] = lines_to_xyz(j, g, lk.lam, lk.cmf)
+        out[3] = g**4 * float(np.sum(j))
+        return lk.gain * path_gas * out
 
 
 # ---------------------------------------------------------------- sampling

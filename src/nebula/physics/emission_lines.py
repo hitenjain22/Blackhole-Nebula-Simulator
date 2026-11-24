@@ -30,9 +30,11 @@ Model choices (labelled, DECISIONS 2026-11-23/24):
 - n_cap: the forbidden lines' eps is looked up at min(n_e, n_cap). The simulated cloud is
   ~10^13-10^14 cm^-3, where forbidden lines are physically quenched; looking eps up at a typical
   nebula density keeps their colour balance (the teal accent) at a nebula's values.
-- hot_fade: all lines x 1 / (1 + (T / t_fade)^power). Above ~10^5 K infalling clumps stop
-  glowing in recombination lines (Guillochon et al. 2014) and collisions strip O++; the fade
-  lets the blackbody take over so the gas turns white-hot.
+- hot_fade: all lines x 1 / (1 + (T / t_fade)^power), default t_fade 4e4 K, power 8: lines
+  dominate to ~5e4 K and are < 10% of dense gas's light at 10^5 K. Above ~10^5 K infalling
+  clumps stop glowing in recombination lines (Guillochon et al. 2014) and collisions strip O++;
+  without a steep fade [O III] (which brightens with T) kept hot dense gas teal (88% of its
+  light at 10^5 K with 5e4 / 4). The fade lets the blackbody take over: the gas turns white-hot.
 
 Units: T in K; densities in cm^-3 for the _cgs functions (rule 4: line emission is naturally
 written in physical units), SI for _si; ``line_emission_code`` is the code-unit wrapper.
@@ -101,8 +103,8 @@ def hot_fade(t_k, t_fade: float, power: float = 4.0):
     return 1.0 / (1.0 + (np.asarray(t_k, float) / t_fade) ** power)
 
 
-def line_emissivities_si(n_h, t_k, x_h, x_o3, x_ns, tables, n_cap=1e9, t_fade=5e4,
-                         fade_power=4.0):  # fmt: skip
+def line_emissivities_si(n_h, t_k, x_h, x_o3, x_ns, tables, n_cap=1e9, t_fade=4e4,
+                         fade_power=8.0):  # fmt: skip
     """All nine line emissivities [W m^-3 sr^-1] (LINE_NAMES order on the last axis) of gas with
     hydrogen density n_h [m^-3], temperature T [K] and tags: x_h = ionized hydrogen fraction,
     x_o3 = O++ fraction of oxygen, x_ns = N+ and S+ fraction of nitrogen and sulphur. n_cap

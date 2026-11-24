@@ -681,12 +681,8 @@ def _check_memory(shape):
         raise MemoryError(f"deposition buffers would need {need / 1e9:.1f} GB; use a smaller grid")
 
 
-def deposit_log(x, h, m, t, v, g: LogSphericalGrid, kernel: str = "wendland_c4") -> GasGrid:
-    """Fast (Numba) deposition onto a log-spherical grid; matches deposit_log_reference.
-
-    x: (N, 3) positions [code lengths]; h: (N,) smoothing lengths; m: particle mass(es)
-    [code masses]; t: (N,) temperatures [K]; v: (N, 3) velocities [code units].
-    """
+def _log_accumulate(x, h, m, t, v, g: LogSphericalGrid, kernel: str):
+    """Accumulated sums (nr, nth, nph, N_FIELDS), outside mass, trilinear count (Numba)."""
     _check_memory(g.shape)
     x, h, m, vals, bounds = _prepare(x, h, m, t, v)
     acc = np.zeros((N_CHUNKS, *g.shape, N_FIELDS))
@@ -720,7 +716,96 @@ def deposit_log(x, h, m, t, v, g: LogSphericalGrid, kernel: str = "wendland_c4")
     for c in range(1, N_CHUNKS):  # fixed order: deterministic
         total += acc[c]
     del acc
-    return _finish(g, total, g.volumes()[:, :, None], res[:, 0].sum(), int(res[:, 1].sum()))
+    return total, float(res[:, 0].sum()), int(res[:, 1].sum())
+
+
+def deposit_log(x, h, m, t, v, g: LogSphericalGrid, kernel: str = "wendland_c4") -> GasGrid:
+    """Fast (Numba) deposition onto a log-spherical grid; matches deposit_log_reference.
+
+    x: (N, 3) positions [code lengths]; h: (N,) smoothing lengths; m: particle mass(es)
+    [code masses]; t: (N,) temperatures [K]; v: (N, 3) velocities [code units].
+    """
+    total, outside, n_tri = _log_accumulate(x, h, m, t, v, g, kernel)
+    return _finish(g, total, g.volumes()[:, :, None], outside, n_tri)
+
+
+# Very wide particles (kernel support >= WIDE_CELLS fine angular cells, r dtheta; 24 chosen from
+# 16 / 24 / 32 at frame 2112: 4.1x faster, density 99th pct 0.7%, max 1.5%) cost
+# (support / cell)^3 cell visits each: 1% of the particles made 84% of a late frame's work (2.2e9
+# visits, ~2 min; optimization review 2026-11-23). They go to a grid COARSEN times coarser per
+# axis, whose fields are interpolated back (DECISIONS 2026-11-23).
+WIDE_CELLS = 24.0
+COARSEN = (2, 4, 4)  # r, theta, phi
+
+
+def coarse_log_grid(g: LogSphericalGrid, coarsen=COARSEN) -> LogSphericalGrid:
+    """The grid with cells coarsen = (cr, ct, cp) times larger, aligned with g's cell edges and
+    covering exactly the same volume (each of g's sizes must divide)."""
+    cr, ct, cp = coarsen
+    if g.nr % cr or g.nth % ct or g.nph % cp:
+        raise ValueError(f"grid {g.shape} not divisible by {coarsen}")
+    return LogSphericalGrid(r_min=g.r_min, r_max=g.r_max, nr=g.nr // cr, nth=g.nth // ct,
+                            nph=g.nph // cp)  # fmt: skip
+
+
+def wide_particles(x, h, g: LogSphericalGrid, wide_cells: float = WIDE_CELLS) -> np.ndarray:
+    """Mask of particles whose support 2h spans >= wide_cells fine angular cells (r dtheta)."""
+    r = np.linalg.norm(np.asarray(x, float), axis=1)
+    return R_SUPPORT * np.asarray(h, float) >= wide_cells * np.maximum(r, g.r_min) * g.dth
+
+
+def refine_sums(acc_c, gc: LogSphericalGrid, g: LogSphericalGrid, coarsen=COARSEN):
+    """Coarse accumulated sums -> fine-grid sums: each field's density (sum / coarse cell
+    volume) interpolated trilinearly in index space at the fine cell centres (theta clamped at
+    the poles, phi periodic, r clamped), times the fine cell volume, then scaled so the fine
+    grid holds exactly the coarse grid's mass inside g (the ledger stays exact; the other sums
+    scale with it, so mass-weighted T and v are the interpolated ones)."""
+    cr, ct, cp = coarsen
+    dens = acc_c / gc.volumes()[:, :, None, None]
+
+    def axis(n_fine, c, n_coarse, periodic):
+        f = (np.arange(n_fine) + 0.5) / c - 0.5
+        if periodic:
+            i0 = np.floor(f).astype(int)
+            return i0 % n_coarse, (i0 + 1) % n_coarse, f - i0
+        f = np.clip(f, 0.0, n_coarse - 1.0)
+        i0 = np.minimum(np.floor(f).astype(int), n_coarse - 2) if n_coarse > 1 else np.zeros(
+            n_fine, int)  # fmt: skip
+        return i0, np.minimum(i0 + 1, n_coarse - 1), f - i0
+
+    ri0, ri1, rw = axis(g.nr, cr, gc.nr, False)
+    ti0, ti1, tw = axis(g.nth, ct, gc.nth, False)
+    pi0, pi1, pw = axis(g.nph, cp, gc.nph, True)
+    out = np.zeros((g.nr, g.nth, g.nph, acc_c.shape[-1]))
+    for a, wa in ((ri0, 1 - rw), (ri1, rw)):
+        for b, wb in ((ti0, 1 - tw), (ti1, tw)):
+            for c, wc in ((pi0, 1 - pw), (pi1, pw)):
+                w = wa[:, None, None] * wb[None, :, None] * wc[None, None, :]
+                out += w[..., None] * dens[a][:, b][:, :, c]
+    out *= g.volumes()[:, :, None, None]
+    if out[..., 0].sum() > 0:  # the coarse grid covers exactly g's volume
+        out *= acc_c[..., 0].sum() / out[..., 0].sum()
+    return out
+
+
+def deposit_log_split(x, h, m, t, v, g: LogSphericalGrid, kernel: str = "wendland_c4",
+                      wide_cells: float = WIDE_CELLS, coarsen=COARSEN) -> GasGrid:  # fmt: skip
+    """deposit_log with very wide particles deposited on a coarser grid and interpolated back
+    (refine_sums): same fields to within the interpolation of smooth, wide kernels; total mass
+    exact (fine mass + outside = sum m, with the coarse grid's own outside mass)."""
+    m = np.broadcast_to(np.asarray(m, float), np.shape(h))
+    wide = wide_particles(x, h, g, wide_cells)
+    total, outside, n_tri = _log_accumulate(x[~wide], h[~wide], m[~wide], np.asarray(t)[~wide],
+                                            np.asarray(v)[~wide], g, kernel)  # fmt: skip
+    if wide.any():
+        gc = coarse_log_grid(g, coarsen)
+        acc_c, out_c, tri_c = _log_accumulate(x[wide], h[wide], m[wide], np.asarray(t)[wide],
+                                              np.asarray(v)[wide], gc, kernel)  # fmt: skip
+        total = total + refine_sums(acc_c, gc, g, coarsen)
+        outside, n_tri = outside + out_c, n_tri + tri_c
+    grid = _finish(g, total, g.volumes()[:, :, None], outside, n_tri)
+    grid.extra["n_wide"] = int(wide.sum())
+    return grid
 
 
 def deposit_box(x, h, m, t, v, b: CartesianBox, kernel: str = "wendland_c4") -> GasGrid:

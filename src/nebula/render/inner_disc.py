@@ -35,6 +35,12 @@ from nebula.physics.kernels import get_kernel
 
 KERNEL = "wendland_c4"  # the deposit's kernel (gasgrid.deposit_log, bricks.deposit_bricks)
 IN_PLANE = 0.3  # |height| / R limit for gas counted in the edge annulus
+# only gas on near-circular orbits feeds the disc (a torus does; the first pass's stream crossing
+# the annulus does not: 0% of it is near-circular at days 96-98, 99.4-100% of the torus at days
+# 293-304; optimization review 2026-11-23):
+# |p_R| < CIRC_RADIAL p_phi and p_phi / v_circ in CIRC_BAND
+CIRC_RADIAL = 0.3
+CIRC_BAND = (0.7, 1.3)
 MIN_H_OVER_R = 0.01
 
 
@@ -59,7 +65,9 @@ def _plane_basis(normal):
 
 def edge_feed(x, p, m, temp, r_lo: float, r_hi: float) -> EdgeFeed:
     """Measure the annulus r_lo < R < r_hi (cylindrical, in the orbital plane of the gas within
-    r < 2 r_hi; |height| < IN_PLANE R). m: mass per particle (scalar or array); temp in K."""
+    r < 2 r_hi; |height| < IN_PLANE R), counting only gas on near-circular prograde orbits
+    (|p_R| < CIRC_RADIAL p_phi, p_phi / R^-1/2 within CIRC_BAND; p the GN momentum, ~ the
+    velocity at these radii). m: mass per particle (scalar or array); temp in K."""
     x, p = np.asarray(x, float), np.asarray(p, float)
     m = np.broadcast_to(np.asarray(m, float), (len(x),))
     temp = np.asarray(temp, float)
@@ -69,8 +77,18 @@ def edge_feed(x, p, m, temp, r_lo: float, r_hi: float) -> EdgeFeed:
         return EdgeFeed(0.0, 0.0, 0.0, np.zeros(3))
     e1, e2, n = _plane_basis(lnear)
     z = x @ n
-    big_r = np.hypot(x @ e1, x @ e2)
-    sel = (big_r > r_lo) & (big_r < r_hi) & (np.abs(z) < IN_PLANE * big_r)
+    x1, x2 = x @ e1, x @ e2
+    big_r = np.hypot(x1, x2)
+    safe = np.maximum(big_r, 1e-300)
+    p_r = ((p @ e1) * x1 + (p @ e2) * x2) / safe
+    p_phi = (x1 * (p @ e2) - x2 * (p @ e1)) / safe
+    v_c = safe**-0.5
+    circular = (
+        (np.abs(p_r) < CIRC_RADIAL * p_phi)
+        & (p_phi > CIRC_BAND[0] * v_c)
+        & (p_phi < CIRC_BAND[1] * v_c)
+    )
+    sel = (big_r > r_lo) & (big_r < r_hi) & (np.abs(z) < IN_PLANE * big_r) & circular
     if not sel.any():
         return EdgeFeed(0.0, 0.0, 0.0, np.zeros(3))
     ms = m[sel]
@@ -187,3 +205,22 @@ def disc_particles(
     mass = np.repeat(sig * r * r * dlnr * dph, n_ph)
     h = hr * rr / get_kernel(KERNEL).axis_rms()
     return DiscParticles(x[keep], h[keep], mass[keep], np.repeat(temp, n_ph)[keep], gb[keep])
+
+
+FEED_STEP_DAYS = 0.25  # at most one snapshot per quarter day enters the feed average
+
+
+def feed_snapshots(times, t: float, width: float, step: float) -> np.ndarray:
+    """Indices of the snapshots that enter the feed average at t: for every point of a grid of
+    spacing ``step`` across the window [t - width/2, t + width/2], the nearest snapshot; each
+    kept once. Where snapshots are ``step`` or more apart this is every snapshot in the window
+    (the average is then unchanged); where they are dense (hundreds per window around the
+    pass) it keeps ~width/step of them: the average of a smooth 10-day trend is the same, and
+    a render process no longer reads hundreds of snapshot files (430 s at day 97,
+    optimization review 2026-11-23)."""
+    times = np.asarray(times, float)
+    grid = np.arange(t - 0.5 * width, t + 0.5 * width + 0.5 * step, step)
+    pos = np.clip(np.searchsorted(times, grid), 1, len(times) - 1)
+    near = np.where(np.abs(times[pos - 1] - grid) <= np.abs(times[pos] - grid), pos - 1, pos)
+    ks = np.unique(near)
+    return ks[np.abs(times[ks] - t) < 0.5 * width]

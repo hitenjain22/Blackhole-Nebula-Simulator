@@ -50,16 +50,17 @@ COLOUR_MODES = (OUT_COLOUR, OUT_COLOUR_PICTURE)
 GREY_MODES = (OUT_DIAGNOSTIC, OUT_PICTURE)  # the sky-direction modes work with both shaders
 
 
-def shader_source(colour: bool, kerr: bool = False) -> str:
+def shader_source(colour: bool, kerr: bool = False, lines: bool = False) -> str:
     """The gas shader with one branch of each "// #if COLOUR" and "// #if KERR" block kept
     (grey or colour; non-spinning or spinning hole). Blocks may nest.
 
     Only the march step and (KERR) the ray geometry differ; everything else is shared text.
     The colour shader also uses bindings 11-15 (velocities, colour table), the grey one does
-    not; the Kerr shader uses binding 17 (spin and camera frame, kerr_rays.kerr_camera_bytes).
+    not; the Kerr shader uses binding 17 (spin and camera frame, kerr_rays.kerr_camera_bytes);
+    the LINES shader (Phase 14 N1, colour only) bindings 18-20 (line_textures, line_params).
     Each variant is compiled separately (a shader holding unused branches ran ~250x slower on
     the Iris Plus: AI_LOG 2026-11-17)."""
-    flags = {"COLOUR": colour, "KERR": kerr}
+    flags = {"COLOUR": colour, "KERR": kerr, "LINES": lines}
     out, stack = [], []  # stack of (flag value, in the else branch)
     for line in load_shader(*SHADER).splitlines():
         tag = line.strip()
@@ -288,6 +289,7 @@ class GpuScene:
     params: wgpu.GPUBuffer
     lut: wgpu.GPUTexture | None = None
     colour: bool = False
+    lines: list | None = None  # Phase 14 N1: [CMF texture, line table texture, params buffer]
 
 
 def upload_scene(textures, model: GreyBlackbody | RelativisticBlackbody,
@@ -322,7 +324,59 @@ def upload_scene(textures, model: GreyBlackbody | RelativisticBlackbody,
     gpu += [_upload4(brick_vel)]
     tex_for_params = [textures[0], *box_list] + ([bricks] if bricks is not None else [])
     params = gas_params_bytes(tex_for_params, model, step_fraction, layout)
-    return GpuScene(gpu, uniform_buffer(params), _lut_buffer(model), colour)
+    lines = None
+    if colour and model.lines is not None:
+        lines = [*line_textures(model.lines), uniform_buffer(line_params_bytes(model.lines))]
+    return GpuScene(gpu, uniform_buffer(params), _lut_buffer(model), colour, lines)
+
+
+def _texture_2d(data: np.ndarray, fmt) -> wgpu.GPUTexture:
+    """A 2D float32 texture from (height, width, channels) data (1 or 4 channels)."""
+    data = np.ascontiguousarray(data, np.float32)
+    h, w, ch = data.shape
+    device = get_device()
+    usage = wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST
+    t = device.create_texture(size=(w, h, 1), dimension="2d", format=fmt, usage=usage)
+    layout = {"bytes_per_row": w * 4 * ch, "rows_per_image": h}
+    device.queue.write_texture({"texture": t}, data.tobytes(), layout, (w, h, 1))
+    return t
+
+
+def line_textures(lines) -> tuple:
+    """(CMF texture 471 x 1 rgba32float (xbar, ybar, zbar, 0) on 360-830 nm, forbidden-line
+    table texture n_n x (6 n_T) r32float, log10 eps line-major) for binding 18 and 19."""
+    cmf = np.zeros((1, len(lines.lam), 4), np.float32)
+    if len(lines.lam) != 471 or lines.lam[0] != 360.0 or not np.all(np.diff(lines.lam) == 1.0):
+        raise ValueError("the line shader assumes the 1 nm CIE table on 360-830 nm")
+    cmf[0, :, :3] = lines.cmf
+    tab = np.asarray(lines.tables["log_coll"], np.float32)  # (6, n_t, n_n)
+    flat = tab.reshape(-1, tab.shape[2])[..., None]
+    return (_texture_2d(cmf, wgpu.TextureFormat.rgba32float),
+            _texture_2d(flat, wgpu.TextureFormat.r32float))  # fmt: skip
+
+
+def line_params_bytes(lines, gas_units=None) -> bytes:
+    """Binding 20 (LineParams in gas_march.wgsl): the look knobs and tags, the unit
+    conversions of physics.emission_lines.line_emission_code (n_H per code density in cm^-3;
+    erg cm^-3 s^-1 -> W m^-3 times the code length), the table grid, abundances, wavelengths."""
+    from nebula import units
+    from nebula.physics import emission_lines as el
+
+    gu = gas_units or units.GasUnits()
+    lt, ln = lines.tables["log_t"], lines.tables["log_n"]
+    nh_per_rho = units.X_HYDROGEN * gu.density_to_si(1.0) / units.M_P * 1e-6
+    w = list(el.LINE_WAVE_NM) + [0.0, 0.0, 0.0]
+    rows = [
+        [lines.gain, lines.continuum_mix, lines.x_h, lines.x_o3],
+        [lines.x_ns, lines.n_cap, lines.t_fade, lines.fade_power],
+        [nh_per_rho, el.ERG_CM3_TO_W_M3 * gu.bh.length_m, lt[0], lt[1] - lt[0]],
+        [ln[0], ln[1] - ln[0], len(lt), len(ln)],
+        [el.ABUND["O"], el.ABUND["N"], el.ABUND["S"], el.ABUND["He"]],
+        w[0:4],
+        w[4:8],
+        w[8:12],
+    ]
+    return np.asarray(rows, np.float32).tobytes()
 
 
 def _upload_atlas(atlas: np.ndarray) -> wgpu.GPUTexture:
@@ -376,7 +430,11 @@ def render_gas(
     extra.append({"binding": 6, "resource": {"buffer": scene.params}})
     extra.extend(sky.entries(7))
     k = 2 if out_mode in COLOUR_MODES else 1
-    code = shader_source(scene.colour, kerr=spin > 0.0)
+    code = shader_source(scene.colour, kerr=spin > 0.0, lines=scene.lines is not None)
+    if scene.lines is not None:
+        extra += [{"binding": 18, "resource": scene.lines[0].create_view()},
+                  {"binding": 19, "resource": scene.lines[1].create_view()},
+                  {"binding": 20, "resource": {"buffer": scene.lines[2]}}]  # fmt: skip
     if spin > 0.0:
         kbuf = uniform_buffer(kerr_camera_bytes(np.asarray(camera.position, float), spin))
         extra.append({"binding": 17, "resource": {"buffer": kbuf}})

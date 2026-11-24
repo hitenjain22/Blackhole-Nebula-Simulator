@@ -141,3 +141,29 @@ def test_look_settings_scale_the_matched_disc(disc):
     check("look: t_stripes leaves the mass", dp.m, dp3.m, rtol=1e-14)
     check("look: t_stripes within 1 +- 0.2 x noise range", True,
           bool(ratio.min() > 0.6 and ratio.max() < 1.4 and ratio.std() > 0.01))  # fmt: skip
+
+
+def test_feed_snapshots_keeps_sparse_and_thins_dense():
+    """Snapshots 0.5 apart (wider than the 0.25 step): every one in the window is kept (the
+    average is unchanged). 0.01 apart: ~width/step of them, all inside the window."""
+    from nebula.render.inner_disc import feed_snapshots, triangle_weights
+
+    sparse = np.arange(0.0, 40.0, 0.5)
+    ks = feed_snapshots(sparse, 20.0, 10.0, 0.25)
+    check("sparse snapshots: all in the window kept", np.nonzero(triangle_weights(sparse, 20.0,
+          10.0))[0], ks)  # fmt: skip
+    dense = np.arange(0.0, 40.0, 0.01)
+    kd = feed_snapshots(dense, 20.0, 10.0, 0.25)
+    check("dense snapshots: ~ width/step kept (41 grid points, ends excluded)", True,
+          bool(38 <= len(kd) <= 41 and np.all(np.abs(dense[kd] - 20.0) < 5.0)))  # fmt: skip
+
+
+def test_edge_feed_ignores_a_plunging_stream():
+    """Gas crossing the annulus on a plunging orbit (radial speed comparable to the orbital one,
+    as the first pass's stream) does not feed the disc: Sigma 0. The same gas on circular
+    orbits does."""
+    x, p, t, _ = _torus()
+    r_hat = x / np.linalg.norm(x, axis=1, keepdims=True)
+    plunging = p - np.linalg.norm(p, axis=1, keepdims=True) * r_hat  # inward = orbital speed
+    check("plunging gas: no feed", 0.0, edge_feed(x, plunging, 1e-5, t, 40.0, 60.0).sigma)
+    check("circular gas: feeds", True, edge_feed(x, p, 1e-5, t, 40.0, 60.0).sigma > 0)

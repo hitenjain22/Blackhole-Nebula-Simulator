@@ -8,6 +8,7 @@ probe frames spread over the shot, times 2^stops from the shot's exposure keyfra
 
 import contextlib
 import fcntl
+import json
 import os
 from pathlib import Path
 
@@ -16,11 +17,12 @@ import numpy as np
 from nebula.analysis.cloud_metrics import snapshot_temperature
 from nebula.physics.colour import chroma_lut, srgb_decode, srgb_encode
 from nebula.physics.redshift import gn_static_frame_velocity
-from nebula.render.colour_data import load_cmf
+from nebula.render.colour_data import load_cmf, load_emission_tables
 from nebula.render.director import (
     CODE_DAY,
     DISC_SETTINGS,
     GAS_SETTINGS,
+    NEBULA_SETTINGS,
     STAR_SETTINGS,
     FramePlan,
     Shot,
@@ -43,10 +45,18 @@ from nebula.render.gpu_march import (
     render_gas,
     upload_scene,
 )
-from nebula.render.inner_disc import blend_feeds, disc_particles, edge_feed, triangle_weights
+from nebula.render.inner_disc import (
+    FEED_STEP_DAYS,
+    EdgeFeed,
+    blend_feeds,
+    disc_particles,
+    edge_feed,
+    feed_snapshots,
+    triangle_weights,
+)
 from nebula.render.interpolate import load_snap
 from nebula.render.junctions import JunctionEaser, eased_state
-from nebula.render.march import GreyBlackbody, RelativisticBlackbody
+from nebula.render.march import GreyBlackbody, LineLook, RelativisticBlackbody
 from nebula.render.point_stars import (
     build_star_index,
     gauss_stars,
@@ -62,6 +72,7 @@ from nebula.render.starfield import (
     placeholder_blackbody_rgb,
     upload_cube_map,
 )
+from nebula.sim.runcache import ROOT, fingerprint
 
 GAS_PERCENTILE, GAS_LEVEL = 99.9, 1.0  # as scripts/phase8_step4_first_frame.py
 N_PROBES = 5
@@ -160,8 +171,14 @@ class ShotRenderer:
         if self.colour:  # Phase 9 true colour; r_cam is the GPU's own camera distance
             lam, cmf = load_cmf()
             lt, lc = chroma_lut(1e3, 1e8, 4096, lam, cmf)
+            lines = None
+            if shot.nebula is not None:  # Phase 14 N1: emission-line colours (LineLook)
+                nb = {**NEBULA_SETTINGS, **shot.nebula}
+                knobs = {k: float(v) for k, v in nb.items() if k != "saturation"}
+                lines = LineLook(tables=load_emission_tables(), lam=lam, cmf=cmf, **knobs)
             self.model = RelativisticBlackbody(kappa=shot.kappa, r_cam=float("inf"), log_t=lt,
-                                               log_chroma=lc, opacity=shot.opacity)  # fmt: skip
+                                               log_chroma=lc, opacity=shot.opacity,
+                                               lines=lines)  # fmt: skip
         else:
             self.model = GreyBlackbody(kappa=shot.kappa)
         self.grid = shot.log_grid()  # same grid settings every frame (8.8: no flicker)
@@ -198,12 +215,34 @@ class ShotRenderer:
         return self._runs[run_dir]
 
     def _edge_feed(self, k: int):
+        """Edge measurement of snapshot k (inner_disc.edge_feed), kept in memory and on disk
+        (outputs/cache/edge_feeds/, keyed by the snapshot file, its size, the annulus and a
+        hash of the code that computes it), so every render process measures each snapshot
+        once at most (optimization review 2026-11-23)."""
         if k not in self._feeds:
             dc = {**DISC_SETTINGS, **self.shot.disc}
-            snap = load_snap(self.timeline.paths[k])
-            eos, mass = self._eos_mass(k)
-            temp = snapshot_temperature(eos, snap.scalars["rho"], snap.scalars["u"])
-            self._feeds[k] = edge_feed(snap.x, snap.p, mass, temp, *(float(v) for v in dc["edge"]))
+            r_lo, r_hi = (float(v) for v in dc["edge"])
+            path = Path(self.timeline.paths[k])
+            code = fingerprint(("render/inner_disc.py", "analysis/cloud_metrics.py",
+                                "physics/eos.py", "render/interpolate.py"))  # fmt: skip
+            cache = (ROOT / "outputs" / "cache" / "edge_feeds" / code / path.parent.parent.name
+                     / f"{path.stem}_{path.stat().st_size}_{r_lo:g}_{r_hi:g}.json")  # fmt: skip
+            if cache.exists():
+                d = json.loads(cache.read_text())
+                self._feeds[k] = EdgeFeed(d["sigma"], d["t_em"], d["h_over_r"],
+                                          np.array(d["lvec"], float))  # fmt: skip
+            else:
+                snap = load_snap(path)
+                eos, mass = self._eos_mass(k)
+                temp = snapshot_temperature(eos, snap.scalars["rho"], snap.scalars["u"])
+                f = edge_feed(snap.x, snap.p, mass, temp, r_lo, r_hi)
+                self._feeds[k] = f
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                tmp = cache.with_suffix(f".tmp{os.getpid()}")
+                tmp.write_text(json.dumps({"sigma": f.sigma, "t_em": f.t_em,
+                                           "h_over_r": f.h_over_r,
+                                           "lvec": [float(c) for c in f.lvec]}))  # fmt: skip
+                tmp.rename(cache)  # atomic: workers may race; either copy is the same
         return self._feeds[k]
 
     def disc(self, t: float):
@@ -212,9 +251,10 @@ class ShotRenderer:
         if self.shot.disc is None:
             return None
         dc = {**DISC_SETTINGS, **self.shot.disc}
-        w = triangle_weights(self.timeline.times, t, float(dc["smooth_days"]) * CODE_DAY)
-        ks = np.nonzero(w)[0]
-        feed = blend_feeds([self._edge_feed(int(k)) for k in ks], w[ks])
+        width = float(dc["smooth_days"]) * CODE_DAY
+        ks = feed_snapshots(self.timeline.times, t, width, FEED_STEP_DAYS * CODE_DAY)
+        w = triangle_weights(self.timeline.times[ks], t, width)
+        feed = blend_feeds([self._edge_feed(int(k)) for k in ks], w)
         return disc_particles(feed, self.shot.disc_r_in(), float(dc["r_ref"]),
                               [float(v) for v in dc["taper"]], float(dc["spacing"]),
                               float(dc["stripes"]), int(dc["seed"]), self.shot.spin,
@@ -328,6 +368,9 @@ class ShotRenderer:
                                       strength)  # fmt: skip
         return self.base, self.adapt
 
+    def _saturation(self) -> float:
+        return float({**NEBULA_SETTINGS, **(self.shot.nebula or {})}["saturation"])
+
     def frame(self, i: int) -> np.ndarray:
         """uint8 sRGB frame i."""
         if self.base is None:
@@ -349,6 +392,7 @@ class ShotRenderer:
                 exp,
                 points=pic[..., 8:11],
                 point_exposure=float(self.stars["brightness"]) * omega_pix,
+                saturation=self._saturation(),
             )
         else:
             img = (compose_colour if self.colour else compose)(self.picture(i), exp)

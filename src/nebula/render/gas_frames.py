@@ -58,7 +58,7 @@ def compose(picture: np.ndarray, exposure: Exposure) -> np.ndarray:
 
 
 def compose_colour(picture: np.ndarray, exposure: Exposure, points=None,
-                   point_exposure: float = 0.0) -> np.ndarray:  # fmt: skip
+                   point_exposure: float = 0.0, saturation: float = 1.0) -> np.ndarray:  # fmt: skip
     """Phase 9 GPU picture (H, W, 8) = (X, Y, Z, bolometric, T x star RGB, 0) -> uint8 sRGB.
     ``points``: (H, W, 3) pinpoint-star radiance (render/point_stars.py), added to the cube's
     sky (then the Milky Way band only) before the stars' tone curve, at ``point_exposure``.
@@ -71,7 +71,11 @@ def compose_colour(picture: np.ndarray, exposure: Exposure, points=None,
     from nebula.render.tone import to_gamut
     from nebula.render.tone import tone_map as tone_luminance
 
-    gas = to_gamut(tone_luminance(xyz_to_linear_srgb(picture[..., 0:3]) * exposure.gas))
+    rgb = xyz_to_linear_srgb(picture[..., 0:3])
+    if saturation != 1.0:
+        y = picture[..., 1:2]
+        rgb = y + saturation * (rgb - y)
+    gas = to_gamut(tone_luminance(rgb * exposure.gas))
     sky = picture[..., 4:7] * exposure.stars
     if points is not None:
         sky = sky + np.asarray(points) * point_exposure
