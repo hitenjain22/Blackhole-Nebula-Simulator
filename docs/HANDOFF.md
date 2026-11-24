@@ -67,6 +67,13 @@ in progress**, see below. Mode: "Go Attack!" (Hiten said so 2026-11-23 evening; 
 **To commit:** after test_gpu_lines passes, run the full suite (`uv run pytest -s -q`, ~30 min,
 uses the GPU), then commit + push (attribution line below).
 
+**Hiten 2026-11-23 ~18:05:** pause until 18:30 PST (his usage reset), then: **(A) optimization
+review first**: look for ways to make everything run faster and/or better (simulation, deposition,
+GPU march, Kerr steps, render pipeline, cloud use), report findings with measured numbers and a
+recommendation; then **(B) N2 prep** (Act 1: read Mapelli & Trani 2016 for exact settings, Phantom
+setup at parsec scale, k^-4 turbulence generator + lumpy density, tested on small cases; no big run
+without his OK), alongside the steps below as the GPU frees up.
+
 **Next steps (in order):**
 1. N1 look sheet: `uv run python scripts/look_variants.py 575,2112 960 n1 "lines:[nebula]"
    "glow:[nebula]\ngain = 3.0\ncontinuum_mix = 0.5" "teal:[nebula]\ngain = 3.0\ncontinuum_mix
