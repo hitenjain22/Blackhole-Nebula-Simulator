@@ -7,13 +7,84 @@ written for Claude, not for Hiten.
 **Your two standing jobs with this file:**
 1. **Read it fully before doing anything** (plus `CLAUDE.md`, `PLAN.md`, the current phase file,
    and the latest entries of `docs/DECISIONS.md` and `AI_LOG.md`).
-2. **Keep it current.** Whenever something meaningful happens (a decision, a finished step or run,
-   a new problem, a cloud change, anything Hiten says that matters), update §3 "Current state",
-   §4 "Waiting on Hiten", §7 "Runs inventory" and add a line to §11 "Session log". Do it as you go,
-   not only at the end: the session can end abruptly when usage runs out. Commit and push it.
-   The next session (possibly the original account, after its usage resets) relies on it.
+2. **Keep it current, with every detail** (Hiten 2026-11-23: "make sure that everything always gets
+   put in the handoff files with full and all details needed ... no details missed"). After every
+   step, and whenever something starts, finishes or changes (a run, a decision, an uncommitted
+   change, a problem, anything Hiten says that matters), update **§0 "Resume here"** (what is
+   running and how to resume it, what is uncommitted, the next steps with exact commands, what
+   waits on Hiten), then §3, §4, §7 as needed and a line in §11. Do it as you go, not at the end:
+   a session can end abruptly when usage runs out. Commit and push it. The next session (possibly
+   another account) has none of the conversation, only this file and the repo.
 
-Last updated: 2026-11-23 (evening, Pacific).
+Last updated: 2026-11-23 ~18:00 PST (Pacific). Account switches are likely this week: keep §0
+exact after every step (what runs, what's uncommitted, what's next).
+
+---
+
+## 0. RESUME HERE (live status; update after every step)
+
+**Phase:** Phase 14, the nebula (spec `phases/phase-14-nebula.md`, source `docs/nebula-plan/`,
+both approved by Hiten 2026-11-23). N0 done and committed (124c64d). **N1 (emission-line colours)
+in progress**, see below. Mode: "Go Attack!" (Hiten said so 2026-11-23 evening; he still checks in).
+
+**Running right now (Mac):**
+1. **Orbit preview clip** (Hiten's idea: camera orbiting close to the spinning hole, 78-108 s):
+   shot `configs/shots/full_story_orbit.toml` (copy of full_story.toml with `spin = 0.9` and new
+   camera keys 78-108 s; uncommitted), script `scripts/shot_clip.py` (uncommitted; resumable),
+   args `78 108 width=640 every=2 h_scale=1.0 tag=orbit1` (h_scale 1.0 = clumpier gas, Hiten OK'd
+   for previews). Runs from a **frozen git worktree** `<scratchpad>/frozen_clip` (commit 06a0812 +
+   the two uncommitted files; PYTHONPATH=its src; runs/ and the frames folder symlinked). Frames:
+   `outputs/checks/clips/full_story_orbit1/` (360 PNGs when done; 92 at 17:50), log
+   `<scratchpad>/orbit1b.log`; ~30-40 s/frame -> done ~21:30-22:00. Then it writes
+   `<worktree>/outputs/checks/clip_full_story_orbit1.mp4` and the command copies it to
+   `outputs/checks/clip_full_story_orbit1.mp4`. **If the session died:** rerun the same command
+   from the worktree (it resumes: skips existing PNGs, reuses `exposure_stops.json`), or from the
+   main repo once nothing edits the shader. Show Hiten the mp4 (full frames).
+   (<scratchpad> = /private/tmp/claude-501/-Users-hitenjain-Desktop-Blackhole-Nebula-Simulator/b68d049f-8097-4604-91f4-7a3e0eecd6d5/scratchpad; a reboot clears it: then
+   recreate the worktree with `git worktree add --detach <dir> HEAD`.)
+2. **Queued after the clip:** `uv run pytest -s -q tests/render/test_gpu_lines.py` (N1 test 4, GPU
+   vs CPU with lines). If the session died, run it yourself (GPU, ~10-15 min; one GPU job at a time).
+
+**Uncommitted work (N1 part 2), CPU-tested, needs the GPU tests before committing:**
+- `src/nebula/render/march.py`: `LineLook` (knobs: gain, continuum_mix, x_h, x_o3, x_ns, n_cap,
+  t_fade 4e4, fade_power 8) and `RelativisticBlackbody(lines=...)`: continuum x blend factor + line
+  source j*path_gas/dtau.
+- `src/nebula/render/shaders/gas_march.wgsl`: `// #if LINES` blocks (bindings 18 CMF texture,
+  19 line table, 20 LineParams uniform; `line_source`, `coll_eps`, `cmf_at`); the non-LINES
+  shaders stay byte-identical (checked against copies of the old text).
+- `src/nebula/render/gpu_march.py`: `shader_source(colour, kerr, lines)`, `line_textures`,
+  `line_params_bytes`, `GpuScene.lines`, bindings in `render_gas`.
+- `src/nebula/render/director.py`: `NEBULA_SETTINGS` and `Shot.nebula` (`[nebula]` section,
+  validated); `src/nebula/render/shot_render.py` builds LineLook from it, passes saturation;
+  `src/nebula/render/gas_frames.py`: `compose_colour(saturation=)`.
+- `src/nebula/physics/emission_lines.py`: default fade now 4e4 K / power 8 (already committed file,
+  changed since).
+- tests: `tests/render/test_gpu_lines.py` (test 4 x2 GPU + real snapshot; test 6, saturation and
+  settings tests pass on CPU).
+- scripts: `scripts/look_variants.py` (full-frame labelled look sheets), `scripts/shot_clip.py`,
+  `scripts/inner_disc_variants.py` (small change), `configs/shots/full_story_orbit.toml`.
+- docs: DECISIONS (N1 choices incl. hot fade change), AI_LOG (clip crash), this file.
+**To commit:** after test_gpu_lines passes, run the full suite (`uv run pytest -s -q`, ~30 min,
+uses the GPU), then commit + push (attribution line below).
+
+**Next steps (in order):**
+1. N1 look sheet: `uv run python scripts/look_variants.py 575,2112 960 n1 "lines:[nebula]"
+   "glow:[nebula]\ngain = 3.0\ncontinuum_mix = 0.5" "teal:[nebula]\ngain = 3.0\ncontinuum_mix
+   = 0.5\nx_o3 = 0.05\nsaturation = 1.2"` (frame 575 = day 97 / 24 s, the stream pass; 2112 =
+   88 s, torus + disc). Run from a frozen worktree of the commit. Show Hiten the sheets
+   `outputs/checks/looks/n1_*_sheet.png`; he picks; put the chosen `[nebula]` in full_story.toml.
+   That closes N1 (gate: swatch sheet + recoloured still).
+2. Show Hiten the orbit clip; ask whether spin 0.9 + the orbit go into the story.
+3. N2: Act 1 setup (Phantom, 50k test) per the phase file. Ask before cloud spending.
+
+**Waiting on Hiten:** the N1 look pick; the orbit clip verdict / spin 0.9 in the story.
+
+**Lessons from this week (don't repeat):**
+- Long renders run from a frozen worktree: a shader edit crashed a running clip (AI_LOG 2026-11-23).
+- One GPU job at a time on the Mac (Iris Plus); adaptive tiles keep dispatches < 1 s.
+- `.npz` files are git-ignored (snapshots): small data files need `git add -f`.
+- Spin 0.99 is inaccurate with fixed steps: use 0.9 (AI_LOG 2026-11-23).
+- Measure angles between float32 vectors with normalised cross products, not arccos of dots.
 
 ---
 
@@ -48,139 +119,130 @@ Last updated: 2026-11-23 (evening, Pacific).
   make the decisions yourself (the option you'd recommend), record each in DECISIONS, and leave a
   plain summary for when he's back. Per-night scope limits he states still bind; big new cloud
   spending still needs his OK. Back to the normal stop-and-wait workflow when he returns.
+- **Video first** (Hiten 2026-11-19/23): "it just needs to look realistic, doesn't need to be
+  realistic"; cheats are fine if labelled (DECISIONS + report), but a fix must really fix.
+- **Comparisons: full frames side by side, labelled, never zoomed crops** (2026-11-23: "stop giving
+  me zoomed ones, it's hard to tell what's happening").
+- **Short, frequent updates.** He checks in often ("how are things"): answer with what is running,
+  what finished, and when the next thing lands (clock times). If something was promised for a time
+  and slipped, say so straight away.
+- **Compute policy:** no more full cloud renders until the very end; judge with short clips (cloud)
+  and free low-res Mac passes. The final render of the whole project is **one 4K render** at the
+  end. Ask before any big cloud run (size, cost). Free compute options: docs/nebula-plan/03-free-compute.md.
+- **Never delete** the Google Cloud VMs, their disks or the bucket (stopping is fine).
+- He may say "Go Attack!" in the middle of a turn; it applies from then on.
 
 ## 2. The project in one paragraph
 
-Simulate a 0.1 M☉ gas cloud (G2-like, 10⁴ K) falling onto a 4.3 × 10⁶ M☉ non-spinning black hole
-from r = 5,000 (code units G = c = M = 1; time unit 21.18 s; length 6.35 × 10⁶ km), pericentre 25:
-tidal stretching into a stream, relativistic precession (24.04°/orbit), stream self-crash, shock
-heating, cooling, circularization into a torus near r ≈ 51, later viscous drain (Phase 7), then a
-GPU-rendered, lensed, true-colour video (Phases 8–10), spin (11), science report (12), portfolio
-(13). SPH (Wendland C4, η = 1.6, grad-h), GN gravity (Tejeda & Rosswog 2013), generalized
-leapfrog, block time steps, Phantom-style viscosity with Cullen–Dehnen switch + velocity
-reconstruction (D2, Frontiere 2017 / MAGMA2) with a min-mod gate, gas + radiation EOS, β-cooling,
-swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phases/`.
+Simulate a 0.1 M☉ gas cloud (G2-like, 10⁴ K) falling onto a 4.3 × 10⁶ M☉ black hole from r = 5,000
+(code units G = c = M = 1; time unit 21.18 s; length 6.35 × 10⁶ km; 1 day = 4,079 code time),
+pericentre 25: tidal stretching, relativistic precession (24°/orbit), stream self-crash, shock
+heating, cooling, circularization into a torus near r ≈ 51; rendered on the GPU with bent light,
+true-colour emission, Doppler/gravitational shifts and a lensed star field into a 108-s story video.
+Production simulations ran in **Phantom** with the project's patch (`phantom/`, DECISIONS
+2026-11-04); the project's own SPH code (`src/nebula/sim`) is the tested reference. Rendering is the
+project's own (wgpu/WGSL). See `PLAN.md`, `phases/`, and for the nebula `phases/phase-14-nebula.md`.
 
 ## 3. Current state (2026-11-23)
 
-- **Phases 0-10 done; the 1080p milestone video is made** (`final_story_v1`, 108 s, tag
-  `milestone-1080p-v1`, outputs/renders/final_story_v1_final1080p_20261120-031806/ and the bucket).
-  Configs: configs/final_story.toml + configs/shots/full_story.toml (the approved story).
-- **Since the milestone (in the story file):** render-time inner accretion disc, look **C3**
-  (`[disc]`, render/inner_disc.py, physics/steady_disc.py; DECISIONS 2026-11-20/23).
-- **Phase 11 (spin), light part built:** Kerr rays float64 reference (physics/kerr.py), fixed-step
-  twin (render/kerr_rays.py, R_NEAR 0.5) and GPU `// #if KERR` shader variant; tests pass
-  (tests/physics/test_kerr_rays.py, tests/render/test_kerr_gpu.py). Shot setting `spin` (0 in the
-  approved story). **Spin 0.99 is inaccurate with fixed steps** (AI_LOG 2026-11-23): use 0.9.
-  Spin in the gas dynamics (11.3) not started. Trial shot `configs/shots/full_story_orbit.toml`
-  (spin 0.9, camera orbiting close to the hole 78-108 s, Hiten's idea); its low-res clip
-  (scripts/shot_clip.py, clumpier gas h_scale 1.0) was rendering on the Mac 2026-11-23 evening.
-- **Phase 14 (the nebula) is next:** spec phases/phase-14-nebula.md from docs/nebula-plan/ (Hiten
-  approved 2026-11-23); N0 done (this update, DECISIONS 2026-11-23, GPL-3.0 LICENSE). Next: N1
-  emission-line colour model, after Hiten approves the phase file.
-- **Tests:** full suite 387 passed (2026-11-23, ~26-36 min on the Mac incl. GPU tests).
-- **Mac GPU:** healthy again (the 2026-11-19 "zeros" was the GPU's state after restarts). Keep one
-  GPU job at a time; adaptive tiles on.
-- **Cloud:** nebula-l4 (us-east4-c, L4) is STOPPED, never delete it or the bucket. Trial credit
-  ends ~2027-01-16; N3's Act 1 run is planned on what is left (ask Hiten before big runs).
+- **Phases 0-10 done; 1080p milestone video** `final_story_v1` (108 s, 2,592 frames; tag
+  `milestone-1080p-v1`; folder outputs/renders/final_story_v1_final1080p_20261120-031806/ with
+  `final_story_v1.mp4`, frames, exposures.json; also in the bucket under final/). Story config:
+  `configs/final_story.toml` + `configs/shots/full_story.toml` (approved).
+- **Added to the story since the milestone:** inner accretion disc `[disc]` look **C3**
+  (temperature 0.5, density 0.0067, stripes 0.5, t_stripes 0.1; render/inner_disc.py,
+  physics/steady_disc.py; Hiten's pick 2026-11-23). Not yet in any full render.
+- **Phase 11 spin, light only:** physics/kerr.py (float64 Kerr-Schild Hamiltonian rays, arriving
+  photon traced backward, static-observer camera), render/kerr_rays.py (fixed RK4 twin, H_FAR 0.02,
+  R_NEAR 0.5), WGSL `// #if KERR` (binding 17), `spin` shot setting (0 in the story),
+  ergosphere guard (no gas where lapse < 0.1). Tests: tests/physics/test_kerr_rays.py (tests 1-5
+  + fixed-step accuracy), tests/render/test_kerr_gpu.py (GPU vs CPU, a=0 limit, grey, colour,
+  ergosphere). Spin 0.99 not usable (fixed steps misclassify edge rays). Comparison:
+  outputs/checks/inner_disc/spinc3_full_frames.png. Spin in the gas dynamics (11.3) not started.
+- **Phase 14 the nebula:** N0 done; N1 part 1 committed (physics, tables, swatches); part 2
+  (renderer + knobs) uncommitted, see §0.
+- **Tests:** full suite 387 passed at 4cf40fc (~26-36 min incl. GPU). N1 part 1 adds 7 physics
+  tests (pass).
+- **Mac GPU:** healthy (2026-11-19's "zeros" was the GPU's state after restarts, not the code).
 
 ## 4. Waiting on Hiten (ask him / remind him)
 
-- Approve phases/phase-14-nebula.md before N1 starts.
-- Spin 0.9 in the story? (comparison: outputs/checks/inner_disc/spinc3_full_frames.png) and the
-  orbit-shot clip (outputs/checks/clip_full_story_orbit1.mp4 when done).
-- Before any big cloud run (Act 1 production, Act 2 runs): sizes, order and cost.
+- N1 look pick from the look sheets (§0 next step 1).
+- Orbit clip verdict; spin 0.9 in the story or not.
+- Before any big cloud run (Act 1 production in N3, Act 2 runs): sizes, order, cost.
 
 ## 5. Key decisions to remember (details in docs/DECISIONS.md)
 
-D1 1k is a smoke test only; Phase 6 runs 10k (now 50k for R6.1). D2 velocity reconstruction in the
-viscosity with a min-mod gate (our own choice, approved). D4 radius 25 for Phase 5, **60 for Phase 6+**.
-D5 hole-resolution diagnostic. D6 swallowing r_acc = 4 with ledger. Snapshots follow Phase 10.2a
-(clamp(T_orb(r_med)/40, 10, 10⁴)). Shock marker = viscous heating rate. Conductivity signal with the
-hole = velocity (Phantom Eq. 44). β-cooling β = 230, T floor 10⁴ K. Lost-gas share (swallowed +
-L < 4) reported per run, flagged above 1%; resolution check 10k vs 50k at radius 60 PASSED (peak
-0.13% → 0.016%). Tail/front-of-cloud particle losses are a known, accepted numerical effect
-(Hiten agreed). Cloud machine: Google Cloud free trial (Hiten's choice).
+- Physics core (Oct): SPH Wendland C4 η 1.6; GN gravity; D2 velocity reconstruction; radius 60
+  for the story cloud; swallowing r_acc = 4 with ledger; β-cooling; conductivity signal velocity
+  (Phantom Eq. 44); Phantom as production engine with the project's patch (2026-11-04).
+- Look (Nov): true colour + thermal opacity; softer gas `[gas] h_scale = 1.5`; pinpoint stars
+  150k size 3; neutral Milky Way; auto exposure (strength 0.9); fade-out 6 s; inner disc C3.
+- Spin: Kerr light with fixed steps validated at a = 0.9; gas Doppler near a spinning hole uses
+  the static-lapse approximation (labelled).
+- Phase 14 (2026-11-23): two-clock story (Act 1 nebula time-lapse at parsec scale, dive, Act 2
+  close-up); teal as an accent; self-gravity off in Act 1; emission-line colours; gravity-only
+  streamer particles with the 2,000-unit split rule; rest-field wisps; separate nebula exposure;
+  GPL-3.0 LICENSE. N1 choices: n_cap 10³ cm⁻³ for forbidden lines; hot fade 4 × 10⁴ K / power 8;
+  thin-gas continuum (S = sqrt(q/(1+q)) B) only for the Act 1 nebula, close-up keeps S = B.
 
 ## 6. Google Cloud (how to operate it)
 
-- Account: Hiten's Google account, **free trial**: $300 credit, 90 days from 2026-10-18 (ends
-  ~2027-01-16 or when credit runs out); **cannot bill** unless he upgrades (tell him never to click
-  "Upgrade" without deciding to pay). Trial caps **8 vCPUs** at once. Check credit: console →
-  Billing. Rough spend so far: tens of dollars (check; c4d-highcpu-8 ≈ $0.30–0.40/h).
-- CLI on the Mac: `~/google-cloud-sdk/bin/gcloud` (logged in as Hiten; project
-  `project-f6231423-0846-4084-823`). VM **`nebula-sim`**, zone **`us-central1-b`**,
-  c4d-highcpu-8 (AMD EPYC 9B45 Turin, 4 cores / 8 threads, 15 GB), Ubuntu 24.04, 60 GB disk,
-  standard (not spot), live-migrates during maintenance, auto-restart on.
-  **Currently RUNNING R6.1_50k_v2** (it powers itself off ~10 min after the run ends).
-- On the VM: repo at `~/nebula` (updated by `git bundle`: `git bundle create /tmp/nebula.bundle
-  HEAD main` on the Mac, `gcloud compute scp` it, `git pull -q ~/nebula.bundle main` there), uv at
-  `~/.local/bin` (`export PATH=$HOME/.local/bin:$PATH`). Same lock as the Mac (Python 3.12,
-  NumPy 2.3.5, Numba 0.62.1). 168 non-GPU tests pass there; GPU/render tests cannot (no GPU).
-  Benchmark: 32,304 particle-steps/s (8 threads) vs 6,640 on the Mac.
-- Helpers on the VM (run name set at the top of each, now R6.1_50k_v2): `~/resume_if_needed.sh`
-  (resume after a reboot unless finished or errored) and `~/shutdown_when_done.sh` (waits 5 min, then
-  powers off ~10 min after the run process ends). Both are in crontab @reboot and the watcher is running.
-  To work on the VM while it is idle, first stop the watcher by PID (`ps -eo pid,args | grep "[s]hutdown_when"`).
-- Launch a run so it survives SSH: `cd ~/nebula; setsid nohup uv run python scripts/cloud_run.py
-  NAME ... > outputs/recon/NAME.out 2>&1 < /dev/null &`. Repo must be clean (manifest records the
-  commit; remove stray files first).
-- Copy results back: `scripts/sync_cloud_run.sh RUN` (rsync, incremental, skips the checkpoint;
-  refreshes the SSH config because the VM's IP changes on each start).
-- **Pitfalls that bit before:**
-  - Never `pgrep -f`/`pkill -f` a pattern inside an `ssh --command` string: it matches its own
-    shell and kills the SSH session. Use `ps -eo pid,args | grep "[x]pattern"` and kill by PID.
-  - Background jobs started with `&` ignore SIGINT: stop runs with `kill -TERM <python pid>`
-    (checkpoints are written atomically; then trim records after the checkpoint, which
-    `cloud_run.py --resume` now does itself).
-  - zsh does not word-split `$VAR`: write options out or use arrays.
-  - Ask Hiten before leaving the VM running idle; stop it when no run is going.
+- Account: Hiten's Google account, free trial ($300, from 2026-10-18; ends ~2027-01-16 or when
+  spent). Never click "Upgrade". 8-vCPU cap. Contact email for quota requests was approved once
+  (GPU quota). CLI on the Mac: `~/google-cloud-sdk/bin/gcloud`, project
+  `project-f6231423-0846-4084-823`.
+- VMs (all **STOPPED** now; never delete): `nebula-sim` and `nebula-sim-2` (us-central1-b,
+  c4d-highcpu-8: simulation runs), `nebula-l4` (us-east4-c, g2-standard-8, NVIDIA L4, ~$0.85/h:
+  rendering).
+- **nebula-l4 details:** Vulkan needs `VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_egl.json` (EGL ICD;
+  the GLX one fails headless) and package `libnvidia-gl-580-server=580.178.04-0ubuntu0.22.04.1`.
+  `~/env.sh` sets VK_ICD_FILENAMES, NEBULA_TILE_TARGET, PATH, NUMBA_NUM_THREADS=2. Render workers:
+  `scripts/render_trailer.py resume=<folder> worker=k/N` with `NEBULA_GPU_LOCK=/tmp/nebula_gpu.lock`
+  (workers take turns) and NEBULA_TILE_TARGET=0.25. Code on the VM via git bundle (folders
+  ~/nebula, ~/final/nebula, ~/clipcode/nebula). Old queue scripts backed up in
+  outputs/scratch_backup_20261119/.
+- Bucket: `gs://nebula-render-254880846178` (us-central1): runs/, kit/, final/, clips/.
+- Pitfalls: never `pgrep -f`/`pkill -f` inside `ssh --command` (kills its own shell); stop VMs
+  after runs; float32 march stall fix (guaranteed progress + 400k step cap) is in the shader since
+  2026-11-19 (it caused NVIDIA Xid 109 hangs).
 
-## 7. Runs inventory (`runs/` is git-ignored: data lives on the Mac and/or the VM)
+## 7. Runs inventory (`runs/` is git-ignored; on the Mac, and in the bucket)
 
-| run | where | what | state |
-|---|---|---|---|
-| cloud10k_r25_D2 | Mac | Phase 5, 10k, radius 25, ideal gas | to t = 408,670 (paused extension; 4 tail particles swallowed) |
-| cloud50k_r25_D2 | Mac | Phase 5, 50k, radius 25 | to t = 400,000; 0 swallowed |
-| R6.1_r60 | Mac | 10k radius 60, Phase 6 settings | paused t = 403,901 (superseded) |
-| R6.1_r60_50k | Mac | 50k radius 60 first pass (resolution check) | to t = 404,962 |
-| R6.1_50k | VM (snapshots to ~437k synced) | R6.1 first attempt, 50k, α_u = 1, no cap | paused t ≈ 446,000 (stalled; superseded) |
-| **R6.1_50k_v2** | VM | **R6.1 main run**, 50k, α_u = 0.05, h_max 200 | running since 2026-10-19 00:27 UTC |
-| heat10k_r60 | Mac | 10k radius 60 with per-particle heat budgets | to t = 404,000 |
-| cond_x1..x4 | VM + synced | conductivity experiments (DECISIONS 2026-10-19) | x2–x4 to 420,000; x1 stopped ~403,000 |
+Story sources (configs/shots/full_story.toml): `R6.1_100k_ph_approach` (to day 94.4),
+`dense_P188a`, `dense_C400`, `R6.1_100k_ph_b_to235` (main run after the pass, to day 236),
+`R6.6_cool_part1` and `R6.6_cool_part2` (fast-cooling β = 1 case: the torus). Other runs in runs/
+are earlier tests and Phase 6-7 experiments (38 folders).
 
 ## 8. Tools and scripts worth knowing
 
-`scripts/cloud_run.py NAME n= radius= tend= eos= beta= r_escape= gravity= seed= cond= alpha_u=
-h_max=` (new run) / `NAME --resume [tend=]`; `scripts/plot_cloud_run.py RUN` (6 panels + edge-on);
-`scripts/cloud_video.py RUN [hold=]`; `scripts/cloud_metrics.py RUN`; `scripts/torus_diagnostics.py
-RUN` (Phase 6 diagnostics, cached per snapshot); `scripts/loss_check.py LOW HIGH [t=]`;
-`scripts/investigations/compare_cond_runs.py RUN...`; `scripts/sync_cloud_run.sh RUN`.
-Pictures for Hiten go to `outputs/checks/`; keepers are copied to `docs/figures/` and logged in
-`docs/results-log.md`. Snapshot fields include heat budgets (heat_visc/cond/pdv/cool).
-Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder for reading only.
+Rendering: `scripts/render_trailer.py configs/final_story.toml tag= scale= n_sub=` (full story;
+`probes_only=1`, `resume=`, `worker=k/N`); `scripts/shot_clip.py SHOT T0 T1 width= every= tag=
+h_scale=` (short low-cost clip, resumable); `scripts/look_variants.py FRAMES WIDTH TAG "name:toml"...`
+(full-frame look sheets); `scripts/inner_disc_variants.py`; `scripts/path_preview.py SHOT from=`
+(fast camera-path preview without lensing); `scripts/nebula_swatches.py` (colour model swatches).
+Data: `scripts/export_emission_tables.py` (PyNeb tables -> data/emission_lines.npz; run with
+`uv run --no-project --python 3.12 --with pyneb --with dust_extinction --with numpy`).
+Simulation: `scripts/cloud_run.py`, `phantom/` (inputs, patch, queue scripts), sync scripts.
+Pictures for Hiten: `outputs/checks/` (full frames).
 
-## 9. Next steps after the pending decision
+## 9. Roadmap (Phase 14, dates from the build spec)
 
-1. Implement the approved conductivity/cap settings; full fast + slow suites; DECISIONS entry.
-2. Restart R6.1 at 50k on the VM (re-arm resume + shutdown helpers); check after the first pass
-   (~2–4 h: speed, lost gas, halo, heating vs the old R6.1 numbers) and report to Hiten.
-3. While it runs: Phase 6 analysis prep is done (sync, cached diagnostics, video). Remaining Phase 6
-   items: R6.2–R6.5 (cooling β scan, Newtonian control R6.4, seeds) — sizes/order to agree with
-   Hiten after R6.1's cost is known; the numerical-circularization check (6.7); results-log entries
-   answering phase-06 §6.8; pictures reviewed by Hiten.
-4. Then propose the Phase 7 breakdown (CLAUDE.md workflow 5) and wait for approval.
+N1 colours (Dec 5) -> N2 Act 1 setup + 50k test (Dec 12) -> N3 Act 1 production on the trial
+credit + backdrop bake (Dec 31; finish before ~Jan 16) -> N4 Act 2 lumpy cloud (Jan 7) -> N6
+rest-field wisps (Jan 14) -> N5 gravity-only streamer (Jan 21) -> N7 look integration (Jan 28) ->
+N8 time-lapse + dive camera (Jan 31 feature freeze) -> N9 4K final (Feb 21; spare to Mar 7). Also
+pending from the Nov 19 roadmap: spin in the gas (11.3), finishing (bloom, grading), the orbit shot.
 
 ## 10. Hiten's broader questions already answered (so you stay consistent)
 
-- The simulation is fully 3D; the disk forms in the original orbital plane (non-spinning hole) but
-  is a thick torus; tilted/warped behaviour comes in Phase 11 (spin, a cut-list item).
-- The final video is glowing, lensed gas (Phases 8–9), not dots; the dot plots are quick looks.
-  The cloud starts as a smooth uniform ball (G2-like), stretched into a stream; a clumpier
-  "nebula-looking" start would be a scenario change for him to decide.
-- Overall estimate given: core video (Phases 6–10) ~5–8 weeks, everything ~2–3 months; faster with
-  more paid compute (~$50–150 for 16–32 cores).
-- Claude usage: simulations on the cloud don't use Claude usage; only check-ins do.
+- The nebula's flattened-shadow side (spin) stays on the side where rotation comes toward the
+  camera; it doesn't move around as the camera circles at fixed height; it fades toward round
+  looking down the spin axis.
+- Spin 0.99 vs 0.9: 0.99 slightly more D-shaped, disc closer (1.45 vs 2.32); not usable yet.
+- The inner disc pictures so far were without spin; spin is a separate step on top.
+- Code size: ~32,400 lines (src 13.5k, tests 8.9k, scripts 7.7k, shaders 1.3k) on 2026-11-23.
+- Claude usage: simulations and renders don't use Claude usage; only the conversation does.
 
 ## 11. Session log (append one line per meaningful event; newest last)
 
@@ -358,3 +420,5 @@ Phantom source excerpts and PySPH magma2.py were downloaded to a scratch folder 
 
 **2026-11-23 (Mon).** Hiten picked disc look **C3** (now in configs/shots/full_story.toml [disc]; DECISIONS). Ergosphere fix + its test (tests/render/test_kerr_gpu.py::test_gas_inside_the_ergosphere_is_skipped_not_nan) pass; full suite 386 passed; committed. **Spin 0.99 is inaccurate with fixed steps** (AI_LOG 2026-11-23): use a = 0.9 (recommended to Hiten, awaiting his OK); R_NEAR 0.5 speed-up validated on the CPU for a = 0.9, to apply + rerun GPU tests.
 - 2026-11-23: Kerr steps R_NEAR 2.0 -> 0.5 (kerr_rays + shader; ~1.7x fewer steps), validated by tests/physics/test_kerr_rays.py::test_fixed_steps_match_the_reference_at_spin_0_9 (0/60 different fate, sky 1.3e-4) and the Kerr GPU tests; suite 387 passed; committed. Spin 0.9 vs none with C3: outputs/checks/inner_disc/spinc3_zoom.png (~5-6 min per moment for both pictures on the Mac). Waiting on Hiten: spin 0.9 in the story? Next suggested: his orbiting close-up camera shot.
+
+**2026-11-23 evening, Phase 14 N1 in progress ("Go Attack!").** Committed: N0 (124c64d), N1 part 1 physics (ca42902, 06a0812: physics/emission_lines.py, data/emission_lines.npz from scripts/export_emission_tables.py, expected §12 via reference/scripts/25, tests/physics/test_emission_lines.py, physics.opacity.thin_emission_fraction, units.PARSEC, scripts/nebula_swatches.py -> outputs/checks/nebula_colour_swatches.png). **Uncommitted, CPU-tested, GPU tests queued:** march.LineLook + RelativisticBlackbody(lines=), gas_march.wgsl `// #if LINES` (bindings 18-20; old shaders byte-identical), gpu_march line_textures / line_params_bytes / shader_source(lines=), director NEBULA_SETTINGS + Shot.nebula ([nebula] section), shot_render wiring, gas_frames.compose_colour(saturation=), tests/render/test_gpu_lines.py (test 6 + knob tests pass on CPU; test 4 GPU vs CPU queued after the orbit clip), scripts/look_variants.py (full-frame look sheets, for day 97 = frame 575 and 88 s = 2112). Hot fade changed to 4e4 K / power 8 (DECISIONS). Orbit clip resumed from a frozen worktree (scratchpad/frozen_clip; AI_LOG) after my shader edit crashed it at frame 88. **Always run long renders from a frozen worktree.**
