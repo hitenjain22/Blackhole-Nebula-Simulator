@@ -20,3 +20,19 @@ def load_cmf() -> tuple[np.ndarray, np.ndarray]:
     lam.flags.writeable = False
     cmf.flags.writeable = False
     return lam, cmf
+
+
+EMISSION_PATH = Path(__file__).resolve().parents[3] / "data" / "emission_lines.npz"
+
+
+@cache
+def load_emission_tables() -> dict:
+    """The nebula line tables for nebula.physics.emission_lines (Phase 14 N1): log_coll
+    (6, n_t, n_n) [log10 erg cm^3 s^-1], log_t, log_n, coll_names, coll_wave_nm, ext_names,
+    ext_wave_nm, ext_a_over_av (CCM89, R_V 3.1), rec_check. Made by
+    scripts/export_emission_tables.py (PyNeb, dust_extinction; data/README.md). Read-only."""
+    with np.load(EMISSION_PATH) as d:
+        out = {k: d[k].copy() for k in d.files}
+    for v in out.values():
+        v.flags.writeable = False
+    return out

@@ -19,6 +19,7 @@ G = 6.67430e-11  # m^3 kg^-1 s^-2
 C = 299_792_458.0  # m/s
 M_SUN = 1.98847e30  # kg
 AU = 1.495978707e11  # m (exact, IAU 2012)
+PARSEC = 648_000.0 / 3.141592653589793 * AU  # m (exact by definition, IAU 2015 Resolution B2)
 K_B = 1.380649e-23  # J/K
 M_P = 1.67262192369e-27  # kg
 H_PLANCK = 6.62607015e-34  # J s

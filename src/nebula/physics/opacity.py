@@ -86,3 +86,18 @@ def thermal_absorption_constants(gas_units: units.GasUnits | None = None):
     k_es = kappa_es_si()
     k_ff = float(kappa_ff_si(d, 1.0))  # kappa_ff at rho = 1 code density, T = 1 K
     return k_es * d * length, k_ff / k_es
+
+
+def thin_emission_fraction(rho_code, t_k, gas_units: units.GasUnits | None = None):
+    """sqrt(q / (1 + q)), q = kappa_ff / kappa_es (thermal_absorption_constants): the source
+    function factor S = sqrt(q / (1 + q)) B that makes gas emit kappa_ff B per length when thin
+    (alpha_eff S = c_es rho q B) and sqrt(epsilon) B when thick (epsilon = kappa_abs /
+    kappa_total; the scattering-dominated "modified blackbody" up to an order-unity factor,
+    Rybicki & Lightman 1979 §1.8). The renderer's default source S = B is exact only when
+    absorption dominates (q >> 1); in thin, scattering-dominated gas it overstates the
+    continuum by 1 / sqrt(q). Phase 14 N1 uses this factor for the Act 1 nebula only, where
+    real nebulae are line-dominated (DECISIONS 2026-11-23); the simulated close-up keeps S = B
+    (the approved look). Dimensionless; rho in code density, T in K."""
+    c_es, q_ff = thermal_absorption_constants(gas_units)
+    q = q_ff * np.asarray(rho_code, float) * np.asarray(t_k, float) ** -3.5
+    return np.sqrt(q / (1.0 + q))

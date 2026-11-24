@@ -299,6 +299,26 @@ Weak-field Lense–Thirring node shift per radial orbit for r_p = 25, r_a = 5,00
 
 ---
 
+## §12 Nebula emission lines (Phase 14 N1)
+
+Script `25` (CIE 1931 2° table from `colour-science`, linear interpolation of the 1 nm table; PyNeb 1.1.32). Air wavelengths.
+
+| Line | λ (nm) | x | y |
+|---|---|---|---|
+| Hα | 656.28 | 0.728754229 | 0.271245771 |
+| Hβ | 486.13 | 0.063404782 | 0.219704533 |
+| Hγ | 434.05 | 0.167306182 | 0.008194842 |
+| [O III] | 500.68 | 0.006886720 | 0.555191722 |
+| [O III] | 495.89 | 0.020123307 | 0.434962850 |
+| [N II] | 658.35 | 0.729467707 | 0.270532293 |
+| [N II] | 654.80 | 0.728186661 | 0.271813339 |
+| [S II] | 671.65 | 0.732245327 | 0.267754673 |
+| [S II] | 673.08 | 0.732453290 | 0.267546710 |
+
+**Hα emissivity, Dong & Draine 2011 fit** j / (n_e n_p) = 2.82 × 10⁻²⁶ T₄^(−0.942 − 0.031 ln T₄) erg cm³ s⁻¹ sr⁻¹: 5,000 K **5.3376606988 × 10⁻²⁶**; 10,000 K **2.82 × 10⁻²⁶**; 20,000 K **1.4461403754 × 10⁻²⁶**. PyNeb's case-B values (4πj/(n_e n_p) / 4π at n_e = 100): 5.321346, 2.813859, 1.437965 × 10⁻²⁶ (fit / PyNeb = 1.0031, 1.0022, 1.0057). Case-B ratios (PyNeb): Hα/Hβ 3.0409, 2.8632, 2.7466 and Hγ/Hβ 0.4584, 0.4683, 0.4755 at 5,000 / 10,000 / 20,000 K; the model uses the 10⁴ K values 2.86 and 0.468 at all T (≤ 6% off in 5,000-20,000 K).
+
+---
+
 ## §11 Scripts (`reference/scripts/`)
 
 Plan-time checks, not project code (SciPy/NumPy; `17` needs `colour-science`). Run `10` first (it writes `orbit_consts.npy` used by `11` and `12`).
@@ -329,3 +349,4 @@ Plan-time checks, not project code (SciPy/NumPy; `17` needs `colour-science`). R
 | 22_sedov_constant | Sedov–Taylor constant ξ₀ from the self-similar ODEs (added in Phase 3) |
 | 23_cloud_spread_by_radius | script 11 for any cloud radius (added 2026-10-16, §2c) |
 | 24_crash_by_radius | stream crossing by passage for any radius (from the external review, added 2026-10-16, §2c) |
+| 25_emission_lines | nebula line chromaticities and the Hα fit vs PyNeb (Phase 14 N1, §12; needs colour-science and PyNeb) |
