@@ -89,11 +89,16 @@ without his OK), alongside the steps below as the GPU frees up.
   (wide, h/r ~ 0.5 near r ~ 200) make 84% of the 2.2e9 cell visits. New
   `gasgrid.deposit_log_split` (wide particles, support >= WIDE_CELLS 16 angular cells, on a grid
   coarser by COARSEN (2,4,4), interpolated back by `refine_sums`, mass rescaled: ledger exact):
-  4.5x faster at 2112 (100 -> 22 s), density median diff 5e-4, 99th pct 2.9%, max 6.5%; testing
-  other settings (wide 24 / 32, coarsen 2,2,2). **Not yet wired in** (snapshot_scene still uses
-  deposit_log); needs: choose settings, tests vs deposit_log, a GPU image comparison (full frames),
-  DECISIONS entry. (4) GPU side not yet profiled (GPU busy with the clip). Other ideas noted:
+  settings compared (16/24/32 cells, coarsen 2,4,4 / 2,2,2): **chose WIDE_CELLS 24, COARSEN
+  (2,4,4)**: frame 2112 78 -> 19 s (4.1x), density 99th pct 0.7%, max 1.5%, ledger exact. **Now
+  wired in** (`snapshot_scene.textures_from_particles` uses `deposit_log_split`); tests
+  `tests/render/test_deposit_split.py` (3 pass); DECISIONS entry written. Still to do: a full-frame
+  GPU image comparison old vs new (frames 575, 2112) once the GPU is free; then full suite; commit. (4) GPU side not yet profiled (GPU busy with the clip). Other ideas noted:
   the pinpoint-star node pass re-marches the gas (~25% extra GPU work); eased_state 11 s at 2112.
+
+**N2 prep done so far:** docs/nebula-plan/07-mapelli-trani-setup.md (committed 703f14d): the paper's
+exact setup; key finding: at 26 pc the stellar cusp (1.3e8 M_sun inside 26 pc) dominates gravity,
+so N2 should include the rigid cusp + bulge potential (to decide/record), plus 4 other differences.
 
 **Next steps (in order):**
 1. N1 look sheet: `uv run python scripts/look_variants.py 575,2112 960 n1 "lines:[nebula]"
