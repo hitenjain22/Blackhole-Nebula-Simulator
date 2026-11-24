@@ -110,6 +110,15 @@ so N2 should include the rigid cusp + bulge potential (to decide/record), plus 4
 2. Show Hiten the orbit clip; ask whether spin 0.9 + the orbit go into the story.
 3. N2: Act 1 setup (Phantom, 50k test) per the phase file. Ask before cloud spending.
 
+**Hiten's idea 2026-11-23 ~20:40 (agreed in principle, build after tonight's queue):** a camera
+loop over the hole (around a horizontal axis, through the poles), ideally **diagonal** (sweep
+around + over the top), so the disc's lensed halo opens into a ring from above and the disc
+seems to flip, bright Doppler side swapping; later with the nebula colours and Act 1 nebula behind
+(lensed). Needs a new camera mode: path through 3D points (slerp of directions, log r), the up
+vector parallel-transported along the path (no snap at the poles; today's elev/az keys are capped
+at |elev| <= 80 = director.ELEV_MAX). ~half a day + tests; then a Mac low-res preview clip
+(frozen worktree). Part of N8 but prototyped early. He liked the current orbit clip.
+
 **Waiting on Hiten:** the N1 look pick; the orbit clip verdict / spin 0.9 in the story.
 
 **Lessons from this week (don't repeat):**
