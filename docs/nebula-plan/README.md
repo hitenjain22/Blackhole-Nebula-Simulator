@@ -10,6 +10,7 @@ Read in this order:
 3. [01-realism-check.md](01-realism-check.md): what is real physics and what is a labelled cheat
 4. [03-free-compute.md](03-free-compute.md): free compute, with terms checked
 5. [04-open-source-tools.md](04-open-source-tools.md), [05-reading-list.md](05-reading-list.md), [06-look-references.md](06-look-references.md): tools, papers, visual references
+6. [07-colour-fixes.md](07-colour-fixes.md): round 7 colour fixes for the n4/n5 look sheets (neon, black gaps, patches, hot gas going blue-white)
 6. [07-mapelli-trani-setup.md](07-mapelli-trani-setup.md): the exact setup of the Act 1 model paper, and the differences to decide in N2 (added 2026-11-23)
 
 ## How to start (paste into Claude Code)
