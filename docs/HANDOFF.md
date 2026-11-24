@@ -74,6 +74,27 @@ recommendation; then **(B) N2 prep** (Act 1: read Mapelli & Trani 2016 for exact
 setup at parsec scale, k^-4 turbulence generator + lumpy density, tested on small cases; no big run
 without his OK), alongside the steps below as the GPU frees up.
 
+**Optimization review (started 18:30, in progress; all uncommitted, CPU-tested):**
+- Profiled CPU stages of frames 575 / 2112 (`scripts/profile_frame_cpu.py FRAME`; scratch
+  scripts prof_dep.py / split_check*.py in <scratchpad>). Findings: (1) inner disc edge feeds read
+  every snapshot in a 10-day window (415 files at day 97: 430 s per render process) -> now at most
+  one snapshot per 0.25 day (`inner_disc.feed_snapshots`, FEED_STEP_DAYS) + disk cache
+  `outputs/cache/edge_feeds/<code hash>/<run>/...json` (`ShotRenderer._edge_feed`); identical
+  result where snapshots are >= 0.25 day apart (late story; checked at frame 2112). (2) **Bug found:**
+  the first pass's stream crossing the R 40-60 annulus built a bogus 371k-particle disc at 24 s;
+  fixed: only near-circular gas feeds the disc (`edge_feed`: CIRC_RADIAL 0.3, CIRC_BAND 0.7-1.3;
+  test `test_edge_feed_ignores_a_plunging_stream`). Disc now: none during the pass, invisible
+  wisps 55-72 s, real disc from 78 s (peak 4.7e5 K at 88 s). (3) **Main per-frame cost is the
+  log-grid deposition** (frame 2112: 100-125 s of the CPU time; bricks 5 s): 1% of particles
+  (wide, h/r ~ 0.5 near r ~ 200) make 84% of the 2.2e9 cell visits. New
+  `gasgrid.deposit_log_split` (wide particles, support >= WIDE_CELLS 16 angular cells, on a grid
+  coarser by COARSEN (2,4,4), interpolated back by `refine_sums`, mass rescaled: ledger exact):
+  4.5x faster at 2112 (100 -> 22 s), density median diff 5e-4, 99th pct 2.9%, max 6.5%; testing
+  other settings (wide 24 / 32, coarsen 2,2,2). **Not yet wired in** (snapshot_scene still uses
+  deposit_log); needs: choose settings, tests vs deposit_log, a GPU image comparison (full frames),
+  DECISIONS entry. (4) GPU side not yet profiled (GPU busy with the clip). Other ideas noted:
+  the pinpoint-star node pass re-marches the gas (~25% extra GPU work); eased_state 11 s at 2112.
+
 **Next steps (in order):**
 1. N1 look sheet: `uv run python scripts/look_variants.py 575,2112 960 n1 "lines:[nebula]"
    "glow:[nebula]\ngain = 3.0\ncontinuum_mix = 0.5" "teal:[nebula]\ngain = 3.0\ncontinuum_mix
