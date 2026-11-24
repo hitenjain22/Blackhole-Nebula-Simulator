@@ -13,7 +13,7 @@ written for Claude, not for Hiten.
    not only at the end: the session can end abruptly when usage runs out. Commit and push it.
    The next session (possibly the original account, after its usage resets) relies on it.
 
-Last updated: 2026-10-19 (night, Pacific).
+Last updated: 2026-11-23 (evening, Pacific).
 
 ---
 
@@ -61,47 +61,35 @@ leapfrog, block time steps, Phantom-style viscosity with Cullen–Dehnen switch 
 reconstruction (D2, Frontiere 2017 / MAGMA2) with a min-mod gate, gas + radiation EOS, β-cooling,
 swallowing at r_acc = 4 with a removed-particle ledger. See `PLAN.md` and `phases/`.
 
-## 3. Current state (2026-10-19 evening)
+## 3. Current state (2026-11-23)
 
-- **Phases 0–5 done.** Phase 6 code steps 6.1–6.7 built and all Phase 6 tests 1–9 pass. Phase 6
-  science runs are the open work. **Phase 7 not started** (needs a breakdown approved first).
-- **Phase 6 cloud radius = 60** (Hiten, D4 update), end time **t = 3.8 × 10⁶** (Hiten approved).
-  Expected first stream crash: passage 4, first contact t = 2,765,139 (test-particle; passage 3
-  misses by only 8,700, so hydro may crash at passage 3, t ≈ 2.0 × 10⁶). expected-values §2c.
-- **Resolution:** 10k runs are dominated by numerical overheating at pericentre (unbound 11%,
-  energy spread ±43%); 50k is much better (0.75%, ±13%). **Phase 6 main run R6.1 must be 50k.**
-- **R6.1 v2 at 50k is RUNNING on Google Cloud (`runs/R6.1_50k_v2`, started 2026-10-19 17:27 Pacific / 00:27 UTC,
-  commit ffcd410, α_u = 0.05, h_max = 200, t_end 3.8 × 10⁶).** Helpers armed: `~/resume_if_needed.sh`,
-  `~/shutdown_when_done.sh` and `scripts/torus_stop_watch.py R6.1_50k_v2` (all in crontab @reboot and
-  running): the run ends at 'torus formed + 10 ring orbits' or t = 3.8 × 10⁶. Pace in the crash phase
-  ~13,000 time units/h (full 3.8M would be ~8 days); ask Hiten before letting it run that long. The old
-  stalled `R6.1_50k` (α_u = 1, no cap) is kept on the VM as a record (paused at t ≈ 446,000).
-- **Why it stalled (fully diagnosed, DECISIONS 2026-10-19):** over-heated gas sprays into a
-  near-vacuum halo; halo particles' h grows to 2,000–2,800, neighbouring the whole cloud; the level
-  limiter then held ~49,000 particles at tiny steps. Capping h (h_max) fixes it and does **not**
-  change the physics (verified digit-for-digit at 10k through the first pass). A real bug found on
-  the way is fixed: the neighbour search had no skin margin above h_max (forced a rebuild every step).
-- **Overheating root cause (heat-budget instrumentation, DECISIONS 2026-10-18/19):** ~30
-  front-edge particles are over-heated by artificial viscosity at the bend around the hole (u up
-  to ~10⁻²); artificial **conductivity** (ours: Phantom's α_u = 1 with velocity signal) pumps that
-  heat into the stream (~90% of the typical particle's excess heat). Experiments cond_x1–x4: weaker
-  conductivity halves the unbound gas (11% → 5.8%) and cuts pre-pass heating ~10×, but the energy
-  spread (±42% at 10k) does not depend on conductivity (resolution).
-- **Speed work done (2.8× on the Mac, 13.6× on the cloud vs the original Mac code):** EOS only for
-  active + neighbours; exact per-particle neighbour-list reuse; Numba copies of GN v(p) and the
-  gas+radiation T solve (`sim/fastphys.py`, tested). All tests pass.
-- **Test status:** 181 fast tests pass (`uv run pytest -q`). Slow suite (21 tests, ~3 h on the Mac)
-  last passed 2026-10-18 on the speed-up code; **re-run it** before restarting R6.1 (the heat-budget
-  and h_max-skin changes came after; both verified bit-identical, but re-run anyway).
+- **Phases 0-10 done; the 1080p milestone video is made** (`final_story_v1`, 108 s, tag
+  `milestone-1080p-v1`, outputs/renders/final_story_v1_final1080p_20261120-031806/ and the bucket).
+  Configs: configs/final_story.toml + configs/shots/full_story.toml (the approved story).
+- **Since the milestone (in the story file):** render-time inner accretion disc, look **C3**
+  (`[disc]`, render/inner_disc.py, physics/steady_disc.py; DECISIONS 2026-11-20/23).
+- **Phase 11 (spin), light part built:** Kerr rays float64 reference (physics/kerr.py), fixed-step
+  twin (render/kerr_rays.py, R_NEAR 0.5) and GPU `// #if KERR` shader variant; tests pass
+  (tests/physics/test_kerr_rays.py, tests/render/test_kerr_gpu.py). Shot setting `spin` (0 in the
+  approved story). **Spin 0.99 is inaccurate with fixed steps** (AI_LOG 2026-11-23): use 0.9.
+  Spin in the gas dynamics (11.3) not started. Trial shot `configs/shots/full_story_orbit.toml`
+  (spin 0.9, camera orbiting close to the hole 78-108 s, Hiten's idea); its low-res clip
+  (scripts/shot_clip.py, clumpier gas h_scale 1.0) was rendering on the Mac 2026-11-23 evening.
+- **Phase 14 (the nebula) is next:** spec phases/phase-14-nebula.md from docs/nebula-plan/ (Hiten
+  approved 2026-11-23); N0 done (this update, DECISIONS 2026-11-23, GPL-3.0 LICENSE). Next: N1
+  emission-line colour model, after Hiten approves the phase file.
+- **Tests:** full suite 387 passed (2026-11-23, ~26-36 min on the Mac incl. GPU tests).
+- **Mac GPU:** healthy again (the 2026-11-19 "zeros" was the GPU's state after restarts). Keep one
+  GPU job at a time; adaptive tiles on.
+- **Cloud:** nebula-l4 (us-east4-c, L4) is STOPPED, never delete it or the bucket. Trial credit
+  ends ~2027-01-16; N3's Act 1 run is planned on what is left (ask Hiten before big runs).
 
 ## 4. Waiting on Hiten (ask him / remind him)
 
-Nothing pending. Hiten is busy (2026-10-21) and said: make the best decisions and keep working.
-Decided 2026-10-21: energy ledger judged against shock-processed energy once the crash has started
-(limit 0.1%; R6.1 v2 at 0.02%); no near-hole fix for now (mostly real collision heating after the
-crash); R6.1 v2 runs to the end. **Before launching the next big cloud run (R6.2–R6.5: Newtonian
-control, β scan, seeds), ask Hiten about sizes/order and cost** (each 50k run ≈ 3 days ≈ $25; ~$270
-of the $300 trial left), unless he has said to go ahead.
+- Approve phases/phase-14-nebula.md before N1 starts.
+- Spin 0.9 in the story? (comparison: outputs/checks/inner_disc/spinc3_full_frames.png) and the
+  orbit-shot clip (outputs/checks/clip_full_story_orbit1.mp4 when done).
+- Before any big cloud run (Act 1 production, Act 2 runs): sizes, order and cost.
 
 ## 5. Key decisions to remember (details in docs/DECISIONS.md)
 
